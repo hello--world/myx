@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import Proxy
 from .serializers import ProxySerializer
@@ -25,4 +26,23 @@ class ProxyViewSet(viewsets.ModelViewSet):
         auto_deploy_proxy(proxy.id)
         
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def redeploy(self, request, pk=None):
+        """重新部署代理"""
+        proxy = self.get_object()
+        
+        # 重置部署状态
+        proxy.deployment_status = 'pending'
+        proxy.deployment_log = ''
+        proxy.deployed_at = None
+        proxy.save()
+        
+        # 异步启动重新部署
+        auto_deploy_proxy(proxy.id)
+        
+        return Response({
+            'message': '重新部署已启动',
+            'deployment_status': proxy.deployment_status
+        }, status=status.HTTP_200_OK)
 

@@ -59,7 +59,7 @@ fi
         return False
 
 
-def deploy_agent_and_services(server: Server, user) -> tuple[bool, str]:
+def deploy_agent_and_services(server: Server, user):
     """安装Agent、Xray、Caddy（支持重复安装）
     
     Args:

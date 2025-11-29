@@ -131,7 +131,7 @@ def quick_deploy_full(deployment_id, is_temporary=False):
                 return
             
             # 等待Agent注册（最多等待30秒）
-            deployment.log += "等待Agent注册...\n"
+            deployment.log = (deployment.log or '') + "等待Agent注册...\n"
             deployment.save()
             
             agent = wait_for_agent_registration(server, timeout=30)
@@ -142,7 +142,7 @@ def quick_deploy_full(deployment_id, is_temporary=False):
                 deployment.save()
                 return
             
-            deployment.log += f"Agent已注册，Token: {agent.token}\n"
+            deployment.log = (deployment.log or '') + f"Agent已注册，Token: {agent.token}\n"
             deployment.save()
             
             # 更新服务器连接方式为Agent
@@ -154,12 +154,12 @@ def quick_deploy_full(deployment_id, is_temporary=False):
                 server.password = ''  # 清除密码
                 server.private_key = ''  # 清除私钥（可选，如果用户想保留可以注释掉）
                 server.name = server.name.replace('[临时] ', '')  # 移除临时标记
-                deployment.log += "已清除SSH密码，仅保留Agent信息\n"
+                deployment.log = (deployment.log or '') + "已清除SSH密码，仅保留Agent信息\n"
             
             server.save()
             
             # 步骤2: 通过Agent部署Xray
-            deployment.log += "步骤2: 通过Agent部署Xray...\n"
+            deployment.log = (deployment.log or '') + "步骤2: 通过Agent部署Xray...\n"
             deployment.save()
             
             xray_deployment = Deployment.objects.create(
@@ -178,16 +178,16 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             if xray_deployment.status != 'success':
                 deployment.status = 'failed'
                 deployment.error_message = f'Xray部署失败: {xray_deployment.error_message}'
-                deployment.log += f"Xray部署失败: {xray_deployment.error_message}\n"
+                deployment.log = (deployment.log or '') + f"Xray部署失败: {xray_deployment.error_message}\n"
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 return
             
-            deployment.log += "Xray部署成功\n"
+            deployment.log = (deployment.log or '') + "Xray部署成功\n"
             deployment.save()
             
             # 步骤3: 通过Agent部署Caddy
-            deployment.log += "步骤3: 通过Agent部署Caddy...\n"
+            deployment.log = (deployment.log or '') + "步骤3: 通过Agent部署Caddy...\n"
             deployment.save()
             
             caddy_deployment = Deployment.objects.create(
@@ -206,21 +206,21 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             if caddy_deployment.status != 'success':
                 deployment.status = 'failed'
                 deployment.error_message = f'Caddy部署失败: {caddy_deployment.error_message}'
-                deployment.log += f"Caddy部署失败: {caddy_deployment.error_message}\n"
+                deployment.log = (deployment.log or '') + f"Caddy部署失败: {caddy_deployment.error_message}\n"
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 return
             
-            deployment.log += "Caddy部署成功\n"
+            deployment.log = (deployment.log or '') + "Caddy部署成功\n"
             deployment.status = 'success'
-            deployment.log += "一键部署完成！Agent信息已自动记录。\n"
+            deployment.log = (deployment.log or '') + "一键部署完成！Agent信息已自动记录。\n"
             deployment.completed_at = timezone.now()
             deployment.save()
             
         except Exception as e:
             deployment.status = 'failed'
             deployment.error_message = str(e)
-            deployment.log += f"部署失败: {str(e)}\n"
+            deployment.log = (deployment.log or '') + f"部署失败: {str(e)}\n"
             deployment.completed_at = timezone.now()
             deployment.save()
 
@@ -266,7 +266,7 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         else:
             arch = "amd64"
         
-        deployment.log += f"检测到系统架构: {arch}\n"
+        deployment.log = (deployment.log or '') + f"检测到系统架构: {arch}\n"
         deployment.save()
         
         # 从 GitHub Releases 下载 Agent 二进制文件
@@ -289,13 +289,13 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         
         # 如果二进制文件不存在，从 GitHub 下载
         if not binary_path.exists():
-            deployment.log += f"从 GitHub Releases 下载 Agent 二进制文件...\n"
-            deployment.log += f"下载地址: {github_url}\n"
+            deployment.log = (deployment.log or '') + f"从 GitHub Releases 下载 Agent 二进制文件...\n"
+            deployment.log = (deployment.log or '') + f"下载地址: {github_url}\n"
             deployment.save()
             
             try:
                 # 下载二进制文件
-                deployment.log += "正在下载...\n"
+                deployment.log = (deployment.log or '') + "正在下载...\n"
                 deployment.save()
                 
                 urllib.request.urlretrieve(github_url, binary_path)
@@ -303,12 +303,12 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
                 # 设置执行权限
                 os.chmod(binary_path, 0o755)
                 
-                deployment.log += f"Agent 二进制文件下载成功: {binary_path}\n"
+                deployment.log = (deployment.log or '') + f"Agent 二进制文件下载成功: {binary_path}\n"
                 deployment.save()
                 
             except urllib.error.HTTPError as e:
-                deployment.log += f"下载失败 (HTTP {e.code}): {e.reason}\n"
-                deployment.log += f"请确保 GitHub Releases 中存在 {binary_name} 文件\n"
+                deployment.log = (deployment.log or '') + f"下载失败 (HTTP {e.code}): {e.reason}\n"
+                deployment.log = (deployment.log or '') + f"请确保 GitHub Releases 中存在 {binary_name} 文件\n"
                 deployment.status = 'failed'
                 deployment.error_message = f'Agent下载失败: HTTP {e.code} - {e.reason}'
                 deployment.completed_at = timezone.now()
@@ -316,18 +316,18 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
                 return False
             except Exception as e:
                 import traceback
-                deployment.log += f"下载异常: {str(e)}\n{traceback.format_exc()}\n"
+                deployment.log = (deployment.log or '') + f"下载异常: {str(e)}\n{traceback.format_exc()}\n"
                 deployment.status = 'failed'
                 deployment.error_message = f'Agent下载异常: {str(e)}'
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 return False
         else:
-            deployment.log += f"使用已存在的 Agent 二进制文件: {binary_path}\n"
+            deployment.log = (deployment.log or '') + f"使用已存在的 Agent 二进制文件: {binary_path}\n"
             deployment.save()
         
         # 上传二进制文件到服务器
-        deployment.log += f"上传 Agent 二进制文件到服务器...\n"
+        deployment.log = (deployment.log or '') + f"上传 Agent 二进制文件到服务器...\n"
         deployment.save()
         
         sftp = ssh.open_sftp()
@@ -338,10 +338,10 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
                 with sftp.file(remote_binary, 'wb') as remote_file:
                     remote_file.write(local_file.read())
             sftp.chmod(remote_binary, 0o755)
-            deployment.log += "二进制文件上传成功\n"
+            deployment.log = (deployment.log or '') + "二进制文件上传成功\n"
             deployment.save()
         except Exception as e:
-            deployment.log += f"上传失败: {str(e)}\n"
+            deployment.log = (deployment.log or '') + f"上传失败: {str(e)}\n"
             deployment.status = 'failed'
             deployment.error_message = f'Agent上传失败: {str(e)}'
             deployment.completed_at = timezone.now()
@@ -406,13 +406,13 @@ echo "Agent安装完成"
         output = stdout.read().decode()
         error = stderr.read().decode()
         
-        deployment.log += f"Agent安装输出:\n{output}\n"
+        deployment.log = (deployment.log or '') + f"Agent安装输出:\n{output}\n"
         if error:
-            deployment.log += f"错误信息:\n{error}\n"
+            deployment.log = (deployment.log or '') + f"错误信息:\n{error}\n"
         deployment.save()
         
         if exit_status != 0:
-            deployment.log += f"Agent安装失败，退出码: {exit_status}\n"
+            deployment.log = (deployment.log or '') + f"Agent安装失败，退出码: {exit_status}\n"
             deployment.save()
             ssh.close()
             return False
@@ -421,7 +421,7 @@ echo "Agent安装完成"
         return True
         
     except Exception as e:
-        deployment.log += f"SSH连接或安装失败: {str(e)}\n"
+        deployment.log = (deployment.log or '') + f"SSH连接或安装失败: {str(e)}\n"
         deployment.save()
         return False
 

@@ -22,6 +22,12 @@ def check_service_installed(agent: Agent, service_name: str) -> bool:
     from apps.agents.command_queue import CommandQueue
     import base64
     
+    # 检查 Agent 是否在线
+    agent.refresh_from_db()
+    if agent.status != 'online':
+        print(f"Agent {agent.id} 不在线，状态: {agent.status}")
+        return False
+    
     check_script = f"""#!/bin/bash
 if command -v {service_name} &> /dev/null; then
     echo "INSTALLED"
@@ -42,8 +48,8 @@ fi
             timeout=10
         )
         
-        # 等待命令执行完成
-        max_wait = 10
+        # 等待命令执行完成，增加超时时间
+        max_wait = 30  # 增加到30秒
         wait_time = 0
         while wait_time < max_wait:
             cmd.refresh_from_db()
@@ -52,10 +58,17 @@ fi
             time.sleep(1)
             wait_time += 1
         
+        if wait_time >= max_wait:
+            print(f"检查 {service_name} 超时，命令状态: {cmd.status}")
+            return False
+        
         if cmd.status == 'success' and cmd.result and 'INSTALLED' in cmd.result:
             return True
         return False
-    except:
+    except Exception as e:
+        print(f"检查 {service_name} 异常: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -138,14 +151,18 @@ def deploy_agent_and_services(server: Server, user):
         
         # 确保Agent在线
         agent = Agent.objects.get(server=server)
+        agent.refresh_from_db()
         if agent.status != 'online':
             error_log.append(f"Agent状态为 {agent.status}，不在线")
+            error_log.append(f"请检查Agent是否正常运行，最后心跳时间: {agent.last_heartbeat}")
             return False, "\n".join(error_log)
         
-        error_log.append("Agent在线，开始部署服务...")
+        error_log.append(f"Agent在线，开始部署服务... (Agent ID: {agent.id}, Token: {agent.token})")
         
         # 检查并安装Xray（支持重复安装）
+        error_log.append("检查Xray是否已安装...")
         xray_installed = check_service_installed(agent, 'xray')
+        error_log.append(f"Xray检查结果: {'已安装' if xray_installed else '未安装'}")
         if not xray_installed:
             error_log.append("Xray未安装，开始部署...")
             xray_deployment = Deployment.objects.create(
@@ -157,8 +174,20 @@ def deploy_agent_and_services(server: Server, user):
                 status='running',
                 created_by=user
             )
+            error_log.append("开始执行Xray部署...")
             deploy_via_agent(xray_deployment, server.deployment_target or 'host')
-            xray_deployment.refresh_from_db()
+            
+            # 等待部署完成，最多等待5分钟
+            max_wait = 300
+            wait_time = 0
+            while wait_time < max_wait:
+                xray_deployment.refresh_from_db()
+                if xray_deployment.status in ['success', 'failed']:
+                    break
+                time.sleep(2)
+                wait_time += 2
+                if wait_time % 10 == 0:
+                    error_log.append(f"等待Xray部署完成... ({wait_time}秒)")
             
             if xray_deployment.status != 'success':
                 error_log.append(f"Xray部署失败")
@@ -172,7 +201,9 @@ def deploy_agent_and_services(server: Server, user):
             error_log.append("Xray已安装，跳过部署")
         
         # 检查并安装Caddy（支持重复安装）
+        error_log.append("检查Caddy是否已安装...")
         caddy_installed = check_service_installed(agent, 'caddy')
+        error_log.append(f"Caddy检查结果: {'已安装' if caddy_installed else '未安装'}")
         if not caddy_installed:
             error_log.append("Caddy未安装，开始部署...")
             caddy_deployment = Deployment.objects.create(
@@ -184,8 +215,20 @@ def deploy_agent_and_services(server: Server, user):
                 status='running',
                 created_by=user
             )
+            error_log.append("开始执行Caddy部署...")
             deploy_via_agent(caddy_deployment, server.deployment_target or 'host')
-            caddy_deployment.refresh_from_db()
+            
+            # 等待部署完成，最多等待5分钟
+            max_wait = 300
+            wait_time = 0
+            while wait_time < max_wait:
+                caddy_deployment.refresh_from_db()
+                if caddy_deployment.status in ['success', 'failed']:
+                    break
+                time.sleep(2)
+                wait_time += 2
+                if wait_time % 10 == 0:
+                    error_log.append(f"等待Caddy部署完成... ({wait_time}秒)")
             
             if caddy_deployment.status != 'success':
                 error_log.append(f"Caddy部署失败")

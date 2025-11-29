@@ -364,7 +364,22 @@
         <pre style="white-space: pre-wrap; font-family: monospace; padding: 10px;">{{ currentLog }}</pre>
       </el-scrollbar>
       <template #footer>
-        <el-button @click="logDialogVisible = false">关闭</el-button>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span v-if="currentProxyId && getProxyById(currentProxyId)?.deployment_status === 'running'" style="color: #409eff;">
+            ⚡ 部署中，日志每2秒自动刷新
+          </span>
+          <span v-else></span>
+          <div>
+            <el-button 
+              type="primary" 
+              @click="handleRefreshLog" 
+              v-if="currentProxyId && getProxyById(currentProxyId)?.deployment_status === 'running'"
+            >
+              刷新日志
+            </el-button>
+            <el-button @click="logDialogVisible = false">关闭</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>

@@ -150,7 +150,7 @@ CSRF_TRUSTED_ORIGINS = [
 AGENT_API_URL = os.getenv('AGENT_API_URL', 'http://localhost:8000/api/agents')
 
 # GitHub Repository (用于下载Agent二进制文件)
-# 格式: owner/repo，例如: your-username/myx
-GITHUB_REPO = os.getenv('GITHUB_REPO', 'your-username/myx')
+# 格式: owner/repo
+GITHUB_REPO = os.getenv('GITHUB_REPO', 'hello--world/myx')
 
 

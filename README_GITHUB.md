@@ -14,7 +14,7 @@ git init
 git add .
 git commit -m "Initial commit"
 git branch -M main
-git remote add origin https://github.com/your-username/myx.git
+git remote add origin https://github.com/hello--world/myx.git
 git push -u origin main
 ```
 
@@ -23,13 +23,13 @@ git push -u origin main
 在部署服务器上设置 GitHub 仓库地址：
 
 ```bash
-export GITHUB_REPO="your-username/myx"
+export GITHUB_REPO="hello--world/myx"
 ```
 
 或者在 `.env` 文件中：
 
 ```
-GITHUB_REPO=your-username/myx
+GITHUB_REPO=hello--world/myx
 ```
 
 ### 3. 创建第一个 Release
@@ -72,8 +72,8 @@ GITHUB_REPO=your-username/myx
 
 **使用：**
 ```bash
-docker pull ghcr.io/your-username/myx/agent:latest
-docker run -d --name myx-agent ghcr.io/your-username/myx/agent:latest
+docker pull ghcr.io/hello--world/myx/agent:latest
+docker run -d --name myx-agent ghcr.io/hello--world/myx/agent:latest
 ```
 
 ### Docker Backend (`build-backend.yml`)
@@ -85,12 +85,12 @@ docker run -d --name myx-agent ghcr.io/your-username/myx/agent:latest
 - 创建 Release
 
 **输出：**
-- Docker 镜像: `ghcr.io/<owner>/<repo>/backend:latest`
+- Docker 镜像: `ghcr.io/hello--world/myx/backend:latest`
 
 **使用：**
 ```bash
-docker pull ghcr.io/your-username/myx/backend:latest
-docker run -d -p 8000:8000 ghcr.io/your-username/myx/backend:latest
+docker pull ghcr.io/hello--world/myx/backend:latest
+docker run -d -p 8000:8000 ghcr.io/hello--world/myx/backend:latest
 ```
 
 ## 部署脚本自动下载

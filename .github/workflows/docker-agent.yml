@@ -1,24 +1,18 @@
 name: Build Agent Docker Image
 
+# 注意：此 workflow 已被 docker-all.yml 替代，保留用于单独构建 Agent 镜像
+# 如需单独构建 Agent，取消下面的注释并注释掉 docker-all.yml 中的 agent 部分
+
 on:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'agent/**'
-      - '.github/workflows/docker-agent.yml'
-      - 'agent/Dockerfile'
-  pull_request:
-    branches:
-      - main
-      - master
-    paths:
-      - 'agent/**'
-      - 'agent/Dockerfile'
-  release:
-    types: [created]
-  workflow_dispatch:
+  workflow_dispatch:  # 只允许手动触发，避免与 docker-all.yml 重复
+  # push:
+  #   branches:
+  #     - main
+  #     - master
+  #   paths:
+  #     - 'agent/**'
+  #     - '.github/workflows/docker-agent.yml'
+  #     - 'agent/Dockerfile'
 
 env:
   REGISTRY: ghcr.io

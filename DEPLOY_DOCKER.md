@@ -19,9 +19,9 @@
 
 ```bash
 # 镜像标签示例
-ghcr.io/your-username/myx/agent:v1.0.0
-ghcr.io/your-username/myx/backend:v1.0.0
-ghcr.io/your-username/myx/frontend:v1.0.0
+ghcr.io/hello--world/myx/agent:v1.0.0
+ghcr.io/hello--world/myx/backend:v1.0.0
+ghcr.io/hello--world/myx/frontend:v1.0.0
 ```
 
 ## 使用 Docker Compose 部署
@@ -30,7 +30,7 @@ ghcr.io/your-username/myx/frontend:v1.0.0
 
 ```bash
 # 设置环境变量
-export GITHUB_REPO="your-username/myx"
+export GITHUB_REPO="hello--world/myx"
 export SECRET_KEY="your-secret-key"
 
 # 启动所有服务
@@ -50,7 +50,7 @@ docker-compose down
 docker-compose -f docker-compose.prod.yml up -d
 
 # 需要设置的环境变量
-export GITHUB_REPO="your-username/myx"
+export GITHUB_REPO="hello--world/myx"
 export SECRET_KEY="your-production-secret-key"
 export DATABASE_URL="postgresql://user:pass@host/db"  # 可选，使用 PostgreSQL
 export ALLOWED_HOSTS="your-domain.com"
@@ -62,7 +62,7 @@ export ALLOWED_HOSTS="your-domain.com"
 
 ```bash
 # 拉取镜像
-docker pull ghcr.io/your-username/myx/agent:latest
+docker pull ghcr.io/hello--world/myx/agent:latest
 
 # 运行 Agent（首次需要注册）
 docker run -d \
@@ -70,37 +70,37 @@ docker run -d \
   -e SERVER_TOKEN="your-server-id" \
   -e API_URL="http://your-backend:8000/api/agents" \
   -v /etc/myx-agent:/etc/myx-agent \
-  ghcr.io/your-username/myx/agent:latest
+  ghcr.io/hello--world/myx/agent:latest
 ```
 
 ### Backend
 
 ```bash
 # 拉取镜像
-docker pull ghcr.io/your-username/myx/backend:latest
+docker pull ghcr.io/hello--world/myx/backend:latest
 
 # 运行 Backend
 docker run -d \
   --name myx-backend \
   -p 8000:8000 \
   -e SECRET_KEY="your-secret-key" \
-  -e GITHUB_REPO="your-username/myx" \
+  -e GITHUB_REPO="hello--world/myx" \
   -v ./db.sqlite3:/app/db.sqlite3 \
-  ghcr.io/your-username/myx/backend:latest
+  ghcr.io/hello--world/myx/backend:latest
 ```
 
 ### Frontend
 
 ```bash
 # 拉取镜像
-docker pull ghcr.io/your-username/myx/frontend:latest
+docker pull ghcr.io/hello--world/myx/frontend:latest
 
 # 运行 Frontend
 docker run -d \
   --name myx-frontend \
   -p 80:80 \
   -e VITE_API_URL="http://your-backend:8000/api" \
-  ghcr.io/your-username/myx/frontend:latest
+  ghcr.io/hello--world/myx/frontend:latest
 ```
 
 ## 镜像访问权限
@@ -125,7 +125,7 @@ docker run -d \
 echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
 
 # 拉取私有镜像
-docker pull ghcr.io/your-username/myx/agent:latest
+docker pull ghcr.io/hello--world/myx/agent:latest
 ```
 
 ## 多平台支持

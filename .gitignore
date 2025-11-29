@@ -88,9 +88,6 @@ coverage.xml
 .dmypy.json
 dmypy.json
 
-# xray-ui (reference only, not needed in repo)
-xray-ui/
-
 # Database
 *.sqlite3
 *.db

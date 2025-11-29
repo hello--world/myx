@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   backend:
-    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/backend:latest
+    image: ghcr.io/${GITHUB_REPO:-hello--world/myx}/backend:latest
     container_name: myx-backend
     restart: unless-stopped
     ports:
@@ -12,7 +12,7 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
       - DATABASE_URL=sqlite:///app/db.sqlite3
       - AGENT_API_URL=http://backend:8000/api/agents
-      - GITHUB_REPO=${GITHUB_REPO:-your-username/myx}
+      - GITHUB_REPO=${GITHUB_REPO:-hello--world/myx}
     volumes:
       - ./db.sqlite3:/app/db.sqlite3
       - ./backend/media:/app/media
@@ -26,7 +26,7 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/frontend:latest
+    image: ghcr.io/${GITHUB_REPO:-hello--world/myx}/frontend:latest
     container_name: myx-frontend
     restart: unless-stopped
     ports:
@@ -39,7 +39,7 @@ services:
       - VITE_API_URL=http://localhost:8000/api
 
   agent:
-    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/agent:latest
+    image: ghcr.io/${GITHUB_REPO:-hello--world/myx}/agent:latest
     container_name: myx-agent
     restart: unless-stopped
     environment:

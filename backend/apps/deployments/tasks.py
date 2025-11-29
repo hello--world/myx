@@ -114,12 +114,12 @@ def quick_deploy_full(deployment_id, is_temporary=False):
         deployment.started_at = timezone.now()
         deployment.log = "开始一键部署流程...\n"
         if is_temporary:
-            deployment.log += "注意：这是临时服务器，部署完成后将清除SSH密码，仅保留Agent信息\n"
+            deployment.log = (deployment.log or '') + "注意：这是临时服务器，部署完成后将清除SSH密码，仅保留Agent信息\n"
         deployment.save()
 
         try:
             # 步骤1: 通过SSH安装Agent
-            deployment.log += "步骤1: 通过SSH安装Agent...\n"
+            deployment.log = (deployment.log or '') + "步骤1: 通过SSH安装Agent...\n"
             deployment.save()
             
             agent_installed = install_agent_via_ssh(server, deployment)

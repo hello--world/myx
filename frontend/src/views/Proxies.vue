@@ -47,6 +47,15 @@
           <template #default="{ row }">
             <el-button 
               size="small" 
+              type="danger" 
+              @click="handleStopDeployment(row)" 
+              v-if="row.deployment_status === 'running'"
+              :loading="stopping[row.id]"
+            >
+              停止部署
+            </el-button>
+            <el-button 
+              size="small" 
               type="warning" 
               @click="handleRedeploy(row)" 
               v-if="row.deployment_status === 'failed'"
@@ -54,7 +63,7 @@
             >
               重新部署
             </el-button>
-            <el-button size="small" type="info" @click="handleViewLog(row)" v-if="row.deployment_log">查看日志</el-button>
+            <el-button size="small" type="info" @click="handleViewLog(row)" v-if="row.deployment_log && row.deployment_status !== 'running'">查看日志</el-button>
             <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -370,6 +379,8 @@ const logDialogVisible = ref(false)
 const currentLog = ref('')
 const activeTab = ref('basic')
 const redeploying = ref({})  // 记录正在重新部署的节点ID
+const stopping = ref({})  // 记录正在停止部署的节点ID
+let refreshInterval = null  // 自动刷新定时器
 
 // 基础表单
 const form = reactive({
@@ -755,6 +766,33 @@ const handleViewLog = (row) => {
   logDialogVisible.value = true
 }
 
+const handleStopDeployment = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要停止部署吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    
+    stopping.value[row.id] = true
+    try {
+      await api.post(`/proxies/${row.id}/stop_deployment/`)
+      ElMessage.success('部署已停止')
+      
+      // 刷新列表
+      await fetchProxies()
+      stopping.value[row.id] = false
+    } catch (error) {
+      stopping.value[row.id] = false
+      ElMessage.error('停止部署失败: ' + (error.response?.data?.detail || error.message))
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('停止部署错误:', error)
+    }
+  }
+}
+
 const handleRedeploy = async (row) => {
   try {
     await ElMessageBox.confirm('确定要重新部署这个节点吗？', '提示', {
@@ -771,22 +809,8 @@ const handleRedeploy = async (row) => {
       // 刷新列表
       fetchProxies()
       
-      // 定期刷新以更新部署状态
-      const refreshInterval = setInterval(() => {
-        fetchProxies()
-        // 如果部署完成，停止刷新
-        const proxy = proxies.value.find(p => p.id === row.id)
-        if (proxy && (proxy.deployment_status === 'success' || proxy.deployment_status === 'failed')) {
-          clearInterval(refreshInterval)
-          redeploying.value[row.id] = false
-        }
-      }, 3000)
-      
-      // 60秒后停止自动刷新
-      setTimeout(() => {
-        clearInterval(refreshInterval)
-        redeploying.value[row.id] = false
-      }, 60000)
+      // 启动自动刷新（如果还没有启动）
+      startAutoRefresh()
     } catch (error) {
       redeploying.value[row.id] = false
       ElMessage.error('重新部署失败: ' + (error.response?.data?.detail || error.message))
@@ -795,6 +819,33 @@ const handleRedeploy = async (row) => {
     if (error !== 'cancel') {
       console.error('重新部署错误:', error)
     }
+  }
+}
+
+// 启动自动刷新（当有部署中的节点时）
+const startAutoRefresh = () => {
+  // 如果已经有定时器在运行，不重复启动
+  if (refreshInterval) {
+    return
+  }
+  
+  refreshInterval = setInterval(() => {
+    fetchProxies().then(() => {
+      // 检查是否还有部署中的节点
+      const hasRunning = proxies.value.some(p => p.deployment_status === 'running')
+      if (!hasRunning) {
+        // 没有部署中的节点，停止自动刷新
+        stopAutoRefresh()
+      }
+    })
+  }, 3000)  // 每3秒刷新一次
+}
+
+// 停止自动刷新
+const stopAutoRefresh = () => {
+  if (refreshInterval) {
+    clearInterval(refreshInterval)
+    refreshInterval = null
   }
 }
 
@@ -930,8 +981,20 @@ watch(() => form.protocol, (newProtocol) => {
 }, { immediate: true })
 
 onMounted(() => {
-  fetchProxies()
+  fetchProxies().then(() => {
+    // 检查是否有部署中的节点，如果有则启动自动刷新
+    const hasRunning = proxies.value.some(p => p.deployment_status === 'running')
+    if (hasRunning) {
+      startAutoRefresh()
+    }
+  })
   fetchServers()
+})
+
+// 组件卸载时清理定时器
+import { onUnmounted } from 'vue'
+onUnmounted(() => {
+  stopAutoRefresh()
 })
 </script>
 

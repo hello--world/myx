@@ -46,3 +46,24 @@ class ProxyViewSet(viewsets.ModelViewSet):
             'deployment_status': proxy.deployment_status
         }, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def stop_deployment(self, request, pk=None):
+        """停止部署"""
+        proxy = self.get_object()
+        
+        if proxy.deployment_status != 'running':
+            return Response({
+                'message': '当前没有正在运行的部署任务',
+                'deployment_status': proxy.deployment_status
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 停止部署：将状态改为失败，并记录停止信息
+        proxy.deployment_status = 'failed'
+        proxy.deployment_log = (proxy.deployment_log or '') + f"\n⚠️ 部署已被用户手动停止\n"
+        proxy.save()
+        
+        return Response({
+            'message': '部署已停止',
+            'deployment_status': proxy.deployment_status
+        }, status=status.HTTP_200_OK)
+

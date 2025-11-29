@@ -980,7 +980,6 @@ onMounted(() => {
 })
 
 // 组件卸载时清理定时器
-import { onUnmounted } from 'vue'
 onUnmounted(() => {
   stopAutoRefresh()
 })

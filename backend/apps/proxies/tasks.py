@@ -59,7 +59,7 @@ fi
         return False
 
 
-def deploy_agent_and_services(server: Server, user) -> bool:
+def deploy_agent_and_services(server: Server, user) -> tuple[bool, str]:
     """安装Agent、Xray、Caddy（支持重复安装）
     
     Args:
@@ -67,8 +67,9 @@ def deploy_agent_and_services(server: Server, user) -> bool:
         user: 用户对象
         
     Returns:
-        bool: 是否成功
+        tuple[bool, str]: (是否成功, 错误信息或日志)
     """
+    error_log = []
     try:
         # 检查是否已安装Agent
         agent = None
@@ -76,12 +77,14 @@ def deploy_agent_and_services(server: Server, user) -> bool:
             agent = Agent.objects.get(server=server)
             if agent.status != 'online':
                 agent = None
+                error_log.append(f"Agent状态为离线，需要重新安装")
         except Agent.DoesNotExist:
-            pass
+            error_log.append("未找到Agent，需要安装")
         
         # 如果服务器连接方式是SSH，需要先安装Agent
         if not agent:
             if server.connection_method == 'ssh':
+                error_log.append("通过SSH安装Agent...")
                 # 创建临时部署任务用于安装Agent
                 deployment = Deployment.objects.create(
                     name=f"安装Agent - {server.name}",
@@ -99,16 +102,25 @@ def deploy_agent_and_services(server: Server, user) -> bool:
                     deployment.error_message = 'Agent安装失败'
                     deployment.completed_at = timezone.now()
                     deployment.save()
-                    return False
+                    error_log.append(f"Agent安装失败")
+                    if deployment.log:
+                        error_log.append(f"部署日志:\n{deployment.log}")
+                    if deployment.error_message:
+                        error_log.append(f"错误信息: {deployment.error_message}")
+                    return False, "\n".join(error_log)
                 
                 # 等待Agent注册
+                error_log.append("等待Agent注册...")
                 agent = wait_for_agent_registration(server, timeout=60)
                 if not agent:
                     deployment.status = 'failed'
                     deployment.error_message = 'Agent注册超时'
                     deployment.completed_at = timezone.now()
                     deployment.save()
-                    return False
+                    error_log.append("Agent注册超时（60秒）")
+                    if deployment.log:
+                        error_log.append(f"部署日志:\n{deployment.log}")
+                    return False, "\n".join(error_log)
                 
                 # 更新服务器连接方式
                 server.connection_method = 'agent'
@@ -118,18 +130,24 @@ def deploy_agent_and_services(server: Server, user) -> bool:
                 deployment.status = 'success'
                 deployment.completed_at = timezone.now()
                 deployment.save()
+                error_log.append("Agent安装并注册成功")
             else:
                 # 没有Agent且不是SSH连接，无法安装
-                return False
+                error_log.append(f"服务器连接方式为 {server.connection_method}，无法通过SSH安装Agent")
+                return False, "\n".join(error_log)
         
         # 确保Agent在线
         agent = Agent.objects.get(server=server)
         if agent.status != 'online':
-            return False
+            error_log.append(f"Agent状态为 {agent.status}，不在线")
+            return False, "\n".join(error_log)
+        
+        error_log.append("Agent在线，开始部署服务...")
         
         # 检查并安装Xray（支持重复安装）
         xray_installed = check_service_installed(agent, 'xray')
         if not xray_installed:
+            error_log.append("Xray未安装，开始部署...")
             xray_deployment = Deployment.objects.create(
                 name=f"Xray部署 - {server.name}",
                 server=server,
@@ -143,25 +161,20 @@ def deploy_agent_and_services(server: Server, user) -> bool:
             xray_deployment.refresh_from_db()
             
             if xray_deployment.status != 'success':
-                return False
-        # 如果已安装，也尝试更新（幂等性）
+                error_log.append(f"Xray部署失败")
+                if xray_deployment.log:
+                    error_log.append(f"Xray部署日志:\n{xray_deployment.log}")
+                if xray_deployment.error_message:
+                    error_log.append(f"错误信息: {xray_deployment.error_message}")
+                return False, "\n".join(error_log)
+            error_log.append("Xray部署成功")
         else:
-            xray_deployment = Deployment.objects.create(
-                name=f"Xray更新 - {server.name}",
-                server=server,
-                deployment_type='xray',
-                connection_method='agent',
-                deployment_target=server.deployment_target or 'host',
-                status='running',
-                created_by=user
-            )
-            deploy_via_agent(xray_deployment, server.deployment_target or 'host')
-            xray_deployment.refresh_from_db()
-            # 更新失败不影响，因为已经安装了
+            error_log.append("Xray已安装，跳过部署")
         
         # 检查并安装Caddy（支持重复安装）
         caddy_installed = check_service_installed(agent, 'caddy')
         if not caddy_installed:
+            error_log.append("Caddy未安装，开始部署...")
             caddy_deployment = Deployment.objects.create(
                 name=f"Caddy部署 - {server.name}",
                 server=server,
@@ -175,30 +188,25 @@ def deploy_agent_and_services(server: Server, user) -> bool:
             caddy_deployment.refresh_from_db()
             
             if caddy_deployment.status != 'success':
-                return False
-        # 如果已安装，也尝试更新（幂等性）
+                error_log.append(f"Caddy部署失败")
+                if caddy_deployment.log:
+                    error_log.append(f"Caddy部署日志:\n{caddy_deployment.log}")
+                if caddy_deployment.error_message:
+                    error_log.append(f"错误信息: {caddy_deployment.error_message}")
+                return False, "\n".join(error_log)
+            error_log.append("Caddy部署成功")
         else:
-            caddy_deployment = Deployment.objects.create(
-                name=f"Caddy更新 - {server.name}",
-                server=server,
-                deployment_type='caddy',
-                connection_method='agent',
-                deployment_target=server.deployment_target or 'host',
-                status='running',
-                created_by=user
-            )
-            deploy_via_agent(caddy_deployment, server.deployment_target or 'host')
-            caddy_deployment.refresh_from_db()
-            # 更新失败不影响，因为已经安装了
+            error_log.append("Caddy已安装，跳过部署")
         
-        return True
+        return True, "\n".join(error_log)
         
     except Exception as e:
         import traceback
         error_msg = f"部署异常: {str(e)}\n{traceback.format_exc()}"
+        error_log.append(error_msg)
         # 记录错误到日志
         print(f"deploy_agent_and_services 错误: {error_msg}")
-        return False
+        return False, "\n".join(error_log)
 
 
 def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
@@ -224,7 +232,8 @@ def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
         return deploy_xray_config_via_agent(proxy.server, config_json)
         
     except Exception as e:
-        proxy.deployment_log += f"部署配置失败: {str(e)}\n"
+        import traceback
+        proxy.deployment_log = (proxy.deployment_log or '') + f"❌ 部署配置失败: {str(e)}\n{traceback.format_exc()}\n"
         proxy.deployment_status = 'failed'
         proxy.save()
         return False
@@ -242,41 +251,45 @@ def auto_deploy_proxy(proxy_id: int):
             server = proxy.server
             
             proxy.deployment_status = 'running'
-            proxy.deployment_log = "开始自动部署...\n"
+            proxy.deployment_log = "🚀 开始自动部署...\n"
             proxy.save()
             
             # 步骤1: 检查并安装Agent、Xray、Caddy
-            proxy.deployment_log += "步骤1: 检查并安装Agent、Xray、Caddy...\n"
+            proxy.deployment_log = (proxy.deployment_log or '') + "步骤1: 检查并安装Agent、Xray、Caddy...\n"
             proxy.save()
             
             try:
-                result = deploy_agent_and_services(server, proxy.created_by)
+                result, log_message = deploy_agent_and_services(server, proxy.created_by)
+                proxy.deployment_log = (proxy.deployment_log or '') + log_message + "\n"
+                proxy.save()
+                
                 if not result:
                     proxy.deployment_status = 'failed'
-                    proxy.deployment_log += "Agent、Xray、Caddy安装失败，请检查服务器连接和Agent状态\n"
+                    proxy.deployment_log = (proxy.deployment_log or '') + "\n❌ Agent、Xray、Caddy安装失败\n"
                     proxy.save()
                     return
             except Exception as e:
+                import traceback
                 proxy.deployment_status = 'failed'
-                proxy.deployment_log += f"Agent、Xray、Caddy安装异常: {str(e)}\n"
+                proxy.deployment_log = (proxy.deployment_log or '') + f"Agent、Xray、Caddy安装异常: {str(e)}\n{traceback.format_exc()}\n"
                 proxy.save()
                 return
             
-            proxy.deployment_log += "Agent、Xray、Caddy安装成功\n"
+            proxy.deployment_log = (proxy.deployment_log or '') + "✅ Agent、Xray、Caddy安装成功\n"
             proxy.save()
             
             # 步骤2: 部署Xray配置
-            proxy.deployment_log += "步骤2: 部署Xray配置...\n"
+            proxy.deployment_log = (proxy.deployment_log or '') + "步骤2: 部署Xray配置...\n"
             proxy.save()
             
             if not deploy_xray_config_via_agent(proxy):
                 proxy.deployment_status = 'failed'
-                proxy.deployment_log += "Xray配置部署失败\n"
+                proxy.deployment_log = (proxy.deployment_log or '') + "❌ Xray配置部署失败\n"
                 proxy.save()
                 return
             
             proxy.deployment_status = 'success'
-            proxy.deployment_log += "部署完成！\n"
+            proxy.deployment_log = (proxy.deployment_log or '') + "✅ 部署完成！\n"
             proxy.deployed_at = timezone.now()
             proxy.save()
             
@@ -284,9 +297,10 @@ def auto_deploy_proxy(proxy_id: int):
             pass
         except Exception as e:
             try:
+                import traceback
                 proxy = Proxy.objects.get(id=proxy_id)
                 proxy.deployment_status = 'failed'
-                proxy.deployment_log += f"部署异常: {str(e)}\n"
+                proxy.deployment_log = (proxy.deployment_log or '') + f"❌ 部署异常: {str(e)}\n{traceback.format_exc()}\n"
                 proxy.save()
             except:
                 pass

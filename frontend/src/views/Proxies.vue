@@ -43,8 +43,17 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
+            <el-button 
+              size="small" 
+              type="warning" 
+              @click="handleRedeploy(row)" 
+              v-if="row.deployment_status === 'failed'"
+              :loading="redeploying[row.id]"
+            >
+              重新部署
+            </el-button>
             <el-button size="small" type="info" @click="handleViewLog(row)" v-if="row.deployment_log">查看日志</el-button>
             <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
@@ -360,6 +369,7 @@ const editingId = ref(null)
 const logDialogVisible = ref(false)
 const currentLog = ref('')
 const activeTab = ref('basic')
+const redeploying = ref({})  // 记录正在重新部署的节点ID
 
 // 基础表单
 const form = reactive({
@@ -743,6 +753,49 @@ const handleDelete = async (row) => {
 const handleViewLog = (row) => {
   currentLog.value = row.deployment_log || '暂无日志'
   logDialogVisible.value = true
+}
+
+const handleRedeploy = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要重新部署这个节点吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    
+    redeploying.value[row.id] = true
+    try {
+      await api.post(`/proxies/${row.id}/redeploy/`)
+      ElMessage.success('重新部署已启动，请稍后查看部署状态')
+      
+      // 刷新列表
+      fetchProxies()
+      
+      // 定期刷新以更新部署状态
+      const refreshInterval = setInterval(() => {
+        fetchProxies()
+        // 如果部署完成，停止刷新
+        const proxy = proxies.value.find(p => p.id === row.id)
+        if (proxy && (proxy.deployment_status === 'success' || proxy.deployment_status === 'failed')) {
+          clearInterval(refreshInterval)
+          redeploying.value[row.id] = false
+        }
+      }, 3000)
+      
+      // 60秒后停止自动刷新
+      setTimeout(() => {
+        clearInterval(refreshInterval)
+        redeploying.value[row.id] = false
+      }, 60000)
+    } catch (error) {
+      redeploying.value[row.id] = false
+      ElMessage.error('重新部署失败: ' + (error.response?.data?.detail || error.message))
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('重新部署错误:', error)
+    }
+  }
 }
 
 const getDeploymentStatusType = (status) => {

@@ -7,13 +7,13 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 # Copy go mod files
-COPY go.mod go.sum* ./
+COPY agent/go.mod agent/go.sum* ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY agent/ ./
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o myx-agent main.go

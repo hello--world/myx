@@ -258,15 +258,25 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         import os
         api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', 'http://localhost:8000/api/agents'))
         
-        # 检测系统架构
+        # 检测操作系统和架构
+        stdin, stdout, stderr = ssh.exec_command("uname -s", timeout=10)
+        os_type = stdout.read().decode().strip().lower() or "linux"
         stdin, stdout, stderr = ssh.exec_command("uname -m", timeout=10)
         arch = stdout.read().decode().strip() or "amd64"
+        
+        # 标准化操作系统名称
+        if "darwin" in os_type or "macos" in os_type:
+            os_name = "darwin"
+        else:
+            os_name = "linux"
+        
+        # 标准化架构名称
         if "aarch64" in arch or "arm64" in arch:
             arch = "arm64"
         else:
             arch = "amd64"
         
-        deployment.log = (deployment.log or '') + f"检测到系统架构: {arch}\n"
+        deployment.log = (deployment.log or '') + f"检测到系统: {os_name}, 架构: {arch}\n"
         deployment.save()
         
         # 从 GitHub Releases 下载 Agent 二进制文件
@@ -277,9 +287,9 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         from django.conf import settings
         
         # GitHub Releases URL
-        # 格式: https://github.com/OWNER/REPO/releases/download/latest/myx-agent-linux-{arch}
+        # 格式: https://github.com/OWNER/REPO/releases/download/latest/myx-agent-{os}-{arch}
         github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
-        binary_name = f'myx-agent-linux-{arch}'
+        binary_name = f'myx-agent-{os_name}-{arch}'
         github_url = f'https://github.com/{github_repo}/releases/download/latest/{binary_name}'
         
         # 临时文件路径

@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
-        goarch: [amd64, arm64]
         include:
           - goos: linux
             goarch: amd64
@@ -19,6 +17,12 @@ jobs:
           - goos: linux
             goarch: arm64
             artifact_name: myx-agent-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            artifact_name: myx-agent-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            artifact_name: myx-agent-darwin-arm64
 
     steps:
       - name: Checkout code

@@ -24,8 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
-        goarch: [amd64, arm64]
         include:
           - goos: linux
             goarch: amd64
@@ -33,6 +31,12 @@ jobs:
           - goos: linux
             goarch: arm64
             artifact_name: myx-agent-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            artifact_name: myx-agent-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            artifact_name: myx-agent-darwin-arm64
 
     steps:
       - name: Checkout code
@@ -86,6 +90,8 @@ jobs:
           files: |
             artifacts/myx-agent-linux-amd64/myx-agent-linux-amd64
             artifacts/myx-agent-linux-arm64/myx-agent-linux-arm64
+            artifacts/myx-agent-darwin-amd64/myx-agent-darwin-amd64
+            artifacts/myx-agent-darwin-arm64/myx-agent-darwin-arm64
           tag_name: latest
           name: Latest Agent Binaries
           body: |
@@ -93,6 +99,8 @@ jobs:
             
             - myx-agent-linux-amd64
             - myx-agent-linux-arm64
+            - myx-agent-darwin-amd64
+            - myx-agent-darwin-arm64
           draft: false
           prerelease: false
           make_latest: true

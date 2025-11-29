@@ -364,7 +364,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
@@ -899,23 +899,11 @@ const handleSubmit = async () => {
           ElMessage.success('添加成功，正在自动部署...')
         }
         dialogVisible.value = false
-        fetchProxies()
+        await fetchProxies()
         
-        // 如果是新建，定期刷新以更新部署状态
+        // 如果是新建，启动自动刷新
         if (!editingId.value) {
-          const refreshInterval = setInterval(() => {
-            fetchProxies()
-            // 如果所有代理都部署完成，停止刷新
-            const allDone = proxies.value.every(p => 
-              p.deployment_status === 'success' || p.deployment_status === 'failed'
-            )
-            if (allDone) {
-              clearInterval(refreshInterval)
-            }
-          }, 3000)
-          
-          // 30秒后停止自动刷新
-          setTimeout(() => clearInterval(refreshInterval), 30000)
+          startAutoRefresh()
         }
       } catch (error) {
         console.error('提交失败:', error)

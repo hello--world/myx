@@ -1,0 +1,54 @@
+---
+- name: Deploy Xray
+  hosts: target
+  become: yes
+  vars:
+    xray_version: "latest"
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Update system packages (RedHat)
+      yum:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Install required packages
+      package:
+        name:
+          - curl
+          - wget
+          - unzip
+        state: present
+
+    - name: Download Xray installation script
+      get_url:
+        url: https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+        dest: /tmp/install-xray.sh
+        mode: '0755'
+
+    - name: Execute Xray installation script
+      shell: bash /tmp/install-xray.sh
+      register: install_result
+
+    - name: Check Xray service status
+      systemd:
+        name: xray
+        state: started
+        enabled: yes
+
+    - name: Verify Xray installation
+      command: /usr/local/bin/xray version
+      register: xray_version
+      changed_when: false
+
+    - name: Display Xray version
+      debug:
+        msg: "Xray installed successfully: {{ xray_version.stdout }}"
+

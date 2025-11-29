@@ -1,0 +1,34 @@
+[project]
+name = "myx"
+version = "1.0.0"
+description = "Xray代理管理平台 - 基于Django + Vue.js的中心化Xray代理管理平台"
+requires-python = ">=3.10"
+dependencies = [
+    "Django==4.2.7",
+    "djangorestframework==3.14.0",
+    "django-cors-headers==4.3.1",
+    "django-cryptography==1.1",
+    "ansible==9.3.0",
+    "paramiko==3.4.0",
+    "cryptography==41.0.7",
+    "python-dotenv==1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-django",
+    "black",
+    "flake8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.uv]
+dev-dependencies = []
+

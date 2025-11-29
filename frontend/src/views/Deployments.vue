@@ -1,0 +1,518 @@
+<template>
+  <div class="deployments-page">
+    <el-card>
+      <template #header>
+        <div class="card-header">
+          <span>部署任务</span>
+          <div>
+            <el-button type="success" @click="handleQuickDeploy">一键部署</el-button>
+            <el-button type="primary" @click="handleAdd">创建部署任务</el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-table :data="deployments" v-loading="loading" style="width: 100%">
+        <el-table-column prop="name" label="任务名称" />
+        <el-table-column prop="server_name" label="服务器" />
+        <el-table-column prop="deployment_type" label="部署类型" width="120">
+          <template #default="{ row }">
+            <el-tag>{{ getDeploymentTypeText(row.deployment_type) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="connection_method" label="连接方式" width="100">
+          <template #default="{ row }">
+            <el-tag type="info">{{ getConnectionMethodText(row.connection_method || row.server?.connection_method) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="deployment_target" label="部署目标" width="100">
+          <template #default="{ row }">
+            <el-tag type="success">{{ getDeploymentTargetText(row.deployment_target || row.server?.deployment_target) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="started_at" label="开始时间" />
+        <el-table-column prop="completed_at" label="完成时间" />
+        <el-table-column label="操作" width="200">
+          <template #default="{ row }">
+            <el-button size="small" @click="handleViewLogs(row)">查看日志</el-button>
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-dialog
+      v-model="dialogVisible"
+      title="创建部署任务"
+      width="600px"
+      @close="resetForm"
+    >
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-width="120px"
+      >
+        <el-form-item label="任务名称" prop="name">
+          <el-input v-model="form.name" placeholder="请输入任务名称" />
+        </el-form-item>
+        <el-form-item label="服务器" prop="server">
+          <el-select v-model="form.server" placeholder="请选择服务器" style="width: 100%">
+            <el-option
+              v-for="server in servers"
+              :key="server.id"
+              :label="server.name"
+              :value="server.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="部署类型" prop="deployment_type">
+          <el-select v-model="form.deployment_type" placeholder="请选择部署类型" style="width: 100%">
+            <el-option label="Xray" value="xray" />
+            <el-option label="Caddy" value="caddy" />
+            <el-option label="Xray + Caddy" value="both" />
+            <el-option label="一键部署 (Agent + Xray + Caddy)" value="full" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="连接方式" prop="connection_method">
+          <el-select v-model="form.connection_method" placeholder="请选择连接方式（留空使用服务器默认）" style="width: 100%">
+            <el-option label="使用服务器默认" value="" />
+            <el-option label="SSH" value="ssh" />
+            <el-option label="Agent" value="agent" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="部署目标" prop="deployment_target">
+          <el-select v-model="form.deployment_target" placeholder="请选择部署目标（留空使用服务器默认）" style="width: 100%">
+            <el-option label="使用服务器默认" value="" />
+            <el-option label="宿主机" value="host" />
+            <el-option label="Docker" value="docker" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSubmit">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="logDialogVisible"
+      title="部署日志"
+      width="800px"
+    >
+      <el-input
+        v-model="currentLog"
+        type="textarea"
+        :rows="20"
+        readonly
+      />
+      <template #footer>
+        <el-button @click="logDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="quickDeployDialogVisible"
+      title="一键部署"
+      width="600px"
+      @close="resetQuickDeployForm"
+    >
+      <el-form
+        ref="quickDeployFormRef"
+        :model="quickDeployForm"
+        :rules="quickDeployRules"
+        label-width="120px"
+      >
+        <el-form-item label="服务器选择">
+          <el-radio-group v-model="quickDeployForm.inputMode" @change="handleInputModeChange">
+            <el-radio label="select">使用已有服务器</el-radio>
+            <el-radio label="input">直接输入SSH信息</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <template v-if="quickDeployForm.inputMode === 'select'">
+          <el-form-item label="选择服务器" prop="server_id">
+            <el-select v-model="quickDeployForm.server_id" placeholder="请选择服务器" style="width: 100%" @change="handleServerSelect">
+              <el-option
+                v-for="server in servers"
+                :key="server.id"
+                :label="`${server.name} (${server.host})`"
+                :value="server.id"
+              />
+            </el-select>
+          </el-form-item>
+        </template>
+
+        <template v-else>
+          <el-form-item label="服务器名称" prop="name">
+            <el-input v-model="quickDeployForm.name" placeholder="请输入服务器名称" />
+          </el-form-item>
+          <el-form-item label="主机地址" prop="host">
+            <el-input v-model="quickDeployForm.host" placeholder="请输入主机IP或域名" />
+          </el-form-item>
+          <el-form-item label="SSH端口" prop="port">
+            <el-input-number v-model="quickDeployForm.port" :min="1" :max="65535" />
+          </el-form-item>
+          <el-form-item label="SSH用户名" prop="username">
+            <el-input v-model="quickDeployForm.username" placeholder="请输入SSH用户名" />
+          </el-form-item>
+          <el-form-item label="SSH密码" prop="password">
+            <el-input
+              v-model="quickDeployForm.password"
+              type="password"
+              placeholder="请输入SSH密码（或使用私钥）"
+              show-password
+            />
+          </el-form-item>
+          <el-form-item label="SSH私钥" prop="private_key">
+            <el-input
+              v-model="quickDeployForm.private_key"
+              type="textarea"
+              :rows="4"
+              placeholder="请输入SSH私钥内容（可选）"
+            />
+          </el-form-item>
+        </template>
+
+        <el-form-item label="部署目标" prop="deployment_target">
+          <el-select v-model="quickDeployForm.deployment_target" placeholder="请选择部署目标" style="width: 100%">
+            <el-option label="宿主机" value="host" />
+            <el-option label="Docker" value="docker" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="quickDeployDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleQuickDeploySubmit" :loading="quickDeployLoading">开始部署</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import api from '@/api'
+
+const loading = ref(false)
+const deployments = ref([])
+const servers = ref([])
+const dialogVisible = ref(false)
+const logDialogVisible = ref(false)
+const quickDeployDialogVisible = ref(false)
+const quickDeployLoading = ref(false)
+const currentLog = ref('')
+const formRef = ref(null)
+const quickDeployFormRef = ref(null)
+
+const form = reactive({
+  name: '',
+  server: null,
+  deployment_type: 'xray',
+  connection_method: '',
+  deployment_target: ''
+})
+
+const rules = {
+  name: [{ required: true, message: '请输入任务名称', trigger: 'blur' }],
+  server: [{ required: true, message: '请选择服务器', trigger: 'change' }],
+  deployment_type: [{ required: true, message: '请选择部署类型', trigger: 'change' }]
+}
+
+const fetchDeployments = async () => {
+  loading.value = true
+  try {
+    const response = await api.get('/deployments/')
+    deployments.value = response.data.results || response.data
+  } catch (error) {
+    ElMessage.error('获取部署任务列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const fetchServers = async () => {
+  try {
+    const response = await api.get('/servers/')
+    servers.value = response.data.results || response.data
+  } catch (error) {
+    console.error('获取服务器列表失败:', error)
+  }
+}
+
+const quickDeployForm = reactive({
+  inputMode: 'select', // 'select' 或 'input'
+  server_id: null,
+  name: '',
+  host: '',
+  port: 22,
+  username: '',
+  password: '',
+  private_key: '',
+  deployment_target: 'host'
+})
+
+const quickDeployRules = {
+  server_id: [{ required: false }],
+  name: [{ required: false }],
+  host: [{ required: false }],
+  port: [{ required: false }],
+  username: [{ required: false }],
+  password: [{ required: false }],
+  deployment_target: [{ required: true, message: '请选择部署目标', trigger: 'change' }]
+}
+
+const getDeploymentTypeText = (type) => {
+  const map = {
+    xray: 'Xray',
+    caddy: 'Caddy',
+    both: 'Xray + Caddy',
+    full: '一键部署'
+  }
+  return map[type] || type
+}
+
+const getConnectionMethodText = (method) => {
+  const map = {
+    ssh: 'SSH',
+    agent: 'Agent'
+  }
+  return map[method] || method || '-'
+}
+
+const getDeploymentTargetText = (target) => {
+  const map = {
+    host: '宿主机',
+    docker: 'Docker'
+  }
+  return map[target] || target || '-'
+}
+
+const getStatusType = (status) => {
+  const map = {
+    pending: 'info',
+    running: 'warning',
+    success: 'success',
+    failed: 'danger'
+  }
+  return map[status] || 'info'
+}
+
+const getStatusText = (status) => {
+  const map = {
+    pending: '等待中',
+    running: '运行中',
+    success: '成功',
+    failed: '失败'
+  }
+  return map[status] || status
+}
+
+const handleAdd = () => {
+  resetForm()
+  dialogVisible.value = true
+}
+
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除这个部署任务吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await api.delete(`/deployments/${row.id}/`)
+    ElMessage.success('删除成功')
+    fetchDeployments()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+const handleViewLogs = async (row) => {
+  try {
+    const response = await api.get(`/deployments/${row.id}/logs/`)
+    currentLog.value = response.data.log || response.data.error_message || '暂无日志'
+    logDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error('获取日志失败')
+  }
+}
+
+const handleSubmit = async () => {
+  if (!formRef.value) return
+  
+  await formRef.value.validate(async (valid) => {
+    if (valid) {
+      try {
+        await api.post('/deployments/', form)
+        ElMessage.success('部署任务已创建')
+        dialogVisible.value = false
+        fetchDeployments()
+      } catch (error) {
+        ElMessage.error('创建失败')
+      }
+    }
+  })
+}
+
+const handleQuickDeploy = () => {
+  resetQuickDeployForm()
+  quickDeployDialogVisible.value = true
+}
+
+const handleInputModeChange = () => {
+  // 切换模式时重置表单验证
+  if (quickDeployFormRef.value) {
+    quickDeployFormRef.value.clearValidate()
+  }
+  // 更新验证规则
+  updateQuickDeployRules()
+}
+
+const handleServerSelect = (serverId) => {
+  // 选择服务器时，自动填充部署目标
+  const server = servers.value.find(s => s.id === serverId)
+  if (server) {
+    quickDeployForm.deployment_target = server.deployment_target || 'host'
+  }
+}
+
+const updateQuickDeployRules = () => {
+  if (quickDeployForm.inputMode === 'select') {
+    quickDeployRules.server_id = [{ required: true, message: '请选择服务器', trigger: 'change' }]
+    quickDeployRules.name = [{ required: false }]
+    quickDeployRules.host = [{ required: false }]
+    quickDeployRules.port = [{ required: false }]
+    quickDeployRules.username = [{ required: false }]
+    quickDeployRules.password = [{ required: false }]
+    quickDeployRules.private_key = [{ required: false }]
+  } else {
+    quickDeployRules.server_id = [{ required: false }]
+    quickDeployRules.name = [{ required: true, message: '请输入服务器名称', trigger: 'blur' }]
+    quickDeployRules.host = [{ required: true, message: '请输入主机地址', trigger: 'blur' }]
+    quickDeployRules.port = [{ required: true, message: '请输入SSH端口', trigger: 'blur' }]
+    quickDeployRules.username = [{ required: true, message: '请输入SSH用户名', trigger: 'blur' }]
+    // 密码或私钥至少提供一个
+    quickDeployRules.password = [{
+      validator: (rule, value, callback) => {
+        if (!value && !quickDeployForm.private_key) {
+          callback(new Error('请输入SSH密码或私钥'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur'
+    }]
+    quickDeployRules.private_key = [{ required: false }]
+  }
+}
+
+const handleQuickDeploySubmit = async () => {
+  if (!quickDeployFormRef.value) return
+  
+  // 手动验证密码或私钥（直接输入模式）
+  if (quickDeployForm.inputMode === 'input') {
+    if (!quickDeployForm.password && !quickDeployForm.private_key) {
+      ElMessage.warning('请输入SSH密码或私钥')
+      return
+    }
+  }
+  
+  // 根据输入模式构建请求数据
+  let requestData = {
+    deployment_target: quickDeployForm.deployment_target
+  }
+  
+  if (quickDeployForm.inputMode === 'select') {
+    // 使用已有服务器
+    if (!quickDeployForm.server_id) {
+      ElMessage.warning('请选择服务器')
+      return
+    }
+    requestData.server_id = quickDeployForm.server_id
+  } else {
+    // 直接输入SSH信息（不保存密码）
+    requestData.name = quickDeployForm.name
+    requestData.host = quickDeployForm.host
+    requestData.port = quickDeployForm.port
+    requestData.username = quickDeployForm.username
+    requestData.password = quickDeployForm.password || ''
+    requestData.private_key = quickDeployForm.private_key || ''
+  }
+  
+  await quickDeployFormRef.value.validate(async (valid) => {
+    if (valid) {
+      quickDeployLoading.value = true
+      try {
+        const response = await api.post('/deployments/quick-deploy/', requestData)
+        ElMessage.success('一键部署任务已创建')
+        quickDeployDialogVisible.value = false
+        fetchDeployments()
+        fetchServers()  // 刷新服务器列表（可能新增了服务器）
+      } catch (error) {
+        const errorMsg = error.response?.data?.error || error.response?.data?.message || '创建失败'
+        ElMessage.error(errorMsg)
+      } finally {
+        quickDeployLoading.value = false
+      }
+    }
+  })
+}
+
+const resetQuickDeployForm = () => {
+  Object.assign(quickDeployForm, {
+    inputMode: 'select',
+    server_id: null,
+    name: '',
+    host: '',
+    port: 22,
+    username: '',
+    password: '',
+    private_key: '',
+    deployment_target: 'host'
+  })
+  quickDeployFormRef.value?.resetFields()
+  updateQuickDeployRules()
+}
+
+const resetForm = () => {
+  Object.assign(form, {
+    name: '',
+    server: null,
+    deployment_type: 'xray',
+    connection_method: '',
+    deployment_target: ''
+  })
+  formRef.value?.resetFields()
+}
+
+onMounted(() => {
+  fetchDeployments()
+  fetchServers()
+  updateQuickDeployRules()
+  
+  // 每5秒刷新一次部署状态
+  setInterval(() => {
+    fetchDeployments()
+  }, 5000)
+})
+</script>
+
+<style scoped>
+.deployments-page {
+  padding: 20px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+</style>
+

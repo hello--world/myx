@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  backend:
+    image: ghcr.io/${GITHUB_REPO}/backend:latest
+    container_name: myx-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=${SECRET_KEY}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/db.sqlite3}
+      - AGENT_API_URL=${AGENT_API_URL:-http://backend:8000/api/agents}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+    volumes:
+      - backend-data:/app/data
+      - backend-media:/app/media
+      - backend-static:/app/staticfiles
+    networks:
+      - myx-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: ghcr.io/${GITHUB_REPO}/frontend:latest
+    container_name: myx-frontend
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - myx-network
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro
+    environment:
+      - VITE_API_URL=${API_URL:-http://localhost:8000/api}
+
+volumes:
+  backend-data:
+  backend-media:
+  backend-static:
+
+networks:
+  myx-network:
+    driver: bridge
+

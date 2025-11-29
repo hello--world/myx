@@ -1,0 +1,190 @@
+<template>
+  <div class="subscriptions-page">
+    <el-card>
+      <template #header>
+        <div class="card-header">
+          <span>订阅管理</span>
+          <el-button type="primary" @click="handleAdd">添加订阅</el-button>
+        </div>
+      </template>
+
+      <el-table :data="subscriptions" v-loading="loading" style="width: 100%">
+        <el-table-column prop="name" label="订阅名称" />
+        <el-table-column prop="format" label="格式" width="100">
+          <template #default="{ row }">
+            <el-tag>{{ row.format === 'v2ray' ? 'V2Ray' : 'Clash' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="subscription_url" label="订阅链接">
+          <template #default="{ row }">
+            <el-input
+              :value="row.subscription_url"
+              readonly
+              style="width: 100%"
+            >
+              <template #append>
+                <el-button @click="copyUrl(row.subscription_url)">复制</el-button>
+              </template>
+            </el-input>
+          </template>
+        </el-table-column>
+        <el-table-column prop="enabled" label="状态" width="100">
+          <template #default="{ row }">
+            <el-switch
+              v-model="row.enabled"
+              @change="handleToggle(row)"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150">
+          <template #default="{ row }">
+            <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-dialog
+      v-model="dialogVisible"
+      title="添加订阅"
+      width="500px"
+      @close="resetForm"
+    >
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-width="100px"
+      >
+        <el-form-item label="订阅名称" prop="name">
+          <el-input v-model="form.name" placeholder="请输入订阅名称" />
+        </el-form-item>
+        <el-form-item label="订阅格式" prop="format">
+          <el-select v-model="form.format" placeholder="请选择订阅格式">
+            <el-option label="V2Ray" value="v2ray" />
+            <el-option label="Clash" value="clash" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSubmit">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import api from '@/api'
+
+const loading = ref(false)
+const subscriptions = ref([])
+const dialogVisible = ref(false)
+const formRef = ref(null)
+
+const form = reactive({
+  name: '',
+  format: 'v2ray'
+})
+
+const rules = {
+  name: [{ required: true, message: '请输入订阅名称', trigger: 'blur' }],
+  format: [{ required: true, message: '请选择订阅格式', trigger: 'change' }]
+}
+
+const fetchSubscriptions = async () => {
+  loading.value = true
+  try {
+    const response = await api.get('/subscriptions/')
+    subscriptions.value = response.data.results || response.data
+  } catch (error) {
+    ElMessage.error('获取订阅列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const handleAdd = () => {
+  resetForm()
+  dialogVisible.value = true
+}
+
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除这个订阅吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await api.delete(`/subscriptions/${row.id}/`)
+    ElMessage.success('删除成功')
+    fetchSubscriptions()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  }
+}
+
+const handleToggle = async (row) => {
+  try {
+    await api.patch(`/subscriptions/${row.id}/`, { enabled: row.enabled })
+    ElMessage.success('更新成功')
+  } catch (error) {
+    ElMessage.error('更新失败')
+    row.enabled = !row.enabled
+  }
+}
+
+const copyUrl = (url) => {
+  navigator.clipboard.writeText(url).then(() => {
+    ElMessage.success('复制成功')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
+
+const handleSubmit = async () => {
+  if (!formRef.value) return
+  
+  await formRef.value.validate(async (valid) => {
+    if (valid) {
+      try {
+        await api.post('/subscriptions/', form)
+        ElMessage.success('添加成功')
+        dialogVisible.value = false
+        fetchSubscriptions()
+      } catch (error) {
+        ElMessage.error('添加失败')
+      }
+    }
+  })
+}
+
+const resetForm = () => {
+  Object.assign(form, {
+    name: '',
+    format: 'v2ray'
+  })
+  formRef.value?.resetFields()
+}
+
+onMounted(() => {
+  fetchSubscriptions()
+})
+</script>
+
+<style scoped>
+.subscriptions-page {
+  padding: 20px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+</style>
+

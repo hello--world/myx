@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  backend:
+    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/backend:latest
+    container_name: myx-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - DATABASE_URL=sqlite:///app/db.sqlite3
+      - AGENT_API_URL=http://backend:8000/api/agents
+      - GITHUB_REPO=${GITHUB_REPO:-your-username/myx}
+    volumes:
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./backend/media:/app/media
+      - ./backend/staticfiles:/app/staticfiles
+    networks:
+      - myx-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/frontend:latest
+    container_name: myx-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - myx-network
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+
+  agent:
+    image: ghcr.io/${GITHUB_REPO:-your-username/myx}/agent:latest
+    container_name: myx-agent
+    restart: unless-stopped
+    environment:
+      - API_URL=http://backend:8000/api/agents
+    volumes:
+      - /etc/myx-agent:/etc/myx-agent
+    networks:
+      - myx-network
+    # Note: Agent 需要服务器 ID 和 Token 才能运行
+    # 首次运行需要: docker run --rm -it -e SERVER_TOKEN=xxx -e API_URL=xxx agent:latest
+
+networks:
+  myx-network:
+    driver: bridge
+

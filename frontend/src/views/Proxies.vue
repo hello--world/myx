@@ -43,7 +43,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="310" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
             <el-button 
               size="small" 
@@ -63,7 +63,14 @@
             >
               重新部署
             </el-button>
-            <el-button size="small" type="info" @click="handleViewLog(row)" v-if="row.deployment_log && row.deployment_status !== 'running'">查看日志</el-button>
+            <el-button 
+              size="small" 
+              type="info" 
+              @click="handleViewLog(row)" 
+              v-if="row.deployment_log"
+            >
+              查看日志
+            </el-button>
             <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -377,10 +384,12 @@ const formRef = ref(null)
 const editingId = ref(null)
 const logDialogVisible = ref(false)
 const currentLog = ref('')
+const currentProxyId = ref(null)  // 当前查看日志的代理ID
 const activeTab = ref('basic')
 const redeploying = ref({})  // 记录正在重新部署的节点ID
 const stopping = ref({})  // 记录正在停止部署的节点ID
 let refreshInterval = null  // 自动刷新定时器
+let logRefreshInterval = null  // 日志自动刷新定时器
 
 // 基础表单
 const form = reactive({
@@ -762,8 +771,59 @@ const handleDelete = async (row) => {
 }
 
 const handleViewLog = (row) => {
+  currentProxyId.value = row.id
   currentLog.value = row.deployment_log || '暂无日志'
   logDialogVisible.value = true
+  
+  // 如果正在部署中，启动自动刷新日志
+  if (row.deployment_status === 'running') {
+    startLogAutoRefresh()
+  } else {
+    stopLogAutoRefresh()
+  }
+}
+
+const handleRefreshLog = async () => {
+  if (!currentProxyId.value) return
+  
+  await fetchProxies()
+  const proxy = proxies.value.find(p => p.id === currentProxyId.value)
+  if (proxy) {
+    currentLog.value = proxy.deployment_log || '暂无日志'
+    
+    // 如果部署已完成，停止自动刷新
+    if (proxy.deployment_status !== 'running') {
+      stopLogAutoRefresh()
+    }
+  }
+}
+
+const getProxyById = (id) => {
+  return proxies.value.find(p => p.id === id)
+}
+
+// 启动日志自动刷新（仅在日志对话框打开且部署中时）
+const startLogAutoRefresh = () => {
+  // 如果已经有定时器在运行，不重复启动
+  if (logRefreshInterval) {
+    return
+  }
+  
+  logRefreshInterval = setInterval(() => {
+    if (logDialogVisible.value && currentProxyId.value) {
+      handleRefreshLog()
+    } else {
+      stopLogAutoRefresh()
+    }
+  }, 2000)  // 每2秒刷新一次日志
+}
+
+// 停止日志自动刷新
+const stopLogAutoRefresh = () => {
+  if (logRefreshInterval) {
+    clearInterval(logRefreshInterval)
+    logRefreshInterval = null
+  }
 }
 
 const handleStopDeployment = async (row) => {
@@ -982,6 +1042,15 @@ onMounted(() => {
 // 组件卸载时清理定时器
 onUnmounted(() => {
   stopAutoRefresh()
+  stopLogAutoRefresh()
+})
+
+// 监听日志对话框关闭
+watch(logDialogVisible, (visible) => {
+  if (!visible) {
+    stopLogAutoRefresh()
+    currentProxyId.value = null
+  }
 })
 </script>
 

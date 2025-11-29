@@ -60,6 +60,7 @@ type CommandRequest struct {
 }
 
 type CommandResponse struct {
+	ID      int      `json:"id"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 	Timeout int      `json:"timeout"`
@@ -317,7 +318,7 @@ func encrypt(plaintext, key string) (string, error) {
 }
 
 // 解密函数
-func decrypt(ciphertext, key string) (string, error) {
+func decrypt(ciphertextStr, key string) (string, error) {
 	keyBytes := pbkdf2.Key([]byte(key), []byte("myx-salt"), 4096, 32, sha256.New)
 	block, err := aes.NewCipher(keyBytes)
 	if err != nil {
@@ -329,15 +330,19 @@ func decrypt(ciphertext, key string) (string, error) {
 		return "", err
 	}
 
-	data, err := base64.StdEncoding.DecodeString(ciphertext)
+	data, err := base64.StdEncoding.DecodeString(ciphertextStr)
 	if err != nil {
 		return "", err
 	}
 
 	nonceSize := gcm.NonceSize()
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	if len(data) < nonceSize {
+		return "", fmt.Errorf("ciphertext too short")
+	}
 
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	nonce, ciphertextBytes := data[:nonceSize], data[nonceSize:]
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertextBytes, nil)
 	if err != nil {
 		return "", err
 	}

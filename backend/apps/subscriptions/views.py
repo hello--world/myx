@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from django.http import HttpResponse
 from .models import Subscription
 from .serializers import SubscriptionSerializer
 from apps.proxies.models import Proxy
@@ -25,7 +26,7 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, pk=None):
         """获取订阅内容（通过token）"""
         subscription = get_object_or_404(Subscription, token=pk, enabled=True)
-        proxies = Proxy.objects.filter(created_by=subscription.created_by, status='active')
+        proxies = Proxy.objects.filter(created_by=subscription.created_by, status='active', enable=True)
 
         if subscription.format == 'v2ray':
             content = generate_v2ray_subscription(proxies, request)
@@ -34,5 +35,11 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
             content = generate_clash_subscription(proxies, request)
             content_type = 'application/json; charset=utf-8'
 
-        return Response(content, content_type=content_type)
+        # 使用 HttpResponse 直接返回内容，避免被 DRF 渲染成 HTML
+        response = HttpResponse(content, content_type=content_type)
+        # 添加 CORS 头，允许跨域访问
+        response['Access-Control-Allow-Origin'] = '*'
+        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
 

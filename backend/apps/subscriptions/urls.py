@@ -7,6 +7,7 @@ router.register(r'', SubscriptionViewSet, basename='subscription')
 
 urlpatterns = [
     path('', include(router.urls)),
-    path('<uuid:pk>/', SubscriptionViewSet.as_view({'get': 'retrieve'}), name='subscription-detail'),
+    # 支持 UUID 和字符串 token
+    path('<str:pk>/', SubscriptionViewSet.as_view({'get': 'retrieve'}), name='subscription-detail'),
 ]
 

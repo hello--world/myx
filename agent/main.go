@@ -346,6 +346,28 @@ func sendCommandResult(commandID int, success bool, stdout, stderr string, err e
 	}
 }
 
+// updateConfig 更新 Agent 配置（线程安全）
+func updateConfig(newConfig *AgentConfig) {
+	if newConfig == nil {
+		return
+	}
+	if newConfig.HeartbeatMinInterval > 0 {
+		config.HeartbeatMinInterval = newConfig.HeartbeatMinInterval
+	}
+	if newConfig.HeartbeatMaxInterval > 0 {
+		config.HeartbeatMaxInterval = newConfig.HeartbeatMaxInterval
+	}
+	if newConfig.PollMinInterval > 0 {
+		config.PollMinInterval = newConfig.PollMinInterval
+	}
+	if newConfig.PollMaxInterval > 0 {
+		config.PollMaxInterval = newConfig.PollMaxInterval
+	}
+	log.Printf("配置已更新: 心跳 %d-%d秒, 轮询 %d-%d秒",
+		config.HeartbeatMinInterval, config.HeartbeatMaxInterval,
+		config.PollMinInterval, config.PollMaxInterval)
+}
+
 // randomDuration 生成指定范围内的随机时间间隔
 func randomDuration(min, max time.Duration) time.Duration {
 	if min >= max {

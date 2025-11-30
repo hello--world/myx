@@ -153,25 +153,68 @@ restore_backup() {{
     
     if [ -n "$latest_binary" ] && [ -f "$latest_binary" ]; then
         report_progress "[恢复] 正在恢复备份..."
+        report_progress "[恢复] 备份文件: $latest_binary"
+        
+        # 停止Agent服务
         systemctl stop myx-agent || true
+        sleep 2
+        
+        # 恢复二进制文件
         cp "$latest_binary" /opt/myx-agent/myx-agent
         chmod +x /opt/myx-agent/myx-agent
+        report_progress "[恢复] 二进制文件已恢复"
         
+        # 恢复配置文件（如果存在）
         if [ -n "$latest_config" ] && [ -f "$latest_config" ]; then
             cp "$latest_config" /etc/myx-agent/config.json
-            report_progress "[恢复] 配置已恢复"
+            report_progress "[恢复] 配置文件已恢复"
         fi
         
+        # 重新加载systemd并启动服务
+        systemctl daemon-reload || true
         systemctl start myx-agent
-        sleep 3
         
-        if systemctl is-active --quiet myx-agent; then
-            report_progress "[恢复] 备份已恢复，Agent服务运行正常"
-            return 0
-        else
-            report_progress "[错误] 恢复后Agent服务仍无法启动"
-            return 1
-        fi
+        # 等待服务启动
+        report_progress "[恢复] 正在启动Agent服务..."
+        sleep 5
+        
+        # 验证服务状态
+        local retry_count=0
+        local max_retries=6
+        while [ $retry_count -lt $max_retries ]; do
+            if systemctl is-active --quiet myx-agent; then
+                report_progress "[恢复] Agent服务已启动"
+                
+                # 尝试重新注册Agent（如果配置存在）
+                if [ -f /etc/myx-agent/config.json ]; then
+                    API_URL_CONFIG=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                    SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                    if [ -n "$API_URL_CONFIG" ] && [ -n "$SERVER_TOKEN" ]; then
+                        report_progress "[恢复] 正在重新注册Agent..."
+                        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" > /dev/null 2>&1 || true
+                        sleep 2
+                    fi
+                fi
+                
+                # 最终验证
+                if systemctl is-active --quiet myx-agent; then
+                    report_progress "[恢复] 备份已恢复，Agent服务运行正常"
+                    return 0
+                fi
+            fi
+            
+            retry_count=$((retry_count + 1))
+            report_progress "[恢复] 等待Agent服务启动... ($retry_count/$max_retries)"
+            sleep 2
+        done
+        
+        # 如果仍然无法启动，检查服务状态
+        local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -5)
+        report_progress "[错误] 恢复后Agent服务仍无法启动"
+        report_progress "[错误] 服务状态: $service_status"
+        report_progress "[错误] 服务日志: $service_error"
+        return 1
     else
         report_progress "[错误] 未找到备份文件，无法恢复"
         return 1
@@ -537,12 +580,61 @@ restore_backup() {{
     local latest_backup=$(ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | head -1)
     if [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
         report_progress "[恢复] 正在恢复备份: $latest_backup"
+        
+        # 停止Agent服务
         systemctl stop myx-agent || true
+        sleep 2
+        
+        # 恢复二进制文件
         cp "$latest_backup" /opt/myx-agent/myx-agent
         chmod +x /opt/myx-agent/myx-agent
+        report_progress "[恢复] 二进制文件已恢复"
+        
+        # 重新加载systemd并启动服务
+        systemctl daemon-reload || true
         systemctl start myx-agent
-        report_progress "[恢复] 备份已恢复，Agent服务已重启"
-        return 0
+        
+        # 等待服务启动
+        report_progress "[恢复] 正在启动Agent服务..."
+        sleep 5
+        
+        # 验证服务状态（重试机制）
+        local retry_count=0
+        local max_retries=6
+        while [ $retry_count -lt $max_retries ]; do
+            if systemctl is-active --quiet myx-agent; then
+                report_progress "[恢复] Agent服务已启动"
+                
+                # 尝试重新注册Agent（如果配置存在）
+                if [ -f /etc/myx-agent/config.json ]; then
+                    API_URL_CONFIG=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                    SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                    if [ -n "$API_URL_CONFIG" ] && [ -n "$SERVER_TOKEN" ]; then
+                        report_progress "[恢复] 正在重新注册Agent..."
+                        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" > /dev/null 2>&1 || true
+                        sleep 2
+                    fi
+                fi
+                
+                # 最终验证
+                if systemctl is-active --quiet myx-agent; then
+                    report_progress "[恢复] 备份已恢复，Agent服务运行正常"
+                    return 0
+                fi
+            fi
+            
+            retry_count=$((retry_count + 1))
+            report_progress "[恢复] 等待Agent服务启动... ($retry_count/$max_retries)"
+            sleep 2
+        done
+        
+        # 如果仍然无法启动，检查服务状态
+        local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -5)
+        report_progress "[错误] 恢复后Agent服务仍无法启动"
+        report_progress "[错误] 服务状态: $service_status"
+        report_progress "[错误] 服务日志: $service_error"
+        return 1
     else
         report_progress "[错误] 未找到备份文件，无法恢复"
         return 1

@@ -18,9 +18,10 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-this-in-production'
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 # ALLOWED_HOSTS: 允许访问的主机列表
-# 开发环境默认允许 localhost 和 127.0.0.1
-# 如果需要从其他设备访问，可以设置为 '*' 或添加具体的 IP/域名
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,*').split(',')
+# 从环境变量读取，如果没有设置则使用默认值
+# 支持逗号分隔的多个主机，例如: localhost,127.0.0.1,your-domain.com
+default_allowed_hosts = 'localhost,127.0.0.1'
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default_allowed_hosts).split(',')
 
 # Application definition
 INSTALLED_APPS = [
@@ -129,12 +130,11 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-]
+# 从环境变量读取，如果没有设置则使用默认值
+# 支持逗号分隔的多个源，例如: http://localhost:5173,http://your-domain.com
+default_cors_origins = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+cors_origins_str = os.getenv('CORS_ALLOWED_ORIGINS', default_cors_origins)
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_origins_str.split(',') if origin.strip()]
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -142,12 +142,12 @@ CORS_ALLOW_CREDENTIALS = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-]
+# CSRF Trusted Origins
+# 从环境变量读取，如果没有设置则使用默认值
+# 支持逗号分隔的多个源，例如: http://localhost:5173,https://your-domain.com
+default_csrf_origins = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+csrf_origins_str = os.getenv('CSRF_TRUSTED_ORIGINS', default_csrf_origins)
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_origins_str.split(',') if origin.strip()]
 
 # Agent API URL (用于Agent注册)
 # 如果设置为 localhost，Agent 将无法从远程服务器连接

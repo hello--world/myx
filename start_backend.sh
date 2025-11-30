@@ -35,6 +35,10 @@ if ! uv run python manage.py shell -c "from apps.accounts.models import User; ex
     uv run python create_default_user.py
 fi
 
+export BACKEND_HOST=your-domain.com
+
+export AGENT_API_URL=http://your-domain.com/api/agents
+
 echo "启动Django开发服务器..."
 # 监听 0.0.0.0 以允许从其他设备访问
 uv run python manage.py runserver 0.0.0.0:8000

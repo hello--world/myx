@@ -99,8 +99,16 @@ uv sync --no-install-project
 ```env
 SECRET_KEY=your-secret-key-here
 DEBUG=True
-# 如果需要从其他设备访问，可以设置为 '*' 或添加具体的 IP
-ALLOWED_HOSTS=localhost,127.0.0.1,*
+
+# 允许访问的主机列表（逗号分隔）
+# 如果需要从其他设备访问，添加具体的 IP 或域名
+ALLOWED_HOSTS=localhost,127.0.0.1,your-domain.com
+
+# CORS 允许的源（逗号分隔）
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://your-domain.com
+
+# CSRF 信任的源（逗号分隔）
+CSRF_TRUSTED_ORIGINS=http://localhost:5173,https://your-domain.com
 
 # Agent 配置（重要！）
 # 如果部署到远程服务器，Agent 需要能够访问后端 API

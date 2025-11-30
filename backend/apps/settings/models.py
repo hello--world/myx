@@ -4,7 +4,7 @@ from django.conf import settings as django_settings
 
 class AppSettings(models.Model):
     """应用设置模型（单例模式）"""
-    site_title = models.CharField(max_length=200, default='MyX - 代理管理平台', verbose_name='网站标题')
+    site_title = models.CharField(max_length=200, default='MyX - 科学技术管理平台', verbose_name='网站标题')
     site_subtitle = models.CharField(max_length=200, blank=True, default='', verbose_name='网站副标题')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 

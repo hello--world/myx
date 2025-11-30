@@ -80,13 +80,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 
 const activeMenu = computed(() => route.path)
-const siteTitle = ref('MyX - 代理管理平台')
+const siteTitle = ref('MyX - 科学技术管理平台')
 const siteSubtitle = ref('')
 
 const loadSettings = async () => {
   try {
     const response = await api.get('/settings/')
-    siteTitle.value = response.data.site_title || 'MyX - 代理管理平台'
+    siteTitle.value = response.data.site_title || 'MyX - 科学技术管理平台'
     siteSubtitle.value = response.data.site_subtitle || ''
     document.title = siteTitle.value
   } catch (error) {
@@ -96,7 +96,7 @@ const loadSettings = async () => {
 
 const handleSettingsUpdate = (event) => {
   if (event.detail) {
-    siteTitle.value = event.detail.site_title || 'MyX - 代理管理平台'
+    siteTitle.value = event.detail.site_title || 'MyX - 科学技术管理平台'
     siteSubtitle.value = event.detail.site_subtitle || ''
     document.title = siteTitle.value
   }

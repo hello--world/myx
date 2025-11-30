@@ -1,7 +1,7 @@
 [project]
 name = "myx"
 version = "1.0.0"
-description = "Xray代理管理平台 - 基于Django + Vue.js的中心化Xray代理管理平台"
+description = "科学技术管理平台 - 基于Django + Vue.js的中心化科学技术管理平台"
 requires-python = ">=3.10"
 dependencies = [
     "Django==4.2.7",

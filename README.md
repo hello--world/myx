@@ -1,6 +1,6 @@
-# MyX - Xray代理管理平台
+# MyX - 科学技术管理平台
 
-一个基于Django + Vue.js的中心化Xray代理管理平台，支持通过SSH自动化部署Xray和Caddy，提供代理订阅管理和节点监控功能。
+一个基于Django + Vue.js的中心化科学技术管理平台，支持通过SSH自动化部署Xray和Caddy，提供代理订阅管理和节点监控功能。
 
 ## 功能特性
 

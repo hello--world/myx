@@ -3,7 +3,7 @@
     <el-card class="login-card">
       <template #header>
         <div class="card-header">
-          <h2>MyX - Xray代理管理平台</h2>
+          <h2>MyX - 科学技术管理平台</h2>
         </div>
       </template>
       <el-form

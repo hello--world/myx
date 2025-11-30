@@ -102,7 +102,7 @@ const handleReset = () => {
 }
 
 const updatePageTitle = () => {
-  document.title = form.site_title || 'MyX - 代理管理平台'
+  document.title = form.site_title || 'MyX - 科学技术管理平台'
 }
 
 onMounted(() => {

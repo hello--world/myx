@@ -1110,7 +1110,7 @@ fi
                         if int(time.time() - start_time) % 30 < 2:
                             logger.debug(f'日志文件不存在: {log_file_path}')
                     
-                    # 如果脚本已完成，更新部署任务状态
+                    # 如果脚本已完成，立即更新部署任务状态
                     if script_completed:
                         # 读取完整日志文件
                         if os.path.exists(log_file_path):
@@ -1136,16 +1136,29 @@ fi
                         
                         deployment.completed_at = timezone.now()
                         deployment.save()
+                        logger.info(f'部署任务已更新为完成状态: {deployment.status}, Agent状态: {agent.status}')
                         break
                     
-                    # 检查命令状态（作为备用检查）
-                    cmd.refresh_from_db()
-                    if cmd.status in ['success', 'failed']:
-                        # 如果命令已完成但脚本还没完成，等待一段时间
-                        if not script_completed:
-                            # 等待5秒后再次检查日志
-                            time.sleep(5)
-                            continue
+                    # 如果Agent已上线且日志中有完成标记，也认为成功（双重检查）
+                    agent.refresh_from_db()
+                    if agent.status == 'online' and os.path.exists(log_file_path):
+                        try:
+                            with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                full_log = f.read()
+                                if '[完成]' in full_log and 'Agent' in full_log and '成功' in full_log:
+                                    # 如果Agent在线且日志中有完成标记，等待2秒后再次确认
+                                    time.sleep(2)
+                                    agent.refresh_from_db()
+                                    if agent.status == 'online':
+                                        script_completed = True
+                                        script_success = True
+                                        logger.info(f'通过Agent状态和日志双重检查确认完成')
+                                        continue  # 继续到上面的script_completed处理逻辑
+                        except Exception as e:
+                            logger.debug(f'双重检查读取日志失败: {str(e)}')
+                    
+                    # 等待2秒后继续检查（提高检测频率）
+                    time.sleep(2)
                     
                     # 如果Agent离线超过2分钟，尝试通过SSH检查
                     if agent_offline_detected and agent_offline_time and (time.time() - agent_offline_time) > 120:

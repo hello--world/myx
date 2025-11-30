@@ -522,16 +522,22 @@ fi
                             try:
                                 with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                     full_log = f.read()
-                                    # 检查日志中是否有完成标记
-                                    if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log:
+                                    # 检查日志中是否有完成标记（支持多种完成消息格式）
+                                    if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log or '[完成] Agent重新部署成功，服务运行正常' in full_log or '[完成] Agent升级成功，服务运行正常' in full_log:
                                         script_completed = True
                                         script_success = True
-                                    elif '[错误]' in full_log and 'exit 1' in full_log:
-                                        # 检查是否有明确的错误退出
+                                        logger.info(f'检测到脚本完成标记，日志文件: {log_file_path}')
+                                    elif '[错误]' in full_log and ('exit 1' in full_log or 'exit 1' in full_log[-100:]):
+                                        # 检查是否有明确的错误退出（检查最后100个字符，因为exit可能在日志末尾）
                                         script_completed = True
                                         script_success = False
+                                        logger.info(f'检测到脚本错误退出，日志文件: {log_file_path}')
                             except Exception as e:
-                                logger.debug(f'读取日志文件失败: {str(e)}')
+                                logger.error(f'读取日志文件失败: {str(e)}, 路径: {log_file_path}')
+                        else:
+                            # 如果日志文件不存在，每30秒记录一次
+                            if int(time.time() - start_time) % 30 < 2:
+                                logger.debug(f'日志文件不存在: {log_file_path}')
                         
                         # 如果脚本已完成，更新部署任务状态
                         if script_completed:
@@ -1064,16 +1070,22 @@ fi
                         try:
                             with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 full_log = f.read()
-                                # 检查日志中是否有完成标记
-                                if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log:
+                                # 检查日志中是否有完成标记（支持多种完成消息格式）
+                                if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log or '[完成] Agent重新部署成功，服务运行正常' in full_log or '[完成] Agent升级成功，服务运行正常' in full_log:
                                     script_completed = True
                                     script_success = True
-                                elif '[错误]' in full_log and 'exit 1' in full_log:
-                                    # 检查是否有明确的错误退出
+                                    logger.info(f'检测到脚本完成标记，日志文件: {log_file_path}')
+                                elif '[错误]' in full_log and ('exit 1' in full_log or 'exit 1' in full_log[-100:]):
+                                    # 检查是否有明确的错误退出（检查最后100个字符，因为exit可能在日志末尾）
                                     script_completed = True
                                     script_success = False
+                                    logger.info(f'检测到脚本错误退出，日志文件: {log_file_path}')
                         except Exception as e:
-                            logger.debug(f'读取日志文件失败: {str(e)}')
+                            logger.error(f'读取日志文件失败: {str(e)}, 路径: {log_file_path}')
+                    else:
+                        # 如果日志文件不存在，每30秒记录一次
+                        if int(time.time() - start_time) % 30 < 2:
+                            logger.debug(f'日志文件不存在: {log_file_path}')
                     
                     # 如果脚本已完成，更新部署任务状态
                     if script_completed:

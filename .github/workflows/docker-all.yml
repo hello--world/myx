@@ -13,6 +13,8 @@ on:
       - 'agent/Dockerfile'
       - 'backend/Dockerfile'
       - 'frontend/Dockerfile'
+    tags:
+      - 'v*'  # tag push 不受 paths 限制，会自动触发并发布带版本号的镜像
   release:
     types: [created]
   workflow_dispatch:

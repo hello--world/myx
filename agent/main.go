@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -98,6 +99,9 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
+	// 初始化随机数种子
+	rand.Seed(time.Now().UnixNano())
+	
 	// 启动Agent
 	log.Println("Agent启动中...")
 	log.Printf("API地址: %s", config.APIURL)
@@ -301,6 +305,16 @@ func sendCommandResult(commandID int, success bool, stdout, stderr string, err e
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("发送命令结果失败: %d", resp.StatusCode)
 	}
+}
+
+// randomDuration 生成指定范围内的随机时间间隔
+func randomDuration(min, max time.Duration) time.Duration {
+	if min >= max {
+		return min
+	}
+	// 生成随机数（纳秒）
+	randomNanos := rand.Int63n(int64(max-min)) + int64(min)
+	return time.Duration(randomNanos)
 }
 
 // 加密函数（使用AES-256-GCM）

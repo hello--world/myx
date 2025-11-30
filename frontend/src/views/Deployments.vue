@@ -521,6 +521,11 @@ onMounted(() => {
   setInterval(() => {
     fetchDeployments()
   }, 5000)
+  
+  // 监听部署任务创建事件（从Agent页面触发）
+  window.addEventListener('deployment-created', () => {
+    fetchDeployments()
+  })
 })
 </script>
 

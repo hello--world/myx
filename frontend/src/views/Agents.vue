@@ -470,8 +470,17 @@ const upgradeAgent = async (agent) => {
       type: 'warning'
     })
 
-    await api.post(`/agents/${agent.id}/upgrade/`)
-    ElMessage.success('升级命令已下发，请稍后查看命令执行结果')
+    const response = await api.post(`/agents/${agent.id}/upgrade/`)
+    ElMessage.success({
+      message: 'Agent升级已启动，请查看部署任务',
+      duration: 5000,
+      showClose: true
+    })
+    // 可以跳转到部署任务页面
+    if (response.data.deployment_id) {
+      // 触发事件通知其他组件刷新部署任务列表
+      window.dispatchEvent(new CustomEvent('deployment-created', { detail: { deployment_id: response.data.deployment_id } }))
+    }
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error('升级失败: ' + (error.response?.data?.detail || error.message))
@@ -485,8 +494,16 @@ const redeployAgent = async (agent) => {
       type: 'warning'
     })
 
-    await api.post(`/agents/${agent.id}/redeploy/`)
-    ElMessage.success('重新部署已启动，请查看部署任务')
+    const response = await api.post(`/agents/${agent.id}/redeploy/`)
+    ElMessage.success({
+      message: 'Agent重新部署已启动，请查看部署任务',
+      duration: 5000,
+      showClose: true
+    })
+    // 触发事件通知其他组件刷新部署任务列表
+    if (response.data.deployment_id) {
+      window.dispatchEvent(new CustomEvent('deployment-created', { detail: { deployment_id: response.data.deployment_id } }))
+    }
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error('重新部署失败: ' + (error.response?.data?.detail || error.message))

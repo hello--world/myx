@@ -8,8 +8,6 @@ on:
     paths:
       - 'agent/**'
       - '.github/workflows/build-agent.yml'
-    tags:
-      - 'v*'  # 匹配所有 v 开头的标签，如 v1.0.0, v1.0.1 等
   pull_request:
     branches:
       - main
@@ -20,10 +18,19 @@ on:
     types: [created]
   workflow_dispatch:
 
+# 注意：tag push 会触发 push 事件，但 github.ref 会是 refs/tags/v1.0.0
+# 我们在 job 级别添加条件判断，如果是 tag push 就跳过 paths 检查
+
 jobs:
   build:
     name: Build Agent
     runs-on: ubuntu-latest
+    # 如果是 tag push (refs/tags/*)，跳过 paths 检查；否则需要匹配 paths
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'push' && (contains(github.event.head_commit.modified, 'agent/') || contains(github.event.head_commit.modified, '.github/workflows/build-agent.yml'))) ||
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         include:

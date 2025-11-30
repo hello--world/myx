@@ -134,21 +134,21 @@
       title="命令执行结果"
       width="800px"
     >
-      <el-descriptions :column="1" border>
+      <el-descriptions :column="1" border v-if="currentCommand">
         <el-descriptions-item label="命令">
-          {{ currentCommand?.command }}
+          {{ currentCommand.command }}
         </el-descriptions-item>
         <el-descriptions-item label="参数">
-          {{ Array.isArray(currentCommand?.args) ? currentCommand.args.join(' ') : currentCommand?.args }}
+          {{ Array.isArray(currentCommand.args) ? currentCommand.args.join(' ') : currentCommand.args || '' }}
         </el-descriptions-item>
         <el-descriptions-item label="状态">
-          <el-tag :type="getCommandStatusType(currentCommand?.status)">
-            {{ getCommandStatusText(currentCommand?.status) }}
+          <el-tag :type="getCommandStatusType(currentCommand.status)">
+            {{ getCommandStatusText(currentCommand.status) }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="执行结果">
           <el-input
-            v-model="currentCommand?.result"
+            :model-value="currentCommand?.result || ''"
             type="textarea"
             :rows="10"
             readonly
@@ -156,7 +156,7 @@
         </el-descriptions-item>
         <el-descriptions-item label="错误信息" v-if="currentCommand?.error">
           <el-input
-            v-model="currentCommand.error"
+            :model-value="currentCommand?.error || ''"
             type="textarea"
             :rows="5"
             readonly

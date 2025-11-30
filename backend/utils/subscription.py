@@ -15,14 +15,25 @@ def generate_v2ray_link(proxy: Proxy, request) -> str:
     stream_settings = proxy.get_stream_settings_dict()
     
     # 提取 UUID（根据协议不同，字段名可能不同）
+    # VLESS 和 VMess 的 settings 结构: {"clients": [{"id": "uuid", ...}]}
+    # Trojan 和 Shadowsocks 的 settings 结构: {"password": "..."}
     if proxy.protocol == 'vless':
-        uuid_str = settings.get('id') or settings.get('uuid', '')
+        clients = settings.get('clients', [])
+        if clients and isinstance(clients, list) and len(clients) > 0:
+            uuid_str = clients[0].get('id', '')
+        else:
+            uuid_str = settings.get('id') or settings.get('uuid', '')
     elif proxy.protocol == 'vmess':
-        uuid_str = settings.get('id') or settings.get('uuid', '')
+        clients = settings.get('clients', [])
+        if clients and isinstance(clients, list) and len(clients) > 0:
+            uuid_str = clients[0].get('id', '')
+        else:
+            uuid_str = settings.get('id') or settings.get('uuid', '')
     elif proxy.protocol == 'trojan':
         uuid_str = settings.get('password', '')
     elif proxy.protocol == 'shadowsocks':
         uuid_str = settings.get('password', '')
+        method = settings.get('method', 'aes-256-gcm')
     else:
         uuid_str = ''
     
@@ -142,11 +153,21 @@ def generate_clash_subscription(proxies, request) -> dict:
         settings = proxy.get_settings_dict()
         stream_settings = proxy.get_stream_settings_dict()
         
-        # 提取 UUID
+        # 提取 UUID（根据协议不同，字段名可能不同）
+        # VLESS 和 VMess 的 settings 结构: {"clients": [{"id": "uuid", ...}]}
+        # Trojan 和 Shadowsocks 的 settings 结构: {"password": "..."}
         if proxy.protocol == 'vless':
-            uuid_str = settings.get('id') or settings.get('uuid', '')
+            clients = settings.get('clients', [])
+            if clients and isinstance(clients, list) and len(clients) > 0:
+                uuid_str = clients[0].get('id', '')
+            else:
+                uuid_str = settings.get('id') or settings.get('uuid', '')
         elif proxy.protocol == 'vmess':
-            uuid_str = settings.get('id') or settings.get('uuid', '')
+            clients = settings.get('clients', [])
+            if clients and isinstance(clients, list) and len(clients) > 0:
+                uuid_str = clients[0].get('id', '')
+            else:
+                uuid_str = settings.get('id') or settings.get('uuid', '')
         elif proxy.protocol == 'trojan':
             uuid_str = settings.get('password', '')
         elif proxy.protocol == 'shadowsocks':

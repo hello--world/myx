@@ -28,14 +28,18 @@ const (
 	HeartbeatMinInterval = 30 * time.Second  // 最小心跳间隔：30秒
 	HeartbeatMaxInterval = 300 * time.Second // 最大心跳间隔：300秒
 	PollMinInterval      = 5 * time.Second   // 最小轮询间隔：5秒
-	PollMaxInterval      = 60 * time.Second   // 最大轮询间隔：60秒
+	PollMaxInterval      = 60 * time.Second  // 最大轮询间隔：60秒
 )
 
 type Config struct {
-	ServerToken string
-	SecretKey   string
-	APIURL      string
-	AgentToken  string
+	ServerToken           string
+	SecretKey             string
+	APIURL                string
+	AgentToken            string
+	HeartbeatMinInterval  int // 最小心跳间隔（秒）
+	HeartbeatMaxInterval  int // 最大心跳间隔（秒）
+	PollMinInterval       int // 最小轮询间隔（秒）
+	PollMaxInterval       int // 最大轮询间隔（秒）
 }
 
 type RegisterRequest struct {
@@ -72,6 +76,19 @@ type CommandResponse struct {
 type PollResponse struct {
 	Commands []CommandResponse `json:"commands"`
 	Status   string            `json:"status"`
+	Config   *AgentConfig      `json:"config,omitempty"`
+}
+
+type AgentConfig struct {
+	HeartbeatMinInterval int `json:"heartbeat_min_interval"`
+	HeartbeatMaxInterval int `json:"heartbeat_max_interval"`
+	PollMinInterval      int `json:"poll_min_interval"`
+	PollMaxInterval      int `json:"poll_max_interval"`
+}
+
+type HeartbeatResponse struct {
+	Status string       `json:"status"`
+	Config *AgentConfig `json:"config,omitempty"`
 }
 
 var (
@@ -101,7 +118,7 @@ func main() {
 
 	// 初始化随机数种子
 	rand.Seed(time.Now().UnixNano())
-	
+
 	// 启动Agent
 	log.Println("Agent启动中...")
 	log.Printf("API地址: %s", config.APIURL)
@@ -176,9 +193,9 @@ func heartbeatLoop() {
 		// 生成随机间隔：30-300秒
 		interval := randomDuration(HeartbeatMinInterval, HeartbeatMaxInterval)
 		log.Printf("下次心跳将在 %v 后发送", interval)
-		
+
 		time.Sleep(interval)
-		
+
 		if err := sendHeartbeat(); err != nil {
 			log.Printf("心跳失败: %v", err)
 		}
@@ -206,17 +223,32 @@ func sendHeartbeat() error {
 		return fmt.Errorf("心跳失败: %d", resp.StatusCode)
 	}
 
+	// 解析响应，更新配置
+	var heartbeatResp HeartbeatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&heartbeatResp); err == nil && heartbeatResp.Config != nil {
+		updateConfig(heartbeatResp.Config)
+	}
+
 	return nil
 }
 
 func commandLoop() {
 	for {
-		// 生成随机间隔：5-60秒
-		interval := randomDuration(PollMinInterval, PollMaxInterval)
+		// 从配置获取间隔范围（秒转纳秒）
+		minInterval := time.Duration(config.PollMinInterval) * time.Second
+		maxInterval := time.Duration(config.PollMaxInterval) * time.Second
+		if minInterval == 0 {
+			minInterval = PollMinInterval
+		}
+		if maxInterval == 0 {
+			maxInterval = PollMaxInterval
+		}
 		
 		commands, err := pollCommands()
 		if err != nil {
 			log.Printf("轮询命令失败: %v", err)
+			// 使用默认间隔
+			interval := randomDuration(minInterval, maxInterval)
 			time.Sleep(interval)
 			continue
 		}
@@ -225,6 +257,8 @@ func commandLoop() {
 			go executeCommand(cmd)
 		}
 		
+		// 生成随机间隔
+		interval := randomDuration(minInterval, maxInterval)
 		time.Sleep(interval)
 	}
 }
@@ -246,6 +280,11 @@ func pollCommands() ([]CommandResponse, error) {
 	var pollResp PollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pollResp); err != nil {
 		return nil, err
+	}
+
+	// 更新配置（如果服务器返回了新配置）
+	if pollResp.Config != nil {
+		updateConfig(pollResp.Config)
 	}
 
 	return pollResp.Commands, nil

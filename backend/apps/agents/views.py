@@ -100,7 +100,17 @@ def agent_heartbeat(request):
     agent.status = 'online'
     agent.save()
 
-    return Response({'status': 'ok'})
+    # 返回配置信息（让 Agent 可以动态调整间隔）
+    from django.conf import settings
+    return Response({
+        'status': 'ok',
+        'config': {
+            'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
+            'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
+            'poll_min_interval': getattr(settings, 'AGENT_POLL_MIN_INTERVAL', 5),
+            'poll_max_interval': getattr(settings, 'AGENT_POLL_MAX_INTERVAL', 60),
+        }
+    })
 
 
 @api_view(['POST'])
@@ -151,9 +161,17 @@ def agent_poll_commands(request):
     from .command_queue import CommandQueue
     commands = CommandQueue.get_pending_commands(agent)
     
+    # 返回命令和配置信息
+    from django.conf import settings
     return Response({
         'commands': commands,
-        'status': 'ok'
+        'status': 'ok',
+        'config': {
+            'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
+            'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
+            'poll_min_interval': getattr(settings, 'AGENT_POLL_MIN_INTERVAL', 5),
+            'poll_max_interval': getattr(settings, 'AGENT_POLL_MAX_INTERVAL', 60),
+        }
     })
 
 

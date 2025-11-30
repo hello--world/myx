@@ -201,4 +201,13 @@ BACKEND_HOST = os.getenv('BACKEND_HOST', None)
 # 格式: owner/repo
 GITHUB_REPO = os.getenv('GITHUB_REPO', 'hello--world/myx')
 
+# Agent 配置（用于控制 Agent 行为）
+# 心跳间隔（秒）：最小值和最大值
+AGENT_HEARTBEAT_MIN_INTERVAL = int(os.getenv('AGENT_HEARTBEAT_MIN_INTERVAL', '30'))  # 默认 30 秒
+AGENT_HEARTBEAT_MAX_INTERVAL = int(os.getenv('AGENT_HEARTBEAT_MAX_INTERVAL', '300'))  # 默认 300 秒
+
+# 轮询间隔（秒）：最小值和最大值
+AGENT_POLL_MIN_INTERVAL = int(os.getenv('AGENT_POLL_MIN_INTERVAL', '5'))  # 默认 5 秒
+AGENT_POLL_MAX_INTERVAL = int(os.getenv('AGENT_POLL_MAX_INTERVAL', '60'))  # 默认 60 秒
+
 

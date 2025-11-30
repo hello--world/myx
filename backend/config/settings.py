@@ -17,7 +17,10 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-this-in-production'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# ALLOWED_HOSTS: 允许访问的主机列表
+# 开发环境默认允许 localhost 和 127.0.0.1
+# 如果需要从其他设备访问，可以设置为 '*' 或添加具体的 IP/域名
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,*').split(',')
 
 # Application definition
 INSTALLED_APPS = [

@@ -36,5 +36,6 @@ if ! uv run python manage.py shell -c "from apps.accounts.models import User; ex
 fi
 
 echo "启动Django开发服务器..."
-uv run python manage.py runserver
+# 监听 0.0.0.0 以允许从其他设备访问
+uv run python manage.py runserver 0.0.0.0:8000
 

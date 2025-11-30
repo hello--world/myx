@@ -99,7 +99,8 @@ uv sync --no-install-project
 ```env
 SECRET_KEY=your-secret-key-here
 DEBUG=True
-ALLOWED_HOSTS=localhost,127.0.0.1
+# 如果需要从其他设备访问，可以设置为 '*' 或添加具体的 IP
+ALLOWED_HOSTS=localhost,127.0.0.1,*
 
 # Agent 配置（重要！）
 # 如果部署到远程服务器，Agent 需要能够访问后端 API

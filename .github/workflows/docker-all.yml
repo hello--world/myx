@@ -16,6 +16,22 @@ on:
   release:
     types: [created]
   workflow_dispatch:
+    inputs:
+      build_agent:
+        description: '构建 Agent 镜像'
+        required: false
+        default: 'true'
+        type: boolean
+      build_backend:
+        description: '构建 Backend 镜像'
+        required: false
+        default: 'true'
+        type: boolean
+      build_frontend:
+        description: '构建 Frontend 镜像'
+        required: false
+        default: 'true'
+        type: boolean
 
 env:
   REGISTRY: ghcr.io
@@ -39,6 +55,7 @@ jobs:
           - name: frontend
             context: .
             file: ./frontend/Dockerfile
+      fail-fast: false
 
     steps:
       - name: Checkout code
@@ -67,7 +84,35 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Check if service should be built
+        id: should_build
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            case "${{ matrix.service.name }}" in
+              agent)
+                if [ "${{ inputs.build_agent }}" == "false" ]; then
+                  echo "skip=true" >> $GITHUB_OUTPUT
+                  exit 0
+                fi
+                ;;
+              backend)
+                if [ "${{ inputs.build_backend }}" == "false" ]; then
+                  echo "skip=true" >> $GITHUB_OUTPUT
+                  exit 0
+                fi
+                ;;
+              frontend)
+                if [ "${{ inputs.build_frontend }}" == "false" ]; then
+                  echo "skip=true" >> $GITHUB_OUTPUT
+                  exit 0
+                fi
+                ;;
+            esac
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
       - name: Build and push
+        if: steps.should_build.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.service.context }}

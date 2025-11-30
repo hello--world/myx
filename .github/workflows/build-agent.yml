@@ -8,6 +8,8 @@ on:
     paths:
       - 'agent/**'
       - '.github/workflows/build-agent.yml'
+    tags:
+      - 'v*'  # 匹配所有 v 开头的标签，如 v1.0.0, v1.0.1 等
   pull_request:
     branches:
       - main
@@ -71,7 +73,7 @@ jobs:
     name: Upload to Release
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    if: github.event_name == 'release' || github.event_name == 'push'
     permissions:
       contents: write
 
@@ -88,8 +90,14 @@ jobs:
         id: release_tag
         run: |
           if [ "${{ github.event_name }}" == "release" ]; then
+            # 从 GitHub Release 事件获取
             echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
             echo "name=${{ github.event.release.name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # 从推送的 tag 获取（如 refs/tags/v1.0.0）
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+            echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+            echo "name=$TAG_NAME" >> $GITHUB_OUTPUT
           else
             # 从main/master分支推送时，使用latest标签
             echo "tag=latest" >> $GITHUB_OUTPUT

@@ -94,7 +94,13 @@ uv sync --no-install-project
 
 2. 配置环境变量（可选）：
 
-创建 `.env` 文件：
+从 `.env.example` 复制并创建 `.env` 文件：
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env` 文件，根据你的实际情况修改配置：
 
 ```env
 SECRET_KEY=your-secret-key-here

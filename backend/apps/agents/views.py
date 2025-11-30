@@ -326,30 +326,90 @@ report_progress "[3/7] 新版本验证成功（文件存在且可执行）"
 
 # 步骤4: 停止Agent服务
 report_progress "[4/7] 正在停止Agent服务..."
-systemctl stop myx-agent || true
+if systemctl stop myx-agent; then
+    report_progress "[4/7] Agent服务已停止"
+else
+    report_progress "[4/7] 警告: 停止Agent服务失败，继续执行"
+fi
 sleep 2
 
 # 步骤5: 替换二进制文件
 report_progress "[5/7] 正在替换Agent二进制文件..."
-mv /tmp/myx-agent /opt/myx-agent/myx-agent
-chmod +x /opt/myx-agent/myx-agent
+if mv /tmp/myx-agent /opt/myx-agent/myx-agent; then
+    report_progress "[5/7] 二进制文件移动成功"
+    if chmod +x /opt/myx-agent/myx-agent; then
+        report_progress "[5/7] 二进制文件权限设置成功"
+    else
+        report_progress "[5/7] 警告: 设置二进制文件权限失败"
+    fi
+else
+    report_progress "[错误] 替换二进制文件失败"
+    restore_backup || true
+    # 读取完整日志并输出
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    exit 1
+fi
 
 # 步骤6: 重新注册Agent（如果需要）
+report_progress "[6/7] 正在准备启动Agent服务..."
 API_URL_CONFIG=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
 if [ -n "$API_URL_CONFIG" ]; then
     SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
     if [ -n "$SERVER_TOKEN" ]; then
         report_progress "[6/7] 正在启动Agent服务并重新注册..."
-        systemctl start myx-agent
-        sleep 2
-        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" || true
+        if systemctl start myx-agent; then
+            report_progress "[6/7] Agent服务启动命令执行成功"
+            sleep 2
+            report_progress "[6/7] 正在重新注册Agent..."
+            /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" > /dev/null 2>&1 || report_progress "[6/7] 警告: 重新注册Agent失败，但服务已启动"
+        else
+            report_progress "[错误] 启动Agent服务失败"
+            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+            report_progress "[错误] $start_error"
+            restore_backup || true
+            # 读取完整日志并输出
+            if [ -f "$LOG_FILE" ]; then
+                echo "=== 完整执行日志 ==="
+                cat "$LOG_FILE"
+            fi
+            exit 1
+        fi
     else
         report_progress "[6/7] 正在启动Agent服务..."
-        systemctl start myx-agent
+        if systemctl start myx-agent; then
+            report_progress "[6/7] Agent服务启动命令执行成功"
+        else
+            report_progress "[错误] 启动Agent服务失败"
+            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+            report_progress "[错误] $start_error"
+            restore_backup || true
+            # 读取完整日志并输出
+            if [ -f "$LOG_FILE" ]; then
+                echo "=== 完整执行日志 ==="
+                cat "$LOG_FILE"
+            fi
+            exit 1
+        fi
     fi
 else
     report_progress "[6/7] 正在启动Agent服务..."
-    systemctl start myx-agent
+    if systemctl start myx-agent; then
+        report_progress "[6/7] Agent服务启动命令执行成功"
+    else
+        report_progress "[错误] 启动Agent服务失败"
+        local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+        report_progress "[错误] $start_error"
+        restore_backup || true
+        # 读取完整日志并输出
+        if [ -f "$LOG_FILE" ]; then
+            echo "=== 完整执行日志 ==="
+            cat "$LOG_FILE"
+        fi
+        exit 1
+    fi
 fi
 
 # 步骤7: 验证Agent服务

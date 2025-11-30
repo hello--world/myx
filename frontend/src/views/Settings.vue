@@ -32,6 +32,26 @@
           <div class="form-tip">副标题将显示在页面头部标题下方（可选）</div>
         </el-form-item>
 
+        <el-form-item label="网站图标" prop="site_icon">
+          <el-input
+            v-model="form.site_icon"
+            type="textarea"
+            :rows="10"
+            placeholder="请输入SVG图标代码（可选）"
+            clearable
+          />
+          <div class="form-tip">
+            输入SVG代码，将用作网站图标和favicon。留空则使用默认图标。
+            <el-button type="text" size="small" @click="showIconPreview = !showIconPreview" style="margin-left: 10px">
+              {{ showIconPreview ? '隐藏预览' : '显示预览' }}
+            </el-button>
+          </div>
+          <div v-if="showIconPreview && form.site_icon" class="icon-preview">
+            <div class="preview-label">图标预览：</div>
+            <div class="preview-container" v-html="form.site_icon"></div>
+          </div>
+        </el-form-item>
+
         <el-form-item>
           <el-button type="primary" @click="handleSubmit" :loading="saving">
             保存设置
@@ -50,9 +70,11 @@ import api from '@/api'
 
 const formRef = ref(null)
 const saving = ref(false)
+const showIconPreview = ref(false)
 const form = reactive({
   site_title: '',
-  site_subtitle: ''
+  site_subtitle: '',
+  site_icon: ''
 })
 
 const rules = {
@@ -66,10 +88,12 @@ const loadSettings = async () => {
     const response = await api.get('/settings/')
     Object.assign(form, {
       site_title: response.data.site_title || '',
-      site_subtitle: response.data.site_subtitle || ''
+      site_subtitle: response.data.site_subtitle || '',
+      site_icon: response.data.site_icon || ''
     })
-    // 更新页面标题
+    // 更新页面标题和图标
     updatePageTitle()
+    updateFavicon()
   } catch (error) {
     ElMessage.error('加载设置失败: ' + (error.response?.data?.detail || error.message))
   }
@@ -84,8 +108,9 @@ const handleSubmit = async () => {
       try {
         await api.put('/settings/1/', form)
         ElMessage.success('设置保存成功')
-        // 更新页面标题
+        // 更新页面标题和图标
         updatePageTitle()
+        updateFavicon()
         // 触发标题更新事件，让 MainLayout 也能更新
         window.dispatchEvent(new CustomEvent('settings-updated', { detail: form }))
       } catch (error) {
@@ -103,6 +128,33 @@ const handleReset = () => {
 
 const updatePageTitle = () => {
   document.title = form.site_title || 'MyX - 科学技术管理平台'
+}
+
+const updateFavicon = () => {
+  // 移除旧的favicon链接
+  const oldFavicon = document.querySelector('link[rel="icon"]')
+  if (oldFavicon) {
+    oldFavicon.remove()
+  }
+
+  if (form.site_icon && form.site_icon.trim()) {
+    // 创建新的favicon链接（使用SVG）
+    const link = document.createElement('link')
+    link.rel = 'icon'
+    link.type = 'image/svg+xml'
+    // 将SVG转换为data URI
+    const svgBlob = new Blob([form.site_icon], { type: 'image/svg+xml' })
+    const url = URL.createObjectURL(svgBlob)
+    link.href = url
+    document.head.appendChild(link)
+  } else {
+    // 使用默认图标
+    const link = document.createElement('link')
+    link.rel = 'icon'
+    link.type = 'image/svg+xml'
+    link.href = '/favicon.svg'
+    document.head.appendChild(link)
+  }
 }
 
 onMounted(() => {

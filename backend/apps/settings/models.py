@@ -6,6 +6,7 @@ class AppSettings(models.Model):
     """应用设置模型（单例模式）"""
     site_title = models.CharField(max_length=200, default='MyX - 科学技术管理平台', verbose_name='网站标题')
     site_subtitle = models.CharField(max_length=200, blank=True, default='', verbose_name='网站副标题')
+    site_icon = models.TextField(blank=True, default='', verbose_name='网站图标（SVG）')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:

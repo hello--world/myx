@@ -2,7 +2,7 @@
   <el-container class="layout-container">
     <el-header class="header">
       <div class="header-left">
-        <img src="/favicon.svg" alt="MyX Logo" class="logo" />
+        <div class="logo-container" v-html="siteIcon || defaultIcon"></div>
         <div class="title-container">
           <h2>{{ siteTitle }}</h2>
           <span v-if="siteSubtitle" class="subtitle">{{ siteSubtitle }}</span>
@@ -82,15 +82,46 @@ const authStore = useAuthStore()
 const activeMenu = computed(() => route.path)
 const siteTitle = ref('MyX - 科学技术管理平台')
 const siteSubtitle = ref('')
+const siteIcon = ref('')
+const defaultIcon = '<img src="/favicon.svg" alt="MyX Logo" class="logo" />'
 
 const loadSettings = async () => {
   try {
     const response = await api.get('/settings/')
     siteTitle.value = response.data.site_title || 'MyX - 科学技术管理平台'
     siteSubtitle.value = response.data.site_subtitle || ''
+    siteIcon.value = response.data.site_icon || ''
     document.title = siteTitle.value
+    updateFavicon()
   } catch (error) {
     console.error('加载设置失败:', error)
+  }
+}
+
+const updateFavicon = () => {
+  // 移除旧的favicon链接
+  const oldFavicon = document.querySelector('link[rel="icon"]')
+  if (oldFavicon) {
+    oldFavicon.remove()
+  }
+
+  if (siteIcon.value && siteIcon.value.trim()) {
+    // 创建新的favicon链接（使用SVG）
+    const link = document.createElement('link')
+    link.rel = 'icon'
+    link.type = 'image/svg+xml'
+    // 将SVG转换为data URI
+    const svgBlob = new Blob([siteIcon.value], { type: 'image/svg+xml' })
+    const url = URL.createObjectURL(svgBlob)
+    link.href = url
+    document.head.appendChild(link)
+  } else {
+    // 使用默认图标
+    const link = document.createElement('link')
+    link.rel = 'icon'
+    link.type = 'image/svg+xml'
+    link.href = '/favicon.svg'
+    document.head.appendChild(link)
   }
 }
 
@@ -98,7 +129,9 @@ const handleSettingsUpdate = (event) => {
   if (event.detail) {
     siteTitle.value = event.detail.site_title || 'MyX - 科学技术管理平台'
     siteSubtitle.value = event.detail.site_subtitle || ''
+    siteIcon.value = event.detail.site_icon || ''
     document.title = siteTitle.value
+    updateFavicon()
   }
 }
 
@@ -144,10 +177,23 @@ const handleCommand = async (command) => {
   gap: 12px;
 }
 
-.header-left .logo {
+.header-left .logo-container {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-left .logo-container :deep(svg) {
+  width: 32px;
+  height: 32px;
+}
+
+.header-left .logo-container :deep(img) {
+  width: 32px;
+  height: 32px;
 }
 
 .header-left .title-container {

@@ -7,6 +7,6 @@ class AppSettingsSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = AppSettings
-        fields = ['site_title', 'site_subtitle', 'updated_at']
+        fields = ['site_title', 'site_subtitle', 'site_icon', 'updated_at']
         read_only_fields = ['updated_at']
 

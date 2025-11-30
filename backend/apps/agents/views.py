@@ -647,7 +647,7 @@ fi
             host = request.get_host()
             api_url = f"{scheme}://{host}/api/agents"
         
-            upgrade_script = f"""#!/bin/bash
+        upgrade_script = f"""#!/bin/bash
 # 不使用 set -e，改为手动检查关键命令的返回值
 set +e
 

@@ -136,14 +136,18 @@ BACKUP_FILE="${{BACKUP_DIR}}/myx-agent-$(date +%Y%m%d_%H%M%S)"
 CONFIG_BACKUP="${{BACKUP_DIR}}/config-$(date +%Y%m%d_%H%M%S).json"
 LOG_FILE="/tmp/agent_redeploy_$$.log"
 
-# 上报进度函数
+# 上报进度函数（即使curl失败也继续执行）
 report_progress() {{
     local message="$1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" | tee -a "$LOG_FILE"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local log_entry="[$timestamp] $message"
+    # 始终写入日志文件
+    echo "$log_entry" | tee -a "$LOG_FILE"
+    # 尝试上报到后端（失败不影响执行）
     curl -s -X POST "${{API_URL}}/deployments/${{DEPLOYMENT_ID}}/progress/" \\
         -H "X-Agent-Token: ${{AGENT_TOKEN}}" \\
         -H "Content-Type: application/json" \\
-        -d "{{\\"log\\": \\"$message\\\\n\\"}}" > /dev/null 2>&1 || true
+        -d "{{\\"log\\": \\"$log_entry\\\\n\\"}}" > /dev/null 2>&1 || true
 }}
 
 # 恢复备份函数
@@ -342,10 +346,20 @@ if systemctl is-active --quiet myx-agent; then
     # 清理旧备份（保留最近5个）
     ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
     ls -t "${{BACKUP_DIR}}"/config-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+    # 读取完整日志并输出（供命令结果接口收集）
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 0
 else
     report_progress "[错误] Agent服务启动失败，状态异常"
     restore_backup
+    # 读取完整日志并输出（供命令结果接口收集）
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
 """
@@ -364,11 +378,14 @@ fi
             def _monitor_command():
                 import time
                 import logging
+                import os
                 logger = logging.getLogger(__name__)
                 max_wait = 600  # 最多等待10分钟
                 start_time = time.time()
                 agent_offline_detected = False
                 agent_offline_time = None
+                last_log_size = 0
+                log_file_path = '/tmp/agent_redeploy.log'
                 
                 while time.time() - start_time < max_wait:
                     try:
@@ -387,10 +404,36 @@ fi
                             agent_offline_detected = False
                             agent_offline_time = None
                         
+                        # 定期读取日志文件（每10秒读取一次）
+                        if os.path.exists(log_file_path):
+                            try:
+                                current_log_size = os.path.getsize(log_file_path)
+                                if current_log_size > last_log_size:
+                                    # 读取新增的日志内容
+                                    with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        f.seek(last_log_size)
+                                        new_log_content = f.read()
+                                        if new_log_content.strip():
+                                            deployment.log = (deployment.log or '') + new_log_content
+                                            deployment.save()
+                                        last_log_size = current_log_size
+                            except Exception as e:
+                                logger.debug(f'读取日志文件失败: {str(e)}')
+                        
                         # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
                         cmd.refresh_from_db()
                         if cmd.status in ['success', 'failed']:
-                            # 命令执行完成，更新部署任务状态
+                            # 命令执行完成，读取完整日志文件
+                            if os.path.exists(log_file_path):
+                                try:
+                                    with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        full_log = f.read()
+                                        if full_log.strip():
+                                            deployment.log = (deployment.log or '') + f"\n=== 完整执行日志 ===\n{full_log}\n"
+                                except Exception as e:
+                                    logger.debug(f'读取完整日志文件失败: {str(e)}')
+                            
+                            # 更新部署任务状态
                             deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
                             if cmd.result:
                                 deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
@@ -601,14 +644,18 @@ BACKUP_DIR="/opt/myx-agent/backup"
 BACKUP_FILE="${{BACKUP_DIR}}/myx-agent-$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="/tmp/agent_upgrade_$$.log"
 
-# 上报进度函数
+# 上报进度函数（即使curl失败也继续执行）
 report_progress() {{
     local message="$1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" | tee -a "$LOG_FILE"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local log_entry="[$timestamp] $message"
+    # 始终写入日志文件
+    echo "$log_entry" | tee -a "$LOG_FILE"
+    # 尝试上报到后端（失败不影响执行）
     curl -s -X POST "${{API_URL}}/deployments/${{DEPLOYMENT_ID}}/progress/" \\
         -H "X-Agent-Token: ${{AGENT_TOKEN}}" \\
         -H "Content-Type: application/json" \\
-        -d "{{\\"log\\": \\"$message\\\\n\\"}}" > /dev/null 2>&1 || true
+        -d "{{\\"log\\": \\"$log_entry\\\\n\\"}}" > /dev/null 2>&1 || true
 }}
 
 # 恢复备份函数
@@ -775,19 +822,34 @@ if systemctl start myx-agent; then
         report_progress "[完成] Agent升级成功，服务运行正常"
         # 清理旧备份（保留最近5个）
         ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+        # 读取完整日志并输出（供命令结果接口收集）
+        if [ -f "$LOG_FILE" ]; then
+            echo "=== 完整执行日志 ==="
+            cat "$LOG_FILE"
+        fi
         exit 0
     else
         report_progress "[错误] Agent服务启动失败，状态异常"
         restore_backup
+        # 读取完整日志并输出（供命令结果接口收集）
+        if [ -f "$LOG_FILE" ]; then
+            echo "=== 完整执行日志 ==="
+            cat "$LOG_FILE"
+        fi
         exit 1
     fi
 else
     report_progress "[错误] 无法启动Agent服务"
     restore_backup
+    # 读取完整日志并输出（供命令结果接口收集）
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
 """
-
+        
         import base64
         script_b64 = base64.b64encode(upgrade_script.encode('utf-8')).decode('utf-8')
         # 使用nohup在后台执行，并重定向输出到日志文件
@@ -802,12 +864,15 @@ fi
         def _monitor_command():
             import time
             import logging
+            import os
             logger = logging.getLogger(__name__)
             max_wait = 600  # 最多等待10分钟
             start_time = time.time()
             agent_offline_detected = False
             agent_offline_time = None
             last_check_time = 0
+            last_log_size = 0
+            log_file_path = '/tmp/agent_upgrade.log'
             
             while time.time() - start_time < max_wait:
                 try:
@@ -830,10 +895,36 @@ fi
                             agent_offline_detected = False
                             agent_offline_time = None
                     
+                    # 定期读取日志文件（每10秒读取一次）
+                    if os.path.exists(log_file_path):
+                        try:
+                            current_log_size = os.path.getsize(log_file_path)
+                            if current_log_size > last_log_size:
+                                # 读取新增的日志内容
+                                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    f.seek(last_log_size)
+                                    new_log_content = f.read()
+                                    if new_log_content.strip():
+                                        deployment.log = (deployment.log or '') + new_log_content
+                                        deployment.save()
+                                    last_log_size = current_log_size
+                        except Exception as e:
+                            logger.debug(f'读取日志文件失败: {str(e)}')
+                    
                     # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
                     cmd.refresh_from_db()
                     if cmd.status in ['success', 'failed']:
-                        # 命令执行完成，更新部署任务状态
+                        # 命令执行完成，读取完整日志文件
+                        if os.path.exists(log_file_path):
+                            try:
+                                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    full_log = f.read()
+                                    if full_log.strip():
+                                        deployment.log = (deployment.log or '') + f"\n=== 完整执行日志 ===\n{full_log}\n"
+                            except Exception as e:
+                                logger.debug(f'读取完整日志文件失败: {str(e)}')
+                        
+                        # 更新部署任务状态
                         deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
                         if cmd.result:
                             deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"

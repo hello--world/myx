@@ -172,10 +172,11 @@ echo "Agent重新部署完成"
             
             import base64
             script_b64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('utf-8')
+            # 使用nohup在后台执行，并重定向输出到日志文件
             cmd = CommandQueue.add_command(
                 agent=agent,
                 command='bash',
-                args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
+                args=['-c', f'echo "{script_b64}" | base64 -d | nohup bash > /tmp/agent_redeploy.log 2>&1 & echo $!'],
                 timeout=600
             )
 
@@ -393,8 +394,53 @@ echo "Agent重新部署完成"
 
         github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
         
+        # 获取API URL用于上报进度
+        from django.conf import settings
+        import os
+        api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
+        if not api_url:
+            # 从request构建API URL
+            scheme = 'https' if request.is_secure() else 'http'
+            host = request.get_host()
+            api_url = f"{scheme}://{host}/api/agents"
+        
         upgrade_script = f"""#!/bin/bash
 set -e
+
+# 配置
+API_URL="{api_url}"
+DEPLOYMENT_ID={deployment.id}
+AGENT_TOKEN="{agent.token}"
+BACKUP_DIR="/opt/myx-agent/backup"
+BACKUP_FILE="${{BACKUP_DIR}}/myx-agent-$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="/tmp/agent_upgrade_$$.log"
+
+# 上报进度函数
+report_progress() {{
+    local message="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" | tee -a "$LOG_FILE"
+    curl -s -X POST "${{API_URL}}/deployments/${{DEPLOYMENT_ID}}/progress/" \\
+        -H "X-Agent-Token: ${{AGENT_TOKEN}}" \\
+        -H "Content-Type: application/json" \\
+        -d "{{\\"log\\": \\"$message\\\\n\\"}}" > /dev/null 2>&1 || true
+}}
+
+# 恢复备份函数
+restore_backup() {{
+    local latest_backup=$(ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | head -1)
+    if [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
+        report_progress "[恢复] 正在恢复备份: $latest_backup"
+        systemctl stop myx-agent || true
+        cp "$latest_backup" /opt/myx-agent/myx-agent
+        chmod +x /opt/myx-agent/myx-agent
+        systemctl start myx-agent
+        report_progress "[恢复] 备份已恢复，Agent服务已重启"
+        return 0
+    else
+        report_progress "[错误] 未找到备份文件，无法恢复"
+        return 1
+    fi
+}}
 
 # 检测系统
 OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -408,36 +454,80 @@ fi
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
 GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
 
-echo "[1/4] 正在从 GitHub 下载最新 Agent..."
-if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
-    echo "Agent 下载失败"
-    exit 1
+# 创建备份目录
+mkdir -p "$BACKUP_DIR"
+
+# 步骤1: 备份现有Agent
+report_progress "[1/6] 正在备份现有Agent..."
+if [ -f /opt/myx-agent/myx-agent ]; then
+    cp /opt/myx-agent/myx-agent "$BACKUP_FILE"
+    chmod +x "$BACKUP_FILE"
+    report_progress "[1/6] 备份完成: $BACKUP_FILE"
+else
+    report_progress "[1/6] 警告: 未找到现有Agent，跳过备份"
 fi
 
-echo "[2/4] Agent 下载成功，准备替换..."
-chmod +x /tmp/myx-agent
+# 步骤2: 下载新版本
+report_progress "[2/6] 正在从 GitHub 下载最新 Agent..."
+if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
+    report_progress "[错误] Agent 下载失败"
+    restore_backup
+    exit 1
+fi
+report_progress "[2/6] Agent 下载成功"
 
-echo "[3/4] 正在停止Agent服务并替换..."
+# 步骤3: 验证新版本
+report_progress "[3/6] 正在验证新版本..."
+chmod +x /tmp/myx-agent
+if ! /tmp/myx-agent -version > /dev/null 2>&1; then
+    report_progress "[错误] 新版本验证失败"
+    restore_backup
+    exit 1
+fi
+report_progress "[3/6] 新版本验证成功"
+
+# 步骤4: 停止Agent服务
+report_progress "[4/6] 正在停止Agent服务..."
 systemctl stop myx-agent || true
+sleep 2
+
+# 步骤5: 替换二进制文件
+report_progress "[5/6] 正在替换Agent二进制文件..."
 mv /tmp/myx-agent /opt/myx-agent/myx-agent
 chmod +x /opt/myx-agent/myx-agent
 
-echo "[4/4] 正在启动Agent服务..."
-systemctl start myx-agent
-systemctl status myx-agent --no-pager || true
-echo "Agent 升级完成"
+# 步骤6: 启动Agent服务
+report_progress "[6/6] 正在启动Agent服务..."
+if systemctl start myx-agent; then
+    sleep 3
+    if systemctl is-active --quiet myx-agent; then
+        report_progress "[完成] Agent升级成功，服务运行正常"
+        # 清理旧备份（保留最近5个）
+        ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+        exit 0
+    else
+        report_progress "[错误] Agent服务启动失败，状态异常"
+        restore_backup
+        exit 1
+    fi
+else
+    report_progress "[错误] 无法启动Agent服务"
+    restore_backup
+    exit 1
+fi
 """
 
         import base64
         script_b64 = base64.b64encode(upgrade_script.encode('utf-8')).decode('utf-8')
+        # 使用nohup在后台执行，并重定向输出到日志文件
         cmd = CommandQueue.add_command(
             agent=agent,
             command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
+            args=['-c', f'echo "{script_b64}" | base64 -d | nohup bash > /tmp/agent_upgrade.log 2>&1 & echo $!'],
             timeout=600
         )
 
-        # 启动后台线程监控命令执行（支持Agent重启场景）
+        # 启动后台线程监控命令执行和Agent状态
         def _monitor_command():
             import time
             import logging
@@ -446,25 +536,30 @@ echo "Agent 升级完成"
             start_time = time.time()
             agent_offline_detected = False
             agent_offline_time = None
+            last_check_time = 0
             
             while time.time() - start_time < max_wait:
                 try:
-                    # 检查Agent状态
-                    agent.refresh_from_db()
-                    if agent.status == 'offline' and not agent_offline_detected:
-                        agent_offline_detected = True
-                        agent_offline_time = time.time()
-                        deployment.log = (deployment.log or '') + f"\n[进度] Agent已停止，等待重新启动...\n"
-                        deployment.save()
+                    # 检查Agent状态（每10秒检查一次）
+                    current_time = time.time()
+                    if current_time - last_check_time >= 10:
+                        agent.refresh_from_db()
+                        last_check_time = current_time
+                        
+                        if agent.status == 'offline' and not agent_offline_detected:
+                            agent_offline_detected = True
+                            agent_offline_time = time.time()
+                            deployment.log = (deployment.log or '') + f"\n[进度] Agent已停止，等待重新启动...\n"
+                            deployment.save()
+                        
+                        # 如果Agent重新上线，继续监控
+                        if agent_offline_detected and agent.status == 'online':
+                            deployment.log = (deployment.log or '') + f"\n[进度] Agent已重新上线，继续监控...\n"
+                            deployment.save()
+                            agent_offline_detected = False
+                            agent_offline_time = None
                     
-                    # 如果Agent重新上线，继续监控
-                    if agent_offline_detected and agent.status == 'online':
-                        deployment.log = (deployment.log or '') + f"\n[进度] Agent已重新上线，继续监控...\n"
-                        deployment.save()
-                        agent_offline_detected = False
-                        agent_offline_time = None
-                    
-                    # 检查命令状态
+                    # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
                     cmd.refresh_from_db()
                     if cmd.status in ['success', 'failed']:
                         # 命令执行完成，更新部署任务状态
@@ -474,10 +569,16 @@ echo "Agent 升级完成"
                         if cmd.error:
                             deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
                         
-                        if cmd.status == 'success':
-                            deployment.status = 'success'
+                        # 验证Agent是否正常运行
+                        agent.refresh_from_db()
+                        if agent.status == 'online':
+                            deployment.status = 'success' if cmd.status == 'success' else 'failed'
                         else:
+                            # 即使命令成功，如果Agent未上线，标记为失败
                             deployment.status = 'failed'
+                            deployment.error_message = 'Agent升级后未正常上线'
+                        
+                        if cmd.status == 'failed':
                             deployment.error_message = cmd.error or '升级失败'
                         
                         deployment.completed_at = timezone.now()
@@ -913,4 +1014,32 @@ def agent_command_result(request, command_id):
     except Exception as e:
         logger.error(f'[agent_command_result] ✗ 错误: {str(e)}')
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def agent_report_progress(request, deployment_id):
+    """Agent上报部署进度接口"""
+    token = request.headers.get('X-Agent-Token')
+    if not token:
+        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        agent = get_agent_by_token(token)
+    except Agent.DoesNotExist:
+        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+    
+    try:
+        from apps.deployments.models import Deployment
+        deployment = Deployment.objects.get(id=deployment_id, server=agent.server)
+    except Deployment.DoesNotExist:
+        return Response({'error': '部署任务不存在'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # 更新部署日志
+    progress_log = request.data.get('log', '')
+    if progress_log:
+        deployment.log = (deployment.log or '') + progress_log
+        deployment.save()
+    
+    return Response({'status': 'ok'})
 

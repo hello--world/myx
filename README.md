@@ -132,6 +132,14 @@ BACKEND_HOST=your-server-ip-or-domain.com
 
 # GitHub Repository（用于下载 Agent 二进制文件）
 GITHUB_REPO=hello--world/myx
+
+# ============================================
+# 前端配置（Vite）
+# ============================================
+
+# Vite 允许的主机列表（逗号分隔）
+# 用于解决 "Blocked request. This host is not allowed" 错误
+VITE_ALLOWED_HOSTS=your-domain.com
 ```
 
 3. 运行数据库迁移：

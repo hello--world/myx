@@ -100,6 +100,18 @@ uv sync --no-install-project
 SECRET_KEY=your-secret-key-here
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1
+
+# Agent 配置（重要！）
+# 如果部署到远程服务器，Agent 需要能够访问后端 API
+# 方式1: 直接设置完整的 API URL
+AGENT_API_URL=http://your-server-ip:8000/api/agents
+
+# 方式2: 设置后端主机地址（推荐）
+# 系统会自动构建 API URL: http://{BACKEND_HOST}:8000/api/agents
+BACKEND_HOST=your-server-ip-or-domain.com
+
+# GitHub Repository（用于下载 Agent 二进制文件）
+GITHUB_REPO=hello--world/myx
 ```
 
 3. 运行数据库迁移：
@@ -203,6 +215,24 @@ npm run dev
 3. **权限要求**: 部署Xray和Caddy需要sudo权限
 4. **防火墙**: 确保目标服务器的防火墙允许SSH连接
 5. **uv优势**: 使用uv可以更快地安装依赖，并且自动管理虚拟环境
+6. **Agent API地址**: 如果部署到远程服务器，必须配置 `BACKEND_HOST` 或 `AGENT_API_URL` 环境变量，确保 Agent 能够从目标服务器访问后端 API。Agent 会直接从 GitHub Releases 下载二进制文件，无需本地构建。
+
+### Agent 配置说明
+
+Agent 安装时会自动从 GitHub Releases 下载二进制文件，无需本地构建。但需要确保：
+
+1. **API 地址配置**: 
+   - 如果后端运行在 `localhost`，Agent 无法从远程服务器连接
+   - 必须设置 `BACKEND_HOST` 环境变量为可以从目标服务器访问的地址
+   - 例如：`BACKEND_HOST=192.168.1.100` 或 `BACKEND_HOST=myx.example.com`
+
+2. **网络访问**:
+   - 目标服务器需要能够访问 GitHub Releases（下载 Agent 二进制文件）
+   - 目标服务器需要能够访问后端 API（Agent 注册和通信）
+
+3. **防火墙规则**:
+   - 确保后端服务器的 8000 端口对目标服务器开放
+   - 如果使用 HTTPS，确保 443 端口开放
 
 ## 开发
 

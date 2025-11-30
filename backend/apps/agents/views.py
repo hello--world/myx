@@ -116,6 +116,7 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
             
             # 通过Agent执行重新部署脚本
+            # 注意：脚本会在停止Agent前先完成下载和准备，然后快速替换并启动
             redeploy_script = f"""#!/bin/bash
 set -e
 
@@ -131,35 +132,42 @@ fi
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
 GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
 
-echo "正在停止Agent服务..."
-systemctl stop myx-agent || true
-
-echo "正在从 GitHub 下载最新 Agent..."
-if curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
-    echo "Agent 下载成功"
-    chmod +x /tmp/myx-agent
-    mv /tmp/myx-agent /opt/myx-agent/myx-agent
-    chmod +x /opt/myx-agent/myx-agent
-    
-    # 重新注册Agent（如果需要）
-    API_URL=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
-    if [ -n "$API_URL" ]; then
-        SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
-        if [ -n "$SERVER_TOKEN" ]; then
-            echo "正在重新注册Agent..."
-            /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL" || true
-        fi
-    fi
-    
-    echo "正在启动Agent服务..."
-    systemctl start myx-agent
-    systemctl status myx-agent --no-pager
-    echo "Agent重新部署完成"
-else
+echo "[1/5] 正在从 GitHub 下载最新 Agent..."
+if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
     echo "Agent 下载失败"
-    systemctl start myx-agent || true
     exit 1
 fi
+
+echo "[2/5] Agent 下载成功，准备替换..."
+chmod +x /tmp/myx-agent
+
+echo "[3/5] 正在停止Agent服务..."
+systemctl stop myx-agent || true
+
+echo "[4/5] 正在替换Agent二进制文件..."
+mv /tmp/myx-agent /opt/myx-agent/myx-agent
+chmod +x /opt/myx-agent/myx-agent
+
+# 重新注册Agent（如果需要）
+API_URL=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
+if [ -n "$API_URL" ]; then
+    SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
+    if [ -n "$SERVER_TOKEN" ]; then
+        echo "[5/5] 正在启动Agent服务并重新注册..."
+        systemctl start myx-agent
+        sleep 2
+        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL" || true
+    else
+        echo "[5/5] 正在启动Agent服务..."
+        systemctl start myx-agent
+    fi
+else
+    echo "[5/5] 正在启动Agent服务..."
+    systemctl start myx-agent
+fi
+
+systemctl status myx-agent --no-pager || true
+echo "Agent重新部署完成"
 """
             
             import base64
@@ -171,18 +179,38 @@ fi
                 timeout=600
             )
 
-            # 启动后台线程监控命令执行
+            # 启动后台线程监控命令执行（支持Agent重启场景）
             def _monitor_command():
                 import time
+                import logging
+                logger = logging.getLogger(__name__)
                 max_wait = 600  # 最多等待10分钟
                 start_time = time.time()
+                agent_offline_detected = False
+                agent_offline_time = None
                 
                 while time.time() - start_time < max_wait:
                     try:
+                        # 检查Agent状态
+                        agent.refresh_from_db()
+                        if agent.status == 'offline' and not agent_offline_detected:
+                            agent_offline_detected = True
+                            agent_offline_time = time.time()
+                            deployment.log = (deployment.log or '') + f"\n[进度] Agent已停止，等待重新启动...\n"
+                            deployment.save()
+                        
+                        # 如果Agent重新上线，继续监控
+                        if agent_offline_detected and agent.status == 'online':
+                            deployment.log = (deployment.log or '') + f"\n[进度] Agent已重新上线，继续监控...\n"
+                            deployment.save()
+                            agent_offline_detected = False
+                            agent_offline_time = None
+                        
+                        # 检查命令状态
                         cmd.refresh_from_db()
                         if cmd.status in ['success', 'failed']:
                             # 命令执行完成，更新部署任务状态
-                            deployment.log = (deployment.log or '') + f"\n命令执行完成\n状态: {cmd.status}\n"
+                            deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
                             if cmd.result:
                                 deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
                             if cmd.error:
@@ -197,9 +225,57 @@ fi
                             deployment.completed_at = timezone.now()
                             deployment.save()
                             break
+                        
+                        # 如果Agent离线超过2分钟，尝试通过SSH检查
+                        if agent_offline_detected and agent_offline_time and (time.time() - agent_offline_time) > 120:
+                            # 尝试通过SSH检查Agent服务状态
+                            try:
+                                from apps.servers.utils import test_ssh_connection
+                                ssh_result = test_ssh_connection(
+                                    host=server.host,
+                                    port=server.port,
+                                    username=server.username,
+                                    password=server.password,
+                                    private_key=server.private_key
+                                )
+                                if ssh_result['success']:
+                                    # SSH连接成功，检查Agent服务状态
+                                    import paramiko
+                                    ssh = paramiko.SSHClient()
+                                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                                    ssh.connect(
+                                        server.host,
+                                        port=server.port,
+                                        username=server.username,
+                                        password=server.password,
+                                        key_filename=None,
+                                        pkey=server.private_key if server.private_key else None,
+                                        timeout=10
+                                    )
+                                    stdin, stdout, stderr = ssh.exec_command('systemctl is-active myx-agent')
+                                    service_status = stdout.read().decode().strip()
+                                    ssh.close()
+                                    
+                                    deployment.log = (deployment.log or '') + f"\n[检查] 通过SSH检查Agent服务状态: {service_status}\n"
+                                    deployment.save()
+                                    
+                                    # 如果服务已启动，等待Agent重新注册
+                                    if service_status == 'active':
+                                        deployment.log = (deployment.log or '') + f"\n[进度] Agent服务已启动，等待Agent重新注册...\n"
+                                        deployment.save()
+                                        # 重置离线检测，等待Agent重新上线
+                                        agent_offline_detected = False
+                                        agent_offline_time = None
+                            except Exception as e:
+                                logger.debug(f'通过SSH检查Agent状态失败: {str(e)}')
+                        
+                        # 更新进度日志
+                        elapsed = int(time.time() - start_time)
+                        if elapsed % 30 == 0:  # 每30秒更新一次进度
+                            deployment.log = (deployment.log or '') + f"\n[进度] 已等待 {elapsed} 秒，继续监控...\n"
+                            deployment.save()
+                            
                     except Exception as e:
-                        import logging
-                        logger = logging.getLogger(__name__)
                         logger.error(f'监控Agent重新部署命令失败: {str(e)}')
                     
                     time.sleep(5)  # 每5秒检查一次
@@ -212,6 +288,7 @@ fi
                             deployment.status = 'failed'
                             deployment.error_message = '重新部署超时'
                             deployment.completed_at = timezone.now()
+                            deployment.log = (deployment.log or '') + f"\n[超时] 重新部署超时（超过10分钟）\n"
                             deployment.save()
                     except:
                         pass
@@ -312,19 +389,24 @@ fi
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
 GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
 
-echo "正在从 GitHub 下载最新 Agent..."
-if curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
-    echo "Agent 下载成功"
-    chmod +x /tmp/myx-agent
-    systemctl stop myx-agent || true
-    mv /tmp/myx-agent /opt/myx-agent/myx-agent
-    chmod +x /opt/myx-agent/myx-agent
-    systemctl start myx-agent
-    echo "Agent 升级完成"
-else
+echo "[1/4] 正在从 GitHub 下载最新 Agent..."
+if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
     echo "Agent 下载失败"
     exit 1
 fi
+
+echo "[2/4] Agent 下载成功，准备替换..."
+chmod +x /tmp/myx-agent
+
+echo "[3/4] 正在停止Agent服务并替换..."
+systemctl stop myx-agent || true
+mv /tmp/myx-agent /opt/myx-agent/myx-agent
+chmod +x /opt/myx-agent/myx-agent
+
+echo "[4/4] 正在启动Agent服务..."
+systemctl start myx-agent
+systemctl status myx-agent --no-pager || true
+echo "Agent 升级完成"
 """
 
         import base64
@@ -336,18 +418,38 @@ fi
             timeout=600
         )
 
-        # 启动后台线程监控命令执行
+        # 启动后台线程监控命令执行（支持Agent重启场景）
         def _monitor_command():
             import time
+            import logging
+            logger = logging.getLogger(__name__)
             max_wait = 600  # 最多等待10分钟
             start_time = time.time()
+            agent_offline_detected = False
+            agent_offline_time = None
             
             while time.time() - start_time < max_wait:
                 try:
+                    # 检查Agent状态
+                    agent.refresh_from_db()
+                    if agent.status == 'offline' and not agent_offline_detected:
+                        agent_offline_detected = True
+                        agent_offline_time = time.time()
+                        deployment.log = (deployment.log or '') + f"\n[进度] Agent已停止，等待重新启动...\n"
+                        deployment.save()
+                    
+                    # 如果Agent重新上线，继续监控
+                    if agent_offline_detected and agent.status == 'online':
+                        deployment.log = (deployment.log or '') + f"\n[进度] Agent已重新上线，继续监控...\n"
+                        deployment.save()
+                        agent_offline_detected = False
+                        agent_offline_time = None
+                    
+                    # 检查命令状态
                     cmd.refresh_from_db()
                     if cmd.status in ['success', 'failed']:
                         # 命令执行完成，更新部署任务状态
-                        deployment.log = (deployment.log or '') + f"\n命令执行完成\n状态: {cmd.status}\n"
+                        deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
                         if cmd.result:
                             deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
                         if cmd.error:
@@ -362,9 +464,57 @@ fi
                         deployment.completed_at = timezone.now()
                         deployment.save()
                         break
+                    
+                    # 如果Agent离线超过2分钟，尝试通过SSH检查
+                    if agent_offline_detected and agent_offline_time and (time.time() - agent_offline_time) > 120:
+                        # 尝试通过SSH检查Agent服务状态
+                        try:
+                            from apps.servers.utils import test_ssh_connection
+                            ssh_result = test_ssh_connection(
+                                host=server.host,
+                                port=server.port,
+                                username=server.username,
+                                password=server.password,
+                                private_key=server.private_key
+                            )
+                            if ssh_result['success']:
+                                # SSH连接成功，检查Agent服务状态
+                                import paramiko
+                                ssh = paramiko.SSHClient()
+                                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                                ssh.connect(
+                                    server.host,
+                                    port=server.port,
+                                    username=server.username,
+                                    password=server.password,
+                                    key_filename=None,
+                                    pkey=server.private_key if server.private_key else None,
+                                    timeout=10
+                                )
+                                stdin, stdout, stderr = ssh.exec_command('systemctl is-active myx-agent')
+                                service_status = stdout.read().decode().strip()
+                                ssh.close()
+                                
+                                deployment.log = (deployment.log or '') + f"\n[检查] 通过SSH检查Agent服务状态: {service_status}\n"
+                                deployment.save()
+                                
+                                # 如果服务已启动，等待Agent重新注册
+                                if service_status == 'active':
+                                    deployment.log = (deployment.log or '') + f"\n[进度] Agent服务已启动，等待Agent重新注册...\n"
+                                    deployment.save()
+                                    # 重置离线检测，等待Agent重新上线
+                                    agent_offline_detected = False
+                                    agent_offline_time = None
+                        except Exception as e:
+                            logger.debug(f'通过SSH检查Agent状态失败: {str(e)}')
+                    
+                    # 更新进度日志
+                    elapsed = int(time.time() - start_time)
+                    if elapsed % 30 == 0:  # 每30秒更新一次进度
+                        deployment.log = (deployment.log or '') + f"\n[进度] 已等待 {elapsed} 秒，继续监控...\n"
+                        deployment.save()
+                        
                 except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
                     logger.error(f'监控Agent升级命令失败: {str(e)}')
                 
                 time.sleep(5)  # 每5秒检查一次
@@ -377,6 +527,7 @@ fi
                         deployment.status = 'failed'
                         deployment.error_message = '升级超时'
                         deployment.completed_at = timezone.now()
+                        deployment.log = (deployment.log or '') + f"\n[超时] 升级超时（超过10分钟）\n"
                         deployment.save()
                 except:
                     pass

@@ -9,27 +9,66 @@ def generate_v2ray_link(proxy: Proxy, request) -> str:
     """生成V2Ray订阅链接"""
     server_host = proxy.server.host
     port = proxy.port
-    uuid_str = str(proxy.uuid)
+    
+    # 从 JSON 配置中提取信息
+    settings = proxy.get_settings_dict()
+    stream_settings = proxy.get_stream_settings_dict()
+    
+    # 提取 UUID（根据协议不同，字段名可能不同）
+    if proxy.protocol == 'vless':
+        uuid_str = settings.get('id') or settings.get('uuid', '')
+    elif proxy.protocol == 'vmess':
+        uuid_str = settings.get('id') or settings.get('uuid', '')
+    elif proxy.protocol == 'trojan':
+        uuid_str = settings.get('password', '')
+    elif proxy.protocol == 'shadowsocks':
+        uuid_str = settings.get('password', '')
+    else:
+        uuid_str = ''
+    
+    if not uuid_str:
+        return ""
+    
+    # 提取传输设置
+    network = stream_settings.get('network', 'tcp')
+    ws_settings = stream_settings.get('wsSettings', {})
+    grpc_settings = stream_settings.get('grpcSettings', {})
+    path = ws_settings.get('path') or grpc_settings.get('serviceName', '')
+    host = ws_settings.get('headers', {}).get('Host', '')
+    
+    # 提取 TLS 设置
+    security = stream_settings.get('security', 'none')
+    tls_settings = stream_settings.get('tlsSettings', {})
+    reality_settings = stream_settings.get('realitySettings', {})
+    sni = tls_settings.get('serverName') or reality_settings.get('serverName', '')
+    enable_tls = security in ['tls', 'reality']
+    enable_reality = security == 'reality'
+    reality_public_key = reality_settings.get('publicKey', '')
+    reality_short_id = reality_settings.get('shortIds', [])
+    if reality_short_id and isinstance(reality_short_id, list):
+        reality_short_id = reality_short_id[0] if reality_short_id else ''
+    else:
+        reality_short_id = str(reality_short_id) if reality_short_id else ''
 
     if proxy.protocol == 'vless':
         link = f"vless://{uuid_str}@{server_host}:{port}"
         params = []
-        if proxy.transport and proxy.transport != 'tcp':
-            params.append(f"type={proxy.transport}")
-        if proxy.path:
-            params.append(f"path={quote(proxy.path)}")
-        if proxy.host:
-            params.append(f"host={quote(proxy.host)}")
-        if proxy.enable_tls:
+        if network and network != 'tcp':
+            params.append(f"type={network}")
+        if path:
+            params.append(f"path={quote(path)}")
+        if host:
+            params.append(f"host={quote(host)}")
+        if enable_tls:
             params.append("security=tls")
-            if proxy.sni:
-                params.append(f"sni={quote(proxy.sni)}")
-        if proxy.enable_reality:
+            if sni:
+                params.append(f"sni={quote(sni)}")
+        if enable_reality:
             params.append("fp=chrome")
-            if proxy.reality_public_key:
-                params.append(f"pbk={proxy.reality_public_key}")
-            if proxy.reality_short_id:
-                params.append(f"sid={proxy.reality_short_id}")
+            if reality_public_key:
+                params.append(f"pbk={reality_public_key}")
+            if reality_short_id:
+                params.append(f"sid={reality_short_id}")
         if params:
             link += "?" + "&".join(params)
         link += f"#{quote(proxy.name)}"
@@ -42,13 +81,38 @@ def generate_v2ray_link(proxy: Proxy, request) -> str:
             "id": uuid_str,
             "aid": "0",
             "scy": "auto",
-            "net": proxy.transport or "tcp",
+            "net": network or "tcp",
             "type": "none",
-            "host": proxy.host or "",
-            "path": proxy.path or "",
-            "tls": "tls" if proxy.enable_tls else "none"
+            "host": host or "",
+            "path": path or "",
+            "tls": "tls" if enable_tls else "none"
         }
         link = "vmess://" + base64.b64encode(json.dumps(vmess_config).encode()).decode()
+    elif proxy.protocol == 'trojan':
+        link = f"trojan://{uuid_str}@{server_host}:{port}"
+        params = []
+        if network and network != 'tcp':
+            params.append(f"type={network}")
+        if path:
+            params.append(f"path={quote(path)}")
+        if host:
+            params.append(f"host={quote(host)}")
+        if enable_tls:
+            params.append("security=tls")
+            if sni:
+                params.append(f"sni={quote(sni)}")
+        if params:
+            link += "?" + "&".join(params)
+        link += f"#{quote(proxy.name)}"
+    elif proxy.protocol == 'shadowsocks':
+        method = settings.get('method', 'aes-256-gcm')
+        link = f"ss://{base64.b64encode(f'{method}:{uuid_str}'.encode()).decode()}@{server_host}:{port}"
+        params = []
+        if enable_tls:
+            params.append("tls=true")
+        if params:
+            link += "?" + "&".join(params)
+        link += f"#{quote(proxy.name)}"
     else:
         return ""
 
@@ -73,7 +137,47 @@ def generate_clash_subscription(proxies, request) -> dict:
     for proxy in proxies:
         server_host = proxy.server.host
         port = proxy.port
-        uuid_str = str(proxy.uuid)
+        
+        # 从 JSON 配置中提取信息
+        settings = proxy.get_settings_dict()
+        stream_settings = proxy.get_stream_settings_dict()
+        
+        # 提取 UUID
+        if proxy.protocol == 'vless':
+            uuid_str = settings.get('id') or settings.get('uuid', '')
+        elif proxy.protocol == 'vmess':
+            uuid_str = settings.get('id') or settings.get('uuid', '')
+        elif proxy.protocol == 'trojan':
+            uuid_str = settings.get('password', '')
+        elif proxy.protocol == 'shadowsocks':
+            uuid_str = settings.get('password', '')
+            method = settings.get('method', 'aes-256-gcm')
+        else:
+            uuid_str = ''
+        
+        if not uuid_str:
+            continue
+        
+        # 提取传输设置
+        network = stream_settings.get('network', 'tcp')
+        ws_settings = stream_settings.get('wsSettings', {})
+        grpc_settings = stream_settings.get('grpcSettings', {})
+        path = ws_settings.get('path') or grpc_settings.get('serviceName', '')
+        host = ws_settings.get('headers', {}).get('Host', '')
+        
+        # 提取 TLS 设置
+        security = stream_settings.get('security', 'none')
+        tls_settings = stream_settings.get('tlsSettings', {})
+        reality_settings = stream_settings.get('realitySettings', {})
+        sni = tls_settings.get('serverName') or reality_settings.get('serverName', '')
+        enable_tls = security in ['tls', 'reality']
+        enable_reality = security == 'reality'
+        reality_public_key = reality_settings.get('publicKey', '')
+        reality_short_id = reality_settings.get('shortIds', [])
+        if reality_short_id and isinstance(reality_short_id, list):
+            reality_short_id = reality_short_id[0] if reality_short_id else ''
+        else:
+            reality_short_id = str(reality_short_id) if reality_short_id else ''
 
         if proxy.protocol == 'vless':
             proxy_config = {
@@ -82,31 +186,31 @@ def generate_clash_subscription(proxies, request) -> dict:
                 "server": server_host,
                 "port": port,
                 "uuid": uuid_str,
-                "tls": proxy.enable_tls,
-                "network": proxy.transport or "tcp",
+                "tls": enable_tls,
+                "network": network or "tcp",
                 "udp": True
             }
 
-            if proxy.transport == 'ws':
+            if network == 'ws':
                 proxy_config["ws-opts"] = {
-                    "path": proxy.path or "/"
+                    "path": path or "/"
                 }
-                if proxy.host:
+                if host:
                     proxy_config["ws-opts"]["headers"] = {
-                        "Host": proxy.host
+                        "Host": host
                     }
-            elif proxy.transport == 'grpc':
+            elif network == 'grpc':
                 proxy_config["grpc-opts"] = {
-                    "grpc-service-name": proxy.path or ""
+                    "grpc-service-name": path or ""
                 }
 
-            if proxy.enable_tls:
-                if proxy.sni:
-                    proxy_config["servername"] = proxy.sni
-                if proxy.enable_reality:
+            if enable_tls:
+                if sni:
+                    proxy_config["servername"] = sni
+                if enable_reality:
                     proxy_config["reality-opts"] = {
-                        "public-key": proxy.reality_public_key or "",
-                        "short-id": proxy.reality_short_id or ""
+                        "public-key": reality_public_key or "",
+                        "short-id": reality_short_id or ""
                     }
 
             proxies_config.append(proxy_config)
@@ -120,22 +224,59 @@ def generate_clash_subscription(proxies, request) -> dict:
                 "uuid": uuid_str,
                 "alterId": 0,
                 "cipher": "auto",
-                "tls": proxy.enable_tls,
-                "network": proxy.transport or "tcp"
+                "tls": enable_tls,
+                "network": network or "tcp"
             }
 
-            if proxy.transport == 'ws':
+            if network == 'ws':
                 proxy_config["ws-opts"] = {
-                    "path": proxy.path or "/"
+                    "path": path or "/"
                 }
-                if proxy.host:
+                if host:
                     proxy_config["ws-opts"]["headers"] = {
-                        "Host": proxy.host
+                        "Host": host
                     }
 
-            if proxy.enable_tls and proxy.sni:
-                proxy_config["servername"] = proxy.sni
+            if enable_tls and sni:
+                proxy_config["servername"] = sni
 
+            proxies_config.append(proxy_config)
+        
+        elif proxy.protocol == 'trojan':
+            proxy_config = {
+                "name": proxy.name,
+                "type": "trojan",
+                "server": server_host,
+                "port": port,
+                "password": uuid_str,
+                "tls": enable_tls,
+                "network": network or "tcp"
+            }
+            
+            if network == 'ws':
+                proxy_config["ws-opts"] = {
+                    "path": path or "/"
+                }
+                if host:
+                    proxy_config["ws-opts"]["headers"] = {
+                        "Host": host
+                    }
+            
+            if enable_tls and sni:
+                proxy_config["sni"] = sni
+            
+            proxies_config.append(proxy_config)
+        
+        elif proxy.protocol == 'shadowsocks':
+            proxy_config = {
+                "name": proxy.name,
+                "type": "ss",
+                "server": server_host,
+                "port": port,
+                "cipher": method,
+                "password": uuid_str
+            }
+            
             proxies_config.append(proxy_config)
 
     config = {

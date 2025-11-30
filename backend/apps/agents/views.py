@@ -90,12 +90,28 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         agent = self.get_object()
         server = agent.server
 
+        # 创建部署任务
+        from apps.deployments.models import Deployment
+        from django.utils import timezone
+        
+        deployment = Deployment.objects.create(
+            name=f"重新部署Agent - {server.name}",
+            server=server,
+            deployment_type='agent',
+            connection_method='agent' if (server.connection_method == 'agent' and agent.status == 'online') else 'ssh',
+            deployment_target=server.deployment_target or 'host',
+            status='running',
+            started_at=timezone.now(),
+            created_by=request.user
+        )
+
         # 根据服务器连接方式选择部署方法
         if server.connection_method == 'agent' and agent.status == 'online':
             # 如果已经是Agent连接且Agent在线，通过Agent执行重新部署
             from .command_queue import CommandQueue
             from django.conf import settings
             import os
+            import threading
             
             github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
             
@@ -154,31 +170,71 @@ fi
                 args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
                 timeout=600
             )
+
+            # 启动后台线程监控命令执行
+            def _monitor_command():
+                import time
+                max_wait = 600  # 最多等待10分钟
+                start_time = time.time()
+                
+                while time.time() - start_time < max_wait:
+                    try:
+                        cmd.refresh_from_db()
+                        if cmd.status in ['success', 'failed']:
+                            # 命令执行完成，更新部署任务状态
+                            deployment.log = (deployment.log or '') + f"\n命令执行完成\n状态: {cmd.status}\n"
+                            if cmd.result:
+                                deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
+                            if cmd.error:
+                                deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
+                            
+                            if cmd.status == 'success':
+                                deployment.status = 'success'
+                            else:
+                                deployment.status = 'failed'
+                                deployment.error_message = cmd.error or '重新部署失败'
+                            
+                            deployment.completed_at = timezone.now()
+                            deployment.save()
+                            break
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f'监控Agent重新部署命令失败: {str(e)}')
+                    
+                    time.sleep(5)  # 每5秒检查一次
+                
+                # 如果超时仍未完成
+                if deployment.status == 'running':
+                    try:
+                        cmd.refresh_from_db()
+                        if cmd.status not in ['success', 'failed']:
+                            deployment.status = 'failed'
+                            deployment.error_message = '重新部署超时'
+                            deployment.completed_at = timezone.now()
+                            deployment.save()
+                    except:
+                        pass
+
+            thread = threading.Thread(target=_monitor_command)
+            thread.daemon = True
+            thread.start()
             
-            from .serializers import AgentCommandDetailSerializer
-            serializer = AgentCommandDetailSerializer(cmd)
             return Response({
-                'message': 'Agent重新部署命令已下发（通过Agent执行）',
-                'command_id': cmd.id,
-                'command': serializer.data
+                'message': 'Agent重新部署已启动，请查看部署任务',
+                'deployment_id': deployment.id,
+                'command_id': cmd.id
             }, status=status.HTTP_202_ACCEPTED)
         else:
             # 使用SSH重新部署
             # 检查服务器是否有SSH凭据
             if not server.password and not server.private_key:
+                # 部署任务已创建，更新状态为失败
+                deployment.status = 'failed'
+                deployment.error_message = '服务器缺少SSH凭据，无法重新部署。请先配置SSH密码或私钥。'
+                deployment.completed_at = timezone.now()
+                deployment.save()
                 return Response({'error': '服务器缺少SSH凭据，无法重新部署。请先配置SSH密码或私钥。'}, status=status.HTTP_400_BAD_REQUEST)
-
-            # 创建部署任务
-            from apps.deployments.models import Deployment
-            deployment = Deployment.objects.create(
-                name=f"重新部署Agent - {server.name}",
-                server=server,
-                deployment_type='agent',
-                connection_method='ssh',
-                deployment_target=server.deployment_target or 'host',
-                status='running',
-                created_by=request.user
-            )
 
             # 异步执行部署
             from apps.deployments.tasks import install_agent_via_ssh
@@ -218,15 +274,29 @@ fi
         agent = self.get_object()
         server = agent.server
 
+        # 创建部署任务
+        from apps.deployments.models import Deployment
+        from django.utils import timezone
+        
+        deployment = Deployment.objects.create(
+            name=f"升级Agent - {server.name}",
+            server=server,
+            deployment_type='agent',
+            connection_method='agent',
+            deployment_target=server.deployment_target or 'host',
+            status='running',
+            started_at=timezone.now(),
+            created_by=request.user
+        )
+
         # 通过Agent执行升级命令
         from .command_queue import CommandQueue
         from django.conf import settings
         import os
+        import threading
 
         github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
         
-        # 检测系统架构（通过Agent执行命令获取）
-        # 这里简化处理，假设是linux-amd64，实际应该先检测
         upgrade_script = f"""#!/bin/bash
 set -e
 
@@ -266,11 +336,59 @@ fi
             timeout=600
         )
 
-        from .serializers import AgentCommandDetailSerializer
-        serializer = AgentCommandDetailSerializer(cmd)
+        # 启动后台线程监控命令执行
+        def _monitor_command():
+            import time
+            max_wait = 600  # 最多等待10分钟
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait:
+                try:
+                    cmd.refresh_from_db()
+                    if cmd.status in ['success', 'failed']:
+                        # 命令执行完成，更新部署任务状态
+                        deployment.log = (deployment.log or '') + f"\n命令执行完成\n状态: {cmd.status}\n"
+                        if cmd.result:
+                            deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
+                        if cmd.error:
+                            deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
+                        
+                        if cmd.status == 'success':
+                            deployment.status = 'success'
+                        else:
+                            deployment.status = 'failed'
+                            deployment.error_message = cmd.error or '升级失败'
+                        
+                        deployment.completed_at = timezone.now()
+                        deployment.save()
+                        break
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f'监控Agent升级命令失败: {str(e)}')
+                
+                time.sleep(5)  # 每5秒检查一次
+            
+            # 如果超时仍未完成
+            if deployment.status == 'running':
+                try:
+                    cmd.refresh_from_db()
+                    if cmd.status not in ['success', 'failed']:
+                        deployment.status = 'failed'
+                        deployment.error_message = '升级超时'
+                        deployment.completed_at = timezone.now()
+                        deployment.save()
+                except:
+                    pass
+
+        thread = threading.Thread(target=_monitor_command)
+        thread.daemon = True
+        thread.start()
+
         return Response({
-            'message': 'Agent升级命令已下发',
-            'command': serializer.data
+            'message': 'Agent升级已启动，请查看部署任务',
+            'deployment_id': deployment.id,
+            'command_id': cmd.id
         }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])

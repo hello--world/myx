@@ -18,12 +18,12 @@
         <el-table-column prop="subscription_url" label="订阅链接">
           <template #default="{ row }">
             <el-input
-              :value="row.subscription_url"
+              :value="getSubscriptionUrl(row.token)"
               readonly
               style="width: 100%"
             >
               <template #append>
-                <el-button @click="copyUrl(row.subscription_url)">复制</el-button>
+                <el-button @click="copyUrl(getSubscriptionUrl(row.token))">复制</el-button>
               </template>
             </el-input>
           </template>
@@ -136,6 +136,14 @@ const handleToggle = async (row) => {
     ElMessage.error('更新失败')
     row.enabled = !row.enabled
   }
+}
+
+// 根据当前访问页面的URL生成订阅链接
+const getSubscriptionUrl = (token) => {
+  // 获取当前页面的 origin（协议+主机+端口）
+  const origin = window.location.origin
+  // 构建订阅URL
+  return `${origin}/api/subscriptions/${token}/`
 }
 
 const copyUrl = (url) => {

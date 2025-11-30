@@ -499,17 +499,36 @@ echo "Agent 升级完成"
                             if ssh_result['success']:
                                 # SSH连接成功，检查Agent服务状态
                                 import paramiko
+                                from io import StringIO
                                 ssh = paramiko.SSHClient()
                                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                                ssh.connect(
-                                    server.host,
-                                    port=server.port,
-                                    username=server.username,
-                                    password=server.password,
-                                    key_filename=None,
-                                    pkey=server.private_key if server.private_key else None,
-                                    timeout=10
-                                )
+                                # 使用私钥或密码连接
+                                if server.private_key:
+                                    key_file = StringIO(server.private_key)
+                                    try:
+                                        pkey = paramiko.RSAKey.from_private_key(key_file)
+                                    except:
+                                        key_file.seek(0)
+                                        try:
+                                            pkey = paramiko.Ed25519Key.from_private_key(key_file)
+                                        except:
+                                            key_file.seek(0)
+                                            pkey = paramiko.ECDSAKey.from_private_key(key_file)
+                                    ssh.connect(
+                                        server.host,
+                                        port=server.port,
+                                        username=server.username,
+                                        pkey=pkey,
+                                        timeout=10
+                                    )
+                                else:
+                                    ssh.connect(
+                                        server.host,
+                                        port=server.port,
+                                        username=server.username,
+                                        password=server.password,
+                                        timeout=10
+                                    )
                                 stdin, stdout, stderr = ssh.exec_command('systemctl is-active myx-agent')
                                 service_status = stdout.read().decode().strip()
                                 ssh.close()

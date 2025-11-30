@@ -100,15 +100,20 @@ uv sync --no-install-project
 SECRET_KEY=your-secret-key-here
 DEBUG=True
 
-# 允许访问的主机列表（逗号分隔）
-# 如果需要从其他设备访问，添加具体的 IP 或域名
-ALLOWED_HOSTS=localhost,127.0.0.1,your-domain.com
+# 允许访问的主机列表（逗号分隔，追加到默认值）
+# 默认值已包含: localhost, 127.0.0.1
+# 设置此变量会追加到默认值后面，而不是替换
+ALLOWED_HOSTS=your-domain.com,192.168.1.100
 
-# CORS 允许的源（逗号分隔）
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://your-domain.com
+# CORS 允许的源（逗号分隔，追加到默认值）
+# 默认值已包含: http://localhost:5173, http://localhost:3000, http://127.0.0.1:5173, http://127.0.0.1:3000
+# 设置此变量会追加到默认值后面，而不是替换
+CORS_ALLOWED_ORIGINS=https://your-domain.com
 
-# CSRF 信任的源（逗号分隔）
-CSRF_TRUSTED_ORIGINS=http://localhost:5173,https://your-domain.com
+# CSRF 信任的源（逗号分隔，追加到默认值）
+# 默认值已包含: http://localhost:5173, http://localhost:3000, http://127.0.0.1:5173, http://127.0.0.1:3000
+# 设置此变量会追加到默认值后面，而不是替换
+CSRF_TRUSTED_ORIGINS=https://your-domain.com
 
 # Agent 配置（重要！）
 # 如果部署到远程服务器，Agent 需要能够访问后端 API

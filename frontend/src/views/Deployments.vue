@@ -34,8 +34,16 @@
             <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="started_at" label="开始时间" />
-        <el-table-column prop="completed_at" label="完成时间" />
+        <el-table-column prop="started_at" label="开始时间">
+          <template #default="{ row }">
+            {{ formatDateTime(row.started_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="completed_at" label="完成时间">
+          <template #default="{ row }">
+            {{ formatDateTime(row.completed_at) }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button size="small" @click="handleViewLogs(row)">查看日志</el-button>
@@ -490,6 +498,18 @@ const resetForm = () => {
     deployment_target: ''
   })
   formRef.value?.resetFields()
+}
+
+const formatDateTime = (dateTime) => {
+  if (!dateTime) return '-'
+  const date = new Date(dateTime)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 
 onMounted(() => {

@@ -115,10 +115,68 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             
             github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
             
-            # 通过Agent执行重新部署脚本
-            # 注意：脚本会在停止Agent前先完成下载和准备，然后快速替换并启动
+            # 获取API URL用于上报进度
+            api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
+            if not api_url:
+                # 从request构建API URL
+                scheme = 'https' if request.is_secure() else 'http'
+                host = request.get_host()
+                api_url = f"{scheme}://{host}/api/agents"
+            
+            # 通过Agent执行重新部署脚本（包含备份和恢复机制）
             redeploy_script = f"""#!/bin/bash
 set -e
+
+# 配置
+API_URL="{api_url}"
+DEPLOYMENT_ID={deployment.id}
+AGENT_TOKEN="{agent.token}"
+BACKUP_DIR="/opt/myx-agent/backup"
+BACKUP_FILE="${{BACKUP_DIR}}/myx-agent-$(date +%Y%m%d_%H%M%S)"
+CONFIG_BACKUP="${{BACKUP_DIR}}/config-$(date +%Y%m%d_%H%M%S).json"
+LOG_FILE="/tmp/agent_redeploy_$$.log"
+
+# 上报进度函数
+report_progress() {{
+    local message="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" | tee -a "$LOG_FILE"
+    curl -s -X POST "${{API_URL}}/deployments/${{DEPLOYMENT_ID}}/progress/" \\
+        -H "X-Agent-Token: ${{AGENT_TOKEN}}" \\
+        -H "Content-Type: application/json" \\
+        -d "{{\\"log\\": \\"$message\\\\n\\"}}" > /dev/null 2>&1 || true
+}}
+
+# 恢复备份函数
+restore_backup() {{
+    local latest_binary=$(ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | head -1)
+    local latest_config=$(ls -t "${{BACKUP_DIR}}"/config-* 2>/dev/null | head -1)
+    
+    if [ -n "$latest_binary" ] && [ -f "$latest_binary" ]; then
+        report_progress "[恢复] 正在恢复备份..."
+        systemctl stop myx-agent || true
+        cp "$latest_binary" /opt/myx-agent/myx-agent
+        chmod +x /opt/myx-agent/myx-agent
+        
+        if [ -n "$latest_config" ] && [ -f "$latest_config" ]; then
+            cp "$latest_config" /etc/myx-agent/config.json
+            report_progress "[恢复] 配置已恢复"
+        fi
+        
+        systemctl start myx-agent
+        sleep 3
+        
+        if systemctl is-active --quiet myx-agent; then
+            report_progress "[恢复] 备份已恢复，Agent服务运行正常"
+            return 0
+        else
+            report_progress "[错误] 恢复后Agent服务仍无法启动"
+            return 1
+        fi
+    else
+        report_progress "[错误] 未找到备份文件，无法恢复"
+        return 1
+    fi
+}}
 
 # 检测系统
 OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -132,42 +190,85 @@ fi
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
 GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
 
-echo "[1/5] 正在从 GitHub 下载最新 Agent..."
-if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
-    echo "Agent 下载失败"
-    exit 1
+# 创建备份目录
+mkdir -p "$BACKUP_DIR"
+
+# 步骤1: 备份现有Agent和配置
+report_progress "[1/7] 正在备份现有Agent和配置..."
+if [ -f /opt/myx-agent/myx-agent ]; then
+    cp /opt/myx-agent/myx-agent "$BACKUP_FILE"
+    chmod +x "$BACKUP_FILE"
+    report_progress "[1/7] Agent二进制备份完成: $BACKUP_FILE"
+else
+    report_progress "[1/7] 警告: 未找到现有Agent，跳过备份"
 fi
 
-echo "[2/5] Agent 下载成功，准备替换..."
+if [ -f /etc/myx-agent/config.json ]; then
+    cp /etc/myx-agent/config.json "$CONFIG_BACKUP"
+    report_progress "[1/7] 配置文件备份完成: $CONFIG_BACKUP"
+fi
+
+# 步骤2: 下载新版本
+report_progress "[2/7] 正在从 GitHub 下载最新 Agent..."
+if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
+    report_progress "[错误] Agent 下载失败"
+    restore_backup
+    exit 1
+fi
+report_progress "[2/7] Agent 下载成功"
+
+# 步骤3: 验证新版本
+report_progress "[3/7] 正在验证新版本..."
 chmod +x /tmp/myx-agent
+if ! /tmp/myx-agent -version > /dev/null 2>&1; then
+    report_progress "[错误] 新版本验证失败"
+    restore_backup
+    exit 1
+fi
+report_progress "[3/7] 新版本验证成功"
 
-echo "[3/5] 正在停止Agent服务..."
+# 步骤4: 停止Agent服务
+report_progress "[4/7] 正在停止Agent服务..."
 systemctl stop myx-agent || true
+sleep 2
 
-echo "[4/5] 正在替换Agent二进制文件..."
+# 步骤5: 替换二进制文件
+report_progress "[5/7] 正在替换Agent二进制文件..."
 mv /tmp/myx-agent /opt/myx-agent/myx-agent
 chmod +x /opt/myx-agent/myx-agent
 
-# 重新注册Agent（如果需要）
-API_URL=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
-if [ -n "$API_URL" ]; then
-    SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
+# 步骤6: 重新注册Agent（如果需要）
+API_URL_CONFIG=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+if [ -n "$API_URL_CONFIG" ]; then
+    SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
     if [ -n "$SERVER_TOKEN" ]; then
-        echo "[5/5] 正在启动Agent服务并重新注册..."
+        report_progress "[6/7] 正在启动Agent服务并重新注册..."
         systemctl start myx-agent
         sleep 2
-        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL" || true
+        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" || true
     else
-        echo "[5/5] 正在启动Agent服务..."
+        report_progress "[6/7] 正在启动Agent服务..."
         systemctl start myx-agent
     fi
 else
-    echo "[5/5] 正在启动Agent服务..."
+    report_progress "[6/7] 正在启动Agent服务..."
     systemctl start myx-agent
 fi
 
-systemctl status myx-agent --no-pager || true
-echo "Agent重新部署完成"
+# 步骤7: 验证Agent服务
+report_progress "[7/7] 正在验证Agent服务..."
+sleep 3
+if systemctl is-active --quiet myx-agent; then
+    report_progress "[完成] Agent重新部署成功，服务运行正常"
+    # 清理旧备份（保留最近5个）
+    ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+    ls -t "${{BACKUP_DIR}}"/config-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+    exit 0
+else
+    report_progress "[错误] Agent服务启动失败，状态异常"
+    restore_backup
+    exit 1
+fi
 """
             
             import base64
@@ -207,7 +308,7 @@ echo "Agent重新部署完成"
                             agent_offline_detected = False
                             agent_offline_time = None
                         
-                        # 检查命令状态
+                        # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
                         cmd.refresh_from_db()
                         if cmd.status in ['success', 'failed']:
                             # 命令执行完成，更新部署任务状态
@@ -217,10 +318,16 @@ echo "Agent重新部署完成"
                             if cmd.error:
                                 deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
                             
-                            if cmd.status == 'success':
-                                deployment.status = 'success'
+                            # 验证Agent是否正常运行
+                            agent.refresh_from_db()
+                            if agent.status == 'online':
+                                deployment.status = 'success' if cmd.status == 'success' else 'failed'
                             else:
+                                # 即使命令成功，如果Agent未上线，标记为失败
                                 deployment.status = 'failed'
+                                deployment.error_message = 'Agent重新部署后未正常上线'
+                            
+                            if cmd.status == 'failed':
                                 deployment.error_message = cmd.error or '重新部署失败'
                             
                             deployment.completed_at = timezone.now()

@@ -133,6 +133,15 @@ BACKEND_HOST=your-server-ip-or-domain.com
 # GitHub Repository（用于下载 Agent 二进制文件）
 GITHUB_REPO=hello--world/myx
 
+# Agent 心跳和轮询间隔配置（秒）
+# 心跳间隔：Agent 向服务器发送心跳的随机间隔范围
+AGENT_HEARTBEAT_MIN_INTERVAL=30
+AGENT_HEARTBEAT_MAX_INTERVAL=300
+
+# 轮询间隔：Agent 轮询服务器获取命令的随机间隔范围
+AGENT_POLL_MIN_INTERVAL=5
+AGENT_POLL_MAX_INTERVAL=60
+
 # ============================================
 # 前端配置（Vite）
 # ============================================

@@ -461,20 +461,11 @@ fi
             script_file = '/tmp/agent_redeploy_script.sh'
             
             # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
+            # 注意：使用单行命令避免f-string中的反斜杠转义问题
             cmd = CommandQueue.add_command(
                 agent=agent,
                 command='bash',
-                args=['-c', f'''
-                    echo "{script_b64}" | base64 -d > {script_file}
-                    chmod +x {script_file}
-                    systemd-run --unit={service_name} \\
-                        --service-type=oneshot \\
-                        --no-block \\
-                        --property=StandardOutput=file:{log_file} \\
-                        --property=StandardError=file:{log_file} \\
-                        bash {script_file}
-                    echo $?
-                '''],
+                args=['-c', f'echo "{script_b64}" | base64 -d > {script_file} && chmod +x {script_file} && systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash {script_file} && echo $?'],
                 timeout=600
             )
 
@@ -980,12 +971,19 @@ fi
 """
         
         import base64
+        import time
         script_b64 = base64.b64encode(upgrade_script.encode('utf-8')).decode('utf-8')
-        # 使用nohup在后台执行，并重定向输出到日志文件
+        # 生成唯一的服务名称
+        service_name = f'myx-agent-upgrade-{int(time.time())}'
+        log_file = '/tmp/agent_upgrade.log'
+        script_file = '/tmp/agent_upgrade_script.sh'
+        
+        # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
+        # 注意：使用单行命令避免f-string中的反斜杠转义问题
         cmd = CommandQueue.add_command(
             agent=agent,
             command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | nohup bash > /tmp/agent_upgrade.log 2>&1 & echo $!'],
+            args=['-c', f'echo "{script_b64}" | base64 -d > {script_file} && chmod +x {script_file} && systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash {script_file} && echo $?'],
             timeout=600
         )
 

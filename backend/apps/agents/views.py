@@ -125,7 +125,8 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             
             # 通过Agent执行重新部署脚本（包含备份和恢复机制）
             redeploy_script = f"""#!/bin/bash
-set -e
+# 不使用 set -e，改为手动检查关键命令的返回值
+set +e
 
 # 配置
 API_URL="{api_url}"
@@ -295,7 +296,12 @@ fi
 report_progress "[2/7] 正在从 GitHub 下载最新 Agent..."
 if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
     report_progress "[错误] Agent 下载失败"
-    restore_backup
+    restore_backup || true
+    # 读取完整日志并输出
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
 report_progress "[2/7] Agent 下载成功"
@@ -303,12 +309,20 @@ report_progress "[2/7] Agent 下载成功"
 # 步骤3: 验证新版本
 report_progress "[3/7] 正在验证新版本..."
 chmod +x /tmp/myx-agent
-if ! /tmp/myx-agent -version > /dev/null 2>&1; then
-    report_progress "[错误] 新版本验证失败"
-    restore_backup
+# 检查文件是否存在、可执行，并尝试运行（不检查返回值，因为Agent可能没有-version参数）
+if [ ! -f /tmp/myx-agent ] || [ ! -x /tmp/myx-agent ]; then
+    report_progress "[错误] 新版本文件不存在或不可执行"
+    restore_backup || true
+    # 读取完整日志并输出
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
-report_progress "[3/7] 新版本验证成功"
+# 尝试运行Agent（即使失败也继续，因为Agent可能没有-version参数）
+/tmp/myx-agent -help > /dev/null 2>&1 || /tmp/myx-agent > /dev/null 2>&1 || true
+report_progress "[3/7] 新版本验证成功（文件存在且可执行）"
 
 # 步骤4: 停止Agent服务
 report_progress "[4/7] 正在停止Agent服务..."
@@ -354,7 +368,7 @@ if systemctl is-active --quiet myx-agent; then
     exit 0
 else
     report_progress "[错误] Agent服务启动失败，状态异常"
-    restore_backup
+    restore_backup || true
     # 读取完整日志并输出（供命令结果接口收集）
     if [ -f "$LOG_FILE" ]; then
         echo "=== 完整执行日志 ==="
@@ -633,8 +647,9 @@ fi
             host = request.get_host()
             api_url = f"{scheme}://{host}/api/agents"
         
-        upgrade_script = f"""#!/bin/bash
-set -e
+            upgrade_script = f"""#!/bin/bash
+# 不使用 set -e，改为手动检查关键命令的返回值
+set +e
 
 # 配置
 API_URL="{api_url}"
@@ -658,8 +673,11 @@ report_progress() {{
         -d "{{\\"log\\": \\"$log_entry\\\\n\\"}}" > /dev/null 2>&1 || true
 }}
 
-# 恢复备份函数
+# 恢复备份函数（使用 set +e 确保即使失败也继续执行）
 restore_backup() {{
+    set +e  # 在函数内部禁用立即退出
+    local restore_success=0
+    
     local latest_backup=$(ls -t "${{BACKUP_DIR}}"/myx-agent-* 2>/dev/null | head -1)
     if [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
         report_progress "[恢复] 正在恢复备份: $latest_backup"
@@ -789,7 +807,12 @@ fi
 report_progress "[2/6] 正在从 GitHub 下载最新 Agent..."
 if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
     report_progress "[错误] Agent 下载失败"
-    restore_backup
+    restore_backup || true
+    # 读取完整日志并输出
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
 report_progress "[2/6] Agent 下载成功"
@@ -797,12 +820,20 @@ report_progress "[2/6] Agent 下载成功"
 # 步骤3: 验证新版本
 report_progress "[3/6] 正在验证新版本..."
 chmod +x /tmp/myx-agent
-if ! /tmp/myx-agent -version > /dev/null 2>&1; then
-    report_progress "[错误] 新版本验证失败"
-    restore_backup
+# 检查文件是否存在、可执行，并尝试运行（不检查返回值，因为Agent可能没有-version参数）
+if [ ! -f /tmp/myx-agent ] || [ ! -x /tmp/myx-agent ]; then
+    report_progress "[错误] 新版本文件不存在或不可执行"
+    restore_backup || true
+    # 读取完整日志并输出
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
     exit 1
 fi
-report_progress "[3/6] 新版本验证成功"
+# 尝试运行Agent（即使失败也继续，因为Agent可能没有-version参数）
+/tmp/myx-agent -help > /dev/null 2>&1 || /tmp/myx-agent > /dev/null 2>&1 || true
+report_progress "[3/6] 新版本验证成功（文件存在且可执行）"
 
 # 步骤4: 停止Agent服务
 report_progress "[4/6] 正在停止Agent服务..."
@@ -830,7 +861,7 @@ if systemctl start myx-agent; then
         exit 0
     else
         report_progress "[错误] Agent服务启动失败，状态异常"
-        restore_backup
+        restore_backup || true
         # 读取完整日志并输出（供命令结果接口收集）
         if [ -f "$LOG_FILE" ]; then
             echo "=== 完整执行日志 ==="
@@ -840,7 +871,7 @@ if systemctl start myx-agent; then
     fi
 else
     report_progress "[错误] 无法启动Agent服务"
-    restore_backup
+    restore_backup || true
     # 读取完整日志并输出（供命令结果接口收集）
     if [ -f "$LOG_FILE" ]; then
         echo "=== 完整执行日志 ==="

@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	DefaultAPIURL     = "http://localhost:8000/api/agents"
-	HeartbeatInterval = 30 * time.Second
-	PollInterval      = 5 * time.Second
+	DefaultAPIURL        = "http://localhost:8000/api/agents"
+	HeartbeatMinInterval = 30 * time.Second  // 最小心跳间隔：30秒
+	HeartbeatMaxInterval = 300 * time.Second // 最大心跳间隔：300秒
+	PollMinInterval      = 5 * time.Second   // 最小轮询间隔：5秒
+	PollMaxInterval      = 60 * time.Second   // 最大轮询间隔：60秒
 )
 
 type Config struct {
@@ -166,10 +168,13 @@ func loadConfig(configFile string) error {
 }
 
 func heartbeatLoop() {
-	ticker := time.NewTicker(HeartbeatInterval)
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for {
+		// 生成随机间隔：30-300秒
+		interval := randomDuration(HeartbeatMinInterval, HeartbeatMaxInterval)
+		log.Printf("下次心跳将在 %v 后发送", interval)
+		
+		time.Sleep(interval)
+		
 		if err := sendHeartbeat(); err != nil {
 			log.Printf("心跳失败: %v", err)
 		}
@@ -201,19 +206,22 @@ func sendHeartbeat() error {
 }
 
 func commandLoop() {
-	ticker := time.NewTicker(PollInterval)
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for {
+		// 生成随机间隔：5-60秒
+		interval := randomDuration(PollMinInterval, PollMaxInterval)
+		
 		commands, err := pollCommands()
 		if err != nil {
 			log.Printf("轮询命令失败: %v", err)
+			time.Sleep(interval)
 			continue
 		}
 
 		for _, cmd := range commands {
 			go executeCommand(cmd)
 		}
+		
+		time.Sleep(interval)
 	}
 }
 

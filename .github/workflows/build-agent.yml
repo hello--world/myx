@@ -79,8 +79,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # 只在 tag push 或 release 事件时创建 release，不再为 branch push 创建 latest
+    # 注意：tag push 时，github.ref 会是 refs/tags/v1.0.0
     if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || startsWith(github.ref, 'tags/'))) ||
       github.event_name == 'release'
     permissions:
       contents: write

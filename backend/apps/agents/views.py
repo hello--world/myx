@@ -590,34 +590,6 @@ fi
                         # 等待2秒后继续检查（提高检测频率）
                         time.sleep(2)
                         
-                        # 如果脚本已完成，更新部署任务状态
-                        if script_completed:
-                            # 读取完整日志文件
-                            if os.path.exists(log_file_path):
-                                try:
-                                    with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        full_log = f.read()
-                                        if full_log.strip():
-                                            deployment.log = (deployment.log or '') + f"\n=== 完整执行日志 ===\n{full_log}\n"
-                                except Exception as e:
-                                    logger.debug(f'读取完整日志文件失败: {str(e)}')
-                            
-                            # 验证Agent是否正常运行
-                            agent.refresh_from_db()
-                            if agent.status == 'online' and script_success:
-                                deployment.status = 'success'
-                                deployment.log = (deployment.log or '') + f"\n[完成] Agent重新部署成功，服务运行正常\n"
-                            else:
-                                deployment.status = 'failed'
-                                if agent.status != 'online':
-                                    deployment.error_message = 'Agent重新部署后未正常上线'
-                                else:
-                                    deployment.error_message = '脚本执行失败'
-                            
-                            deployment.completed_at = timezone.now()
-                            deployment.save()
-                            break
-                        
                         # 检查命令状态（作为备用检查）
                         cmd.refresh_from_db()
                         if cmd.status in ['success', 'failed']:

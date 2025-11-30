@@ -46,6 +46,10 @@
             <el-icon><Tools /></el-icon>
             <span>部署任务</span>
           </el-menu-item>
+          <el-menu-item index="/agents">
+            <el-icon><Monitor /></el-icon>
+            <span>Agent管理</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
       <el-main class="main">

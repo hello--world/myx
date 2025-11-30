@@ -32,14 +32,14 @@ const (
 )
 
 type Config struct {
-	ServerToken           string
-	SecretKey             string
-	APIURL                string
-	AgentToken            string
-	HeartbeatMinInterval  int // 最小心跳间隔（秒）
-	HeartbeatMaxInterval  int // 最大心跳间隔（秒）
-	PollMinInterval       int // 最小轮询间隔（秒）
-	PollMaxInterval       int // 最大轮询间隔（秒）
+	ServerToken          string
+	SecretKey            string
+	APIURL               string
+	AgentToken           string
+	HeartbeatMinInterval int // 最小心跳间隔（秒）
+	HeartbeatMaxInterval int // 最大心跳间隔（秒）
+	PollMinInterval      int // 最小轮询间隔（秒）
+	PollMaxInterval      int // 最大轮询间隔（秒）
 }
 
 type RegisterRequest struct {
@@ -243,7 +243,7 @@ func commandLoop() {
 		if maxInterval == 0 {
 			maxInterval = PollMaxInterval
 		}
-		
+
 		commands, err := pollCommands()
 		if err != nil {
 			log.Printf("轮询命令失败: %v", err)
@@ -256,7 +256,7 @@ func commandLoop() {
 		for _, cmd := range commands {
 			go executeCommand(cmd)
 		}
-		
+
 		// 生成随机间隔
 		interval := randomDuration(minInterval, maxInterval)
 		time.Sleep(interval)

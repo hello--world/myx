@@ -6,11 +6,16 @@ class AgentSerializer(serializers.ModelSerializer):
     """Agent序列化器"""
     server_name = serializers.CharField(source='server.name', read_only=True)
     server_host = serializers.CharField(source='server.host', read_only=True)
+    server_port = serializers.IntegerField(source='server.port', read_only=True)
+    connection_method = serializers.CharField(source='server.connection_method', read_only=True)
+    deployment_target = serializers.CharField(source='server.deployment_target', read_only=True)
+    server_status = serializers.CharField(source='server.status', read_only=True)
 
     class Meta:
         model = Agent
         fields = [
-            'id', 'server', 'server_name', 'server_host',
+            'id', 'server', 'server_name', 'server_host', 'server_port',
+            'connection_method', 'deployment_target', 'server_status',
             'token', 'status', 'version', 'last_heartbeat',
             'registered_at', 'updated_at'
         ]
@@ -37,4 +42,20 @@ class AgentCommandSerializer(serializers.Serializer):
     command = serializers.CharField()
     args = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     timeout = serializers.IntegerField(required=False, default=300)
+
+
+class AgentCommandDetailSerializer(serializers.ModelSerializer):
+    """Agent命令详情序列化器"""
+    agent_id = serializers.IntegerField(source='agent.id', read_only=True)
+    agent_server_name = serializers.CharField(source='agent.server.name', read_only=True)
+
+    class Meta:
+        from .models import AgentCommand
+        model = AgentCommand
+        fields = [
+            'id', 'agent', 'agent_id', 'agent_server_name',
+            'command', 'args', 'timeout', 'status',
+            'result', 'error', 'created_at', 'started_at', 'completed_at'
+        ]
+        read_only_fields = ['id', 'agent', 'status', 'result', 'error', 'created_at', 'started_at', 'completed_at']
 

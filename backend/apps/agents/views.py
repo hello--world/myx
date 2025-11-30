@@ -8,7 +8,8 @@ from django.utils import timezone
 from .models import Agent
 from .serializers import (
     AgentSerializer, AgentRegisterSerializer,
-    AgentHeartbeatSerializer, AgentCommandSerializer
+    AgentHeartbeatSerializer, AgentCommandSerializer,
+    AgentCommandDetailSerializer
 )
 from apps.servers.models import Server
 
@@ -21,6 +22,171 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         # 只返回当前用户创建的服务器关联的 Agent
         return Agent.objects.filter(server__created_by=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def send_command(self, request, pk=None):
+        """下发命令到Agent"""
+        agent = self.get_object()
+        command = request.data.get('command')
+        args = request.data.get('args', [])
+        timeout = request.data.get('timeout', 300)
+
+        if not command:
+            return Response({'error': '命令不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .command_queue import CommandQueue
+        cmd = CommandQueue.add_command(agent, command, args, timeout)
+
+        from .serializers import AgentCommandDetailSerializer
+        serializer = AgentCommandDetailSerializer(cmd)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def redeploy(self, request, pk=None):
+        """重新部署Agent"""
+        agent = self.get_object()
+        server = agent.server
+
+        # 检查服务器是否有SSH凭据
+        if not server.password and not server.private_key:
+            return Response({'error': '服务器缺少SSH凭据，无法重新部署'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 创建部署任务
+        from apps.deployments.models import Deployment
+        deployment = Deployment.objects.create(
+            server=server,
+            deployment_type='agent',
+            connection_method='ssh',
+            deployment_target=server.deployment_target,
+            created_by=request.user
+        )
+
+        # 异步执行部署
+        from apps.deployments.tasks import install_agent_via_ssh
+        import threading
+        def _deploy():
+            install_agent_via_ssh(server, deployment)
+
+        thread = threading.Thread(target=_deploy)
+        thread.daemon = True
+        thread.start()
+
+        return Response({
+            'message': 'Agent重新部署已启动',
+            'deployment_id': deployment.id
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['post'])
+    def upgrade(self, request, pk=None):
+        """升级Agent"""
+        agent = self.get_object()
+        server = agent.server
+
+        # 通过Agent执行升级命令
+        from .command_queue import CommandQueue
+        from django.conf import settings
+        import os
+
+        github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
+        
+        # 检测系统架构（通过Agent执行命令获取）
+        # 这里简化处理，假设是linux-amd64，实际应该先检测
+        upgrade_script = f"""#!/bin/bash
+set -e
+
+# 检测系统
+OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    ARCH="amd64"
+elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    ARCH="arm64"
+fi
+
+BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
+GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
+
+echo "正在从 GitHub 下载最新 Agent..."
+if curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
+    echo "Agent 下载成功"
+    chmod +x /tmp/myx-agent
+    systemctl stop myx-agent || true
+    mv /tmp/myx-agent /opt/myx-agent/myx-agent
+    chmod +x /opt/myx-agent/myx-agent
+    systemctl start myx-agent
+    echo "Agent 升级完成"
+else
+    echo "Agent 下载失败"
+    exit 1
+fi
+"""
+
+        import base64
+        script_b64 = base64.b64encode(upgrade_script.encode('utf-8')).decode('utf-8')
+        cmd = CommandQueue.add_command(
+            agent=agent,
+            command='bash',
+            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
+            timeout=600
+        )
+
+        from .serializers import AgentCommandDetailSerializer
+        serializer = AgentCommandDetailSerializer(cmd)
+        return Response({
+            'message': 'Agent升级命令已下发',
+            'command': serializer.data
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['post'])
+    def stop(self, request, pk=None):
+        """停止Agent服务"""
+        agent = self.get_object()
+
+        from .command_queue import CommandQueue
+        cmd = CommandQueue.add_command(
+            agent=agent,
+            command='systemctl',
+            args=['stop', 'myx-agent'],
+            timeout=30
+        )
+
+        from .serializers import AgentCommandDetailSerializer
+        serializer = AgentCommandDetailSerializer(cmd)
+        return Response({
+            'message': '停止Agent命令已下发',
+            'command': serializer.data
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['post'])
+    def start(self, request, pk=None):
+        """启动Agent服务"""
+        agent = self.get_object()
+
+        from .command_queue import CommandQueue
+        cmd = CommandQueue.add_command(
+            agent=agent,
+            command='systemctl',
+            args=['start', 'myx-agent'],
+            timeout=30
+        )
+
+        from .serializers import AgentCommandDetailSerializer
+        serializer = AgentCommandDetailSerializer(cmd)
+        return Response({
+            'message': '启动Agent命令已下发',
+            'command': serializer.data
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['get'])
+    def commands(self, request, pk=None):
+        """获取Agent的命令历史"""
+        agent = self.get_object()
+        from .models import AgentCommand
+        commands = AgentCommand.objects.filter(agent=agent).order_by('-created_at')[:50]
+
+        from .serializers import AgentCommandDetailSerializer
+        serializer = AgentCommandDetailSerializer(commands, many=True)
+        return Response(serializer.data)
 
 
 @api_view(['POST'])

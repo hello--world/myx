@@ -304,7 +304,7 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         from django.conf import settings
         github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
         binary_name = f'myx-agent-{os_name}-{arch}'
-        github_url = f'https://github.com/{github_repo}/releases/download/latest/{binary_name}'
+        github_url = f'https://github.com/{github_repo}/releases/latest/download/{binary_name}'
         
         deployment.log = (deployment.log or '') + f"从 GitHub Releases 下载 Agent: {github_url}\n"
         deployment.save()

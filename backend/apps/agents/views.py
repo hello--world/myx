@@ -188,7 +188,7 @@ elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
 fi
 
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
-GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
+GITHUB_URL="https://github.com/{github_repo}/releases/latest/download/${{BINARY_NAME}}"
 
 # 创建备份目录
 mkdir -p "$BACKUP_DIR"
@@ -559,7 +559,7 @@ elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
 fi
 
 BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
-GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
+GITHUB_URL="https://github.com/{github_repo}/releases/latest/download/${{BINARY_NAME}}"
 
 # 创建备份目录
 mkdir -p "$BACKUP_DIR"

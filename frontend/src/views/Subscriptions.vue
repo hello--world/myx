@@ -46,8 +46,8 @@
 
     <el-dialog
       v-model="dialogVisible"
-      title="添加订阅"
-      width="500px"
+      :title="dialogTitle"
+      width="700px"
       @close="resetForm"
     >
       <el-form
@@ -65,6 +65,27 @@
             <el-option label="Clash" value="clash" />
           </el-select>
         </el-form-item>
+        <el-form-item label="选择节点" prop="proxy_ids">
+          <div style="width: 100%">
+            <div style="margin-bottom: 10px">
+              <el-button size="small" @click="selectAllProxies">全选</el-button>
+              <el-button size="small" @click="clearAllProxies">清空</el-button>
+            </div>
+            <el-checkbox-group v-model="form.proxy_ids" style="width: 100%">
+              <el-checkbox
+                v-for="proxy in availableProxies"
+                :key="proxy.id"
+                :label="proxy.id"
+                style="display: block; margin-bottom: 8px"
+              >
+                {{ proxy.name }} ({{ proxy.protocol }}) - {{ proxy.server_name }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <div v-if="availableProxies.length === 0" style="color: #909399; font-size: 12px; margin-top: 10px">
+              暂无可用节点，请先创建节点
+            </div>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -75,7 +96,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
@@ -83,15 +104,21 @@ const loading = ref(false)
 const subscriptions = ref([])
 const dialogVisible = ref(false)
 const formRef = ref(null)
+const availableProxies = ref([])
+const isEdit = ref(false)
 
 const form = reactive({
   name: '',
-  format: 'v2ray'
+  format: 'v2ray',
+  proxy_ids: []
 })
+
+const dialogTitle = computed(() => isEdit.value ? '编辑订阅' : '添加订阅')
 
 const rules = {
   name: [{ required: true, message: '请输入订阅名称', trigger: 'blur' }],
-  format: [{ required: true, message: '请选择订阅格式', trigger: 'change' }]
+  format: [{ required: true, message: '请选择订阅格式', trigger: 'change' }],
+  proxy_ids: [{ required: true, message: '请至少选择一个节点', trigger: 'change' }]
 }
 
 const fetchSubscriptions = async () => {
@@ -106,9 +133,34 @@ const fetchSubscriptions = async () => {
   }
 }
 
+const fetchProxies = async () => {
+  try {
+    const response = await api.get('/proxies/')
+    const proxies = response.data.results || response.data || []
+    // 只显示启用且状态为active的节点
+    availableProxies.value = proxies.filter(p => p.enable && p.status === 'active')
+  } catch (error) {
+    console.error('获取节点列表失败:', error)
+    availableProxies.value = []
+  }
+}
+
+const selectAllProxies = () => {
+  form.proxy_ids = availableProxies.value.map(p => p.id)
+}
+
+const clearAllProxies = () => {
+  form.proxy_ids = []
+}
+
 const handleAdd = () => {
   resetForm()
-  dialogVisible.value = true
+  isEdit.value = false
+  fetchProxies().then(() => {
+    // 默认全选
+    selectAllProxies()
+    dialogVisible.value = true
+  })
 }
 
 const handleDelete = async (row) => {
@@ -160,12 +212,17 @@ const handleSubmit = async () => {
   await formRef.value.validate(async (valid) => {
     if (valid) {
       try {
-        await api.post('/subscriptions/', form)
-        ElMessage.success('添加成功')
+        if (isEdit.value && form.id) {
+          await api.put(`/subscriptions/${form.id}/`, form)
+          ElMessage.success('更新成功')
+        } else {
+          await api.post('/subscriptions/', form)
+          ElMessage.success('添加成功')
+        }
         dialogVisible.value = false
         fetchSubscriptions()
       } catch (error) {
-        ElMessage.error('添加失败')
+        ElMessage.error(isEdit.value ? '更新失败' : '添加失败')
       }
     }
   })
@@ -174,13 +231,16 @@ const handleSubmit = async () => {
 const resetForm = () => {
   Object.assign(form, {
     name: '',
-    format: 'v2ray'
+    format: 'v2ray',
+    proxy_ids: []
   })
+  isEdit.value = false
   formRef.value?.resetFields()
 }
 
 onMounted(() => {
   fetchSubscriptions()
+  fetchProxies()
 })
 </script>
 

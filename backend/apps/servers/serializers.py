@@ -10,7 +10,9 @@ class ServerSerializer(serializers.ModelSerializer):
         model = Server
         fields = [
             'id', 'name', 'host', 'port', 'username',
-            'password', 'private_key', 'connection_method', 'deployment_target', 'status', 'last_check',
+            'password', 'private_key', 'connection_method', 'deployment_target',
+            'agent_connect_host', 'agent_connect_port',
+            'status', 'last_check', 'save_password', 'enable_ssh_key',
             'created_at', 'updated_at', 'created_by', 'created_by_username'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']

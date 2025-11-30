@@ -10,6 +10,7 @@ class Deployment(models.Model):
         ('caddy', 'Caddy'),
         ('both', 'Xray + Caddy'),
         ('full', '一键部署 (Agent + Xray + Caddy)'),
+        ('agent', 'Agent'),
     ]
 
     CONNECTION_METHOD_CHOICES = [

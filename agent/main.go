@@ -36,10 +36,11 @@ type Config struct {
 	SecretKey            string
 	APIURL               string
 	AgentToken           string
-	HeartbeatMinInterval int // 最小心跳间隔（秒）
-	HeartbeatMaxInterval int // 最大心跳间隔（秒）
-	PollMinInterval      int // 最小轮询间隔（秒）
-	PollMaxInterval      int // 最大轮询间隔（秒）
+	HeartbeatMode        string // 心跳模式: "push" 或 "pull"
+	HeartbeatMinInterval int    // 最小心跳间隔（秒）
+	HeartbeatMaxInterval int    // 最大心跳间隔（秒）
+	PollMinInterval      int    // 最小轮询间隔（秒）
+	PollMaxInterval      int    // 最大轮询间隔（秒）
 }
 
 type RegisterRequest struct {
@@ -50,9 +51,10 @@ type RegisterRequest struct {
 }
 
 type RegisterResponse struct {
-	Token     string `json:"token"`
-	SecretKey string `json:"secret_key"`
-	ServerID  int    `json:"server_id"`
+	Token         string `json:"token"`
+	SecretKey     string `json:"secret_key"`
+	ServerID      int    `json:"server_id"`
+	HeartbeatMode string `json:"heartbeat_mode,omitempty"` // 心跳模式
 }
 
 type HeartbeatRequest struct {
@@ -74,9 +76,10 @@ type CommandResponse struct {
 }
 
 type PollResponse struct {
-	Commands []CommandResponse `json:"commands"`
-	Status   string            `json:"status"`
-	Config   *AgentConfig      `json:"config,omitempty"`
+	Commands      []CommandResponse `json:"commands"`
+	Status        string            `json:"status"`
+	HeartbeatMode string            `json:"heartbeat_mode,omitempty"` // 心跳模式
+	Config        *AgentConfig      `json:"config,omitempty"`
 }
 
 type AgentConfig struct {
@@ -87,8 +90,9 @@ type AgentConfig struct {
 }
 
 type HeartbeatResponse struct {
-	Status string       `json:"status"`
-	Config *AgentConfig `json:"config,omitempty"`
+	Status        string       `json:"status"`
+	HeartbeatMode string       `json:"heartbeat_mode,omitempty"` // 心跳模式
+	Config        *AgentConfig `json:"config,omitempty"`
 }
 
 var (
@@ -123,9 +127,16 @@ func main() {
 	log.Println("Agent启动中...")
 	log.Printf("API地址: %s", config.APIURL)
 	log.Printf("Agent Token: %s", config.AgentToken)
+	log.Printf("心跳模式: %s", config.HeartbeatMode)
 
 	// 启动心跳和命令轮询
-	go heartbeatLoop()
+	// 只有在推送模式下才启动心跳循环
+	if config.HeartbeatMode != "pull" {
+		go heartbeatLoop()
+		log.Println("心跳模式: 推送模式（Agent主动发送心跳）")
+	} else {
+		log.Println("心跳模式: 拉取模式（中心服务器主动检查），不发送心跳")
+	}
 	commandLoop()
 }
 
@@ -156,11 +167,16 @@ func register(serverToken, apiURL string) error {
 	}
 
 	// 保存配置
+	heartbeatMode := regResp.HeartbeatMode
+	if heartbeatMode == "" {
+		heartbeatMode = "push" // 默认推送模式
+	}
 	config = Config{
-		ServerToken: serverToken,
-		SecretKey:   regResp.SecretKey,
-		APIURL:      apiURL,
-		AgentToken:  regResp.Token,
+		ServerToken:   serverToken,
+		SecretKey:     regResp.SecretKey,
+		APIURL:        apiURL,
+		AgentToken:    regResp.Token,
+		HeartbeatMode: heartbeatMode,
 	}
 
 	// 创建配置目录
@@ -225,8 +241,15 @@ func sendHeartbeat() error {
 
 	// 解析响应，更新配置
 	var heartbeatResp HeartbeatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&heartbeatResp); err == nil && heartbeatResp.Config != nil {
-		updateConfig(heartbeatResp.Config)
+	if err := json.NewDecoder(resp.Body).Decode(&heartbeatResp); err == nil {
+		// 更新心跳模式
+		if heartbeatResp.HeartbeatMode != "" {
+			config.HeartbeatMode = heartbeatResp.HeartbeatMode
+		}
+		// 更新其他配置
+		if heartbeatResp.Config != nil {
+			updateConfig(heartbeatResp.Config)
+		}
 	}
 
 	return nil
@@ -280,6 +303,17 @@ func pollCommands() ([]CommandResponse, error) {
 	var pollResp PollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pollResp); err != nil {
 		return nil, err
+	}
+
+	// 更新心跳模式（如果服务器返回了）
+	if pollResp.HeartbeatMode != "" {
+		oldMode := config.HeartbeatMode
+		config.HeartbeatMode = pollResp.HeartbeatMode
+		if oldMode != pollResp.HeartbeatMode {
+			log.Printf("心跳模式已更新: %s -> %s", oldMode, pollResp.HeartbeatMode)
+			// 注意：如果从push切换到pull，心跳循环已经在运行，但不会再发送
+			// 如果从pull切换到push，需要重启Agent才能启动心跳循环
+		}
 	}
 
 	// 更新配置（如果服务器返回了新配置）

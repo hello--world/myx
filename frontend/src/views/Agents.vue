@@ -8,7 +8,9 @@
         </div>
       </template>
 
-      <el-table
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="Agent列表" name="agents">
+          <el-table
         :data="agents"
         v-loading="loading"
         stripe
@@ -38,16 +40,36 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="heartbeat_mode" label="心跳模式" width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.heartbeat_mode === 'pull' ? 'warning' : 'success'">
+              {{ row.heartbeat_mode === 'pull' ? '拉取模式' : '推送模式' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="version" label="版本" width="120" />
         <el-table-column prop="last_heartbeat" label="最后心跳" width="180">
           <template #default="{ row }">
             {{ formatDateTime(row.last_heartbeat) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="500" fixed="right">
+        <el-table-column prop="last_check" label="最后检查" width="180" v-if="hasPullModeAgent">
+          <template #default="{ row }">
+            {{ formatDateTime(row.last_check) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="580" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="viewCommands(row)">查看命令</el-button>
             <el-button size="small" type="primary" @click="sendCommand(row)">下发命令</el-button>
+            <el-button 
+              size="small" 
+              type="info" 
+              @click="checkAgentStatus(row)" 
+              v-if="row.heartbeat_mode === 'pull'"
+            >
+              检查状态
+            </el-button>
             <el-button size="small" type="success" @click="startAgent(row)">启动</el-button>
             <el-button size="small" type="warning" @click="stopAgent(row)">停止</el-button>
             <el-button size="small" type="info" @click="upgradeAgent(row)">升级</el-button>
@@ -55,6 +77,41 @@
           </template>
         </el-table-column>
       </el-table>
+        </el-tab-pane>
+        
+        <el-tab-pane label="命令管理" name="templates">
+          <div style="margin-bottom: 20px;">
+            <el-button type="primary" @click="handleAddTemplate">添加模板</el-button>
+          </div>
+          <el-table
+            :data="commandTemplates"
+            v-loading="templatesLoading"
+            stripe
+            style="width: 100%"
+          >
+            <el-table-column prop="name" label="模板名称" width="200" />
+            <el-table-column prop="description" label="描述" />
+            <el-table-column prop="command" label="命令" width="200" />
+            <el-table-column prop="args" label="参数" width="200">
+              <template #default="{ row }">
+                {{ Array.isArray(row.args) ? row.args.join(' ') : row.args || '' }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="timeout" label="超时时间" width="100">
+              <template #default="{ row }">
+                {{ row.timeout }}秒
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="200">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" @click="handleUseTemplate(row)">使用</el-button>
+                <el-button size="small" @click="handleEditTemplate(row)">编辑</el-button>
+                <el-button size="small" type="danger" @click="handleDeleteTemplate(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
 
     <!-- 下发命令对话框 -->
@@ -64,6 +121,22 @@
       width="600px"
     >
       <el-form :model="commandForm" label-width="100px">
+        <el-form-item label="选择模板">
+          <el-select
+            v-model="selectedTemplateId"
+            placeholder="选择命令模板（可选）"
+            style="width: 100%"
+            clearable
+            @change="handleTemplateSelect"
+          >
+            <el-option
+              v-for="template in commandTemplates"
+              :key="template.id"
+              :label="template.name"
+              :value="template.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="命令">
           <el-input v-model="commandForm.command" placeholder="例如: ls, ps, systemctl status" />
         </el-form-item>
@@ -164,16 +237,55 @@
         </el-descriptions-item>
       </el-descriptions>
     </el-dialog>
+
+    <!-- 命令模板编辑对话框 -->
+    <el-dialog
+      v-model="templateDialogVisible"
+      :title="editingTemplateId ? '编辑模板' : '添加模板'"
+      width="600px"
+    >
+      <el-form :model="templateForm" label-width="100px">
+        <el-form-item label="模板名称">
+          <el-input v-model="templateForm.name" placeholder="例如: 查看系统状态" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input
+            v-model="templateForm.description"
+            type="textarea"
+            :rows="2"
+            placeholder="模板描述（可选）"
+          />
+        </el-form-item>
+        <el-form-item label="命令">
+          <el-input v-model="templateForm.command" placeholder="例如: systemctl" />
+        </el-form-item>
+        <el-form-item label="参数">
+          <el-input
+            v-model="templateForm.args"
+            placeholder="多个参数用空格分隔，例如: status xray"
+          />
+        </el-form-item>
+        <el-form-item label="超时时间">
+          <el-input-number v-model="templateForm.timeout" :min="10" :max="3600" />
+          <span style="margin-left: 10px">秒</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="templateDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveTemplate">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
 const agents = ref([])
 const loading = ref(false)
+const activeTab = ref('agents')
 const commandDialogVisible = ref(false)
 const commandsDialogVisible = ref(false)
 const resultDialogVisible = ref(false)
@@ -182,10 +294,28 @@ const commandHistory = ref([])
 const currentCommand = ref(null)
 const currentAgent = ref(null)
 
+// 命令模板相关
+const commandTemplates = ref([])
+const templatesLoading = ref(false)
+const templateDialogVisible = ref(false)
+const templateForm = ref({
+  name: '',
+  description: '',
+  command: '',
+  args: '',
+  timeout: 300
+})
+const editingTemplateId = ref(null)
+const selectedTemplateId = ref(null)
+
 const commandForm = ref({
   command: '',
   args: '',
   timeout: 300
+})
+
+const hasPullModeAgent = computed(() => {
+  return agents.value.some(agent => agent.heartbeat_mode === 'pull')
 })
 
 const loadAgents = async () => {
@@ -251,6 +381,7 @@ const sendCommand = (agent) => {
     args: '',
     timeout: 300
   }
+  selectedTemplateId.value = null
   commandDialogVisible.value = true
 }
 
@@ -363,8 +494,130 @@ const redeployAgent = async (agent) => {
   }
 }
 
+const checkAgentStatus = async (agent) => {
+  try {
+    await api.post(`/agents/${agent.id}/check_status/`)
+    ElMessage.success('状态检查完成')
+    await loadAgents()
+  } catch (error) {
+    ElMessage.error('检查状态失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+// 命令模板相关函数
+const loadTemplates = async () => {
+  templatesLoading.value = true
+  try {
+    const response = await api.get('/agents/command-templates/')
+    commandTemplates.value = response.data.results || response.data || []
+  } catch (error) {
+    ElMessage.error('加载命令模板失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    templatesLoading.value = false
+  }
+}
+
+const handleTemplateSelect = (templateId) => {
+  if (!templateId) return
+  
+  const template = commandTemplates.value.find(t => t.id === templateId)
+  if (template) {
+    commandForm.value.command = template.command
+    commandForm.value.args = Array.isArray(template.args) ? template.args.join(' ') : template.args || ''
+    commandForm.value.timeout = template.timeout
+  }
+}
+
+const handleAddTemplate = () => {
+  editingTemplateId.value = null
+  templateForm.value = {
+    name: '',
+    description: '',
+    command: '',
+    args: '',
+    timeout: 300
+  }
+  templateDialogVisible.value = true
+}
+
+const handleEditTemplate = (row) => {
+  editingTemplateId.value = row.id
+  templateForm.value = {
+    name: row.name,
+    description: row.description || '',
+    command: row.command,
+    args: Array.isArray(row.args) ? row.args.join(' ') : row.args || '',
+    timeout: row.timeout
+  }
+  templateDialogVisible.value = true
+}
+
+const handleDeleteTemplate = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除这个命令模板吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await api.delete(`/agents/command-templates/${row.id}/`)
+    ElMessage.success('删除成功')
+    loadTemplates()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
+    }
+  }
+}
+
+const handleUseTemplate = (template) => {
+  if (!currentAgent.value) {
+    ElMessage.warning('请先选择Agent')
+    return
+  }
+  commandForm.value.command = template.command
+  commandForm.value.args = Array.isArray(template.args) ? template.args.join(' ') : template.args || ''
+  commandForm.value.timeout = template.timeout
+  selectedTemplateId.value = template.id
+  commandDialogVisible.value = true
+}
+
+const handleSaveTemplate = async () => {
+  if (!templateForm.value.name || !templateForm.value.command) {
+    ElMessage.warning('请填写模板名称和命令')
+    return
+  }
+  
+  try {
+    const args = templateForm.value.args
+      ? templateForm.value.args.split(' ').filter(arg => arg.trim())
+      : []
+    
+    const payload = {
+      name: templateForm.value.name,
+      description: templateForm.value.description || '',
+      command: templateForm.value.command,
+      args: args,
+      timeout: templateForm.value.timeout
+    }
+    
+    if (editingTemplateId.value) {
+      await api.put(`/agents/command-templates/${editingTemplateId.value}/`, payload)
+      ElMessage.success('更新成功')
+    } else {
+      await api.post('/agents/command-templates/', payload)
+      ElMessage.success('添加成功')
+    }
+    
+    templateDialogVisible.value = false
+    loadTemplates()
+  } catch (error) {
+    ElMessage.error('保存失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
 onMounted(() => {
   loadAgents()
+  loadTemplates()
 })
 </script>
 

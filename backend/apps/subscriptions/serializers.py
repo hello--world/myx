@@ -6,11 +6,12 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     """订阅序列化器"""
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     subscription_url = serializers.SerializerMethodField()
+    proxy_ids = serializers.JSONField(default=list)
 
     class Meta:
         model = Subscription
         fields = [
-            'id', 'name', 'token', 'format', 'enabled',
+            'id', 'name', 'token', 'format', 'enabled', 'proxy_ids',
             'subscription_url', 'created_at', 'updated_at',
             'created_by', 'created_by_username'
         ]

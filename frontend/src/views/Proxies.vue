@@ -71,6 +71,13 @@
             >
               查看日志
             </el-button>
+            <el-button 
+              size="small" 
+              type="success" 
+              @click="handleManageCaddy(row)"
+            >
+              Caddy管理
+            </el-button>
             <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -102,7 +109,7 @@
               <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注信息" style="width: 500px;" />
             </el-form-item>
             <el-form-item label="服务器" prop="server">
-              <el-select v-model="form.server" placeholder="请选择服务器" style="width: 300px;">
+              <el-select v-model="form.server" placeholder="请选择服务器" style="width: 300px;" @change="handleServerChange">
                 <el-option
                   v-for="server in servers"
                   :key="server.id"
@@ -111,8 +118,46 @@
                 />
               </el-select>
             </el-form-item>
-            <el-form-item label="启用">
+            <el-form-item 
+              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
+              label="Agent连接地址" 
+              prop="agent_connect_host"
+            >
+              <el-input 
+                v-model="form.agent_connect_host" 
+                placeholder="例如: agent.example.com 或 cloudflare域名（可选，留空使用服务器主机地址）" 
+                style="width: 300px;"
+              />
+              <div class="form-tip">Agent连接地址，用于通过Cloudflare等反向代理访问Agent（可选）</div>
+            </el-form-item>
+            <el-form-item 
+              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
+              label="Agent连接端口" 
+              prop="agent_connect_port"
+            >
+              <el-input-number 
+                v-model="form.agent_connect_port" 
+                :min="1" 
+                :max="65535" 
+                placeholder="留空使用默认端口"
+                style="width: 300px;"
+              />
+              <div class="form-tip">Agent连接端口（可选，留空使用默认端口）</div>
+            </el-form-item>
+            <el-form-item 
+              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
+              label="心跳模式" 
+              prop="heartbeat_mode"
+            >
+              <el-select v-model="form.heartbeat_mode" placeholder="请选择心跳模式" style="width: 300px;">
+                <el-option label="推送模式（Agent主动推送）" value="push" />
+                <el-option label="拉取模式（中心平台主动拉取）" value="pull" />
+              </el-select>
+              <div class="form-tip">推送模式：Agent主动发送心跳；拉取模式：平台定时检查Agent状态（适合通过Cloudflare访问）</div>
+            </el-form-item>
+            <el-form-item label="启用订阅">
               <el-switch v-model="form.enable" />
+              <div class="form-tip">控制节点是否出现在订阅中</div>
             </el-form-item>
             <el-form-item label="协议" prop="protocol">
               <el-select v-model="form.protocol" placeholder="请选择协议" style="width: 200px;">
@@ -382,12 +427,126 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- Caddy 管理对话框 -->
+    <el-dialog
+      v-model="caddyDialogVisible"
+      title="Caddy 管理"
+      width="800px"
+      @close="resetCaddyForm"
+    >
+      <el-tabs v-model="caddyActiveTab">
+        <el-tab-pane label="Caddyfile 编辑" name="edit">
+          <el-form label-width="120px" style="margin-top: 20px;">
+            <el-form-item label="Caddyfile 内容">
+              <el-input
+                v-model="caddyfileContent"
+                type="textarea"
+                :rows="20"
+                :placeholder="caddyLoading ? '正在读取 Caddyfile...' : 'Caddyfile 内容'"
+                :disabled="caddyLoading"
+                style="font-family: monospace;"
+                v-loading="caddyLoading && !caddyfileContent"
+              />
+              <div v-if="caddyLoading && !caddyfileContent" style="color: #909399; font-size: 12px; margin-top: 5px;">
+                <el-icon class="is-loading"><Loading /></el-icon> 正在从远程服务器读取 Caddyfile...
+              </div>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="handleLoadCaddyfile" :loading="caddyLoading">读取 Caddyfile</el-button>
+              <el-button type="success" @click="handleSaveCaddyfile" :loading="caddyLoading">保存并验证</el-button>
+              <el-button type="warning" @click="handleValidateCaddyfile" :loading="caddyLoading">验证配置</el-button>
+              <el-button type="info" @click="handleReloadCaddy" :loading="caddyLoading">重载 Caddy</el-button>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+        <el-tab-pane label="TLS 证书管理" name="certificates">
+          <div style="margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <span>证书列表</span>
+              <el-button type="primary" size="small" @click="handleAddCertificate">新增证书</el-button>
+            </div>
+            <el-table :data="certificates" stripe style="width: 100%">
+              <el-table-column prop="domain" label="域名" width="200" />
+              <el-table-column prop="cert_path" label="证书路径" />
+              <el-table-column prop="key_path" label="密钥路径" />
+              <el-table-column label="操作" width="200">
+                <template #default="{ row }">
+                  <el-button size="small" type="primary" @click="handleEditCertificate(row)">编辑</el-button>
+                  <el-button size="small" type="danger" @click="handleDeleteCertificate(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="操作结果" name="result">
+          <el-alert
+            v-if="caddyResult"
+            :title="caddyResult"
+            :type="caddyResultType"
+            :closable="false"
+            style="margin-bottom: 20px;"
+          />
+          <el-input
+            v-model="caddyResultDetail"
+            type="textarea"
+            :rows="15"
+            readonly
+            placeholder="操作结果将显示在这里"
+            style="font-family: monospace;"
+          />
+        </el-tab-pane>
+      </el-tabs>
+    </el-dialog>
+
+    <!-- 证书编辑对话框 -->
+    <el-dialog
+      v-model="certDialogVisible"
+      :title="certEditing ? '编辑证书' : '新增证书'"
+      width="700px"
+      @close="resetCertForm"
+    >
+      <el-form label-width="120px">
+        <el-form-item label="域名">
+          <el-input v-model="certForm.domain" placeholder="例如: example.com" />
+        </el-form-item>
+        <el-form-item label="证书路径">
+          <el-input v-model="certForm.cert_path" placeholder="例如: /data/ssl/example.com.pem" />
+        </el-form-item>
+        <el-form-item label="密钥路径">
+          <el-input v-model="certForm.key_path" placeholder="例如: /data/ssl/example.com.key" />
+        </el-form-item>
+        <el-form-item label="证书内容">
+          <el-input
+            v-model="certForm.cert_content"
+            type="textarea"
+            :rows="10"
+            placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+            style="font-family: monospace;"
+          />
+        </el-form-item>
+        <el-form-item label="密钥内容">
+          <el-input
+            v-model="certForm.key_content"
+            type="textarea"
+            :rows="10"
+            placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+            style="font-family: monospace;"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="certDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveCertificate" :loading="certLoading">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 import api from '@/api'
 
 const loading = ref(false)
@@ -406,6 +565,29 @@ const stopping = ref({})  // 记录正在停止部署的节点ID
 let refreshInterval = null  // 自动刷新定时器
 let logRefreshInterval = null  // 日志自动刷新定时器
 
+// Caddy 管理相关
+const caddyDialogVisible = ref(false)
+const caddyActiveTab = ref('edit')
+const caddyfileContent = ref('')
+const caddyLoading = ref(false)
+const caddyResult = ref('')
+const caddyResultType = ref('info')
+const caddyResultDetail = ref('')
+const currentCaddyProxyId = ref(null)  // 当前管理 Caddy 的代理ID
+
+// 证书管理相关
+const certificates = ref([])
+const certDialogVisible = ref(false)
+const certEditing = ref(false)
+const certLoading = ref(false)
+const certForm = reactive({
+  domain: '',
+  cert_path: '',
+  key_path: '',
+  cert_content: '',
+  key_content: ''
+})
+
 // 基础表单
 const form = reactive({
   name: '',
@@ -416,7 +598,54 @@ const form = reactive({
   listen: '',
   port: 443,
   totalGB: 0,
-  expiryTime: null
+  expiryTime: null,
+  agent_connect_host: '',
+  agent_connect_port: null,
+  heartbeat_mode: 'push'  // 默认推送模式
+})
+
+const selectedServer = computed(() => {
+  if (!form.server) return null
+  return servers.value.find(s => s.id === form.server)
+})
+
+const handleServerChange = () => {
+  // 当选择服务器时，如果服务器有Agent连接地址，自动填充
+  if (selectedServer.value) {
+    if (selectedServer.value.agent_connect_host) {
+      form.agent_connect_host = selectedServer.value.agent_connect_host
+    }
+    if (selectedServer.value.agent_connect_port) {
+      form.agent_connect_port = selectedServer.value.agent_connect_port
+    }
+  }
+  
+  // 如果填写了Agent连接地址，自动设置为拉取模式
+  if (form.agent_connect_host) {
+    form.heartbeat_mode = 'pull'
+  }
+}
+
+// 监听Agent连接地址变化，自动设置心跳模式
+watch(() => form.agent_connect_host, (newVal) => {
+  if (newVal && newVal.trim() !== '') {
+    // 如果填写了Agent连接地址，自动设置为拉取模式
+    form.heartbeat_mode = 'pull'
+  } else if (!form.agent_connect_port) {
+    // 如果清空了连接地址且没有端口，恢复为推送模式
+    form.heartbeat_mode = 'push'
+  }
+})
+
+// 监听Agent连接端口变化
+watch(() => form.agent_connect_port, (newVal) => {
+  if (newVal && form.agent_connect_host) {
+    // 如果填写了端口和地址，自动设置为拉取模式
+    form.heartbeat_mode = 'pull'
+  } else if (!form.agent_connect_host && !newVal) {
+    // 如果都清空了，恢复为推送模式
+    form.heartbeat_mode = 'push'
+  }
 })
 
 // 协议设置
@@ -998,7 +1227,10 @@ const resetForm = () => {
     listen: '',
     port: 443,
     totalGB: 0,
-    expiryTime: null
+    expiryTime: null,
+    agent_connect_host: '',
+    agent_connect_port: null,
+    heartbeat_mode: 'push'  // 默认推送模式
   })
   
   // 重置协议设置
@@ -1032,6 +1264,305 @@ const resetForm = () => {
   
   activeTab.value = 'basic'
   formRef.value?.resetFields()
+}
+
+// Caddy 管理相关函数
+const handleManageCaddy = (row) => {
+  currentCaddyProxyId.value = row.id
+  caddyDialogVisible.value = true
+  caddyActiveTab.value = 'edit'
+  caddyfileContent.value = ''
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  caddyLoading.value = true  // 立即显示加载状态
+  certificates.value = []  // 清空证书列表
+  // 自动读取 Caddyfile
+  handleLoadCaddyfile()
+  // 自动加载证书列表
+  handleLoadCertificates()
+}
+
+const handleLoadCaddyfile = async () => {
+  if (!currentCaddyProxyId.value) return
+  
+  caddyLoading.value = true
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  caddyfileContent.value = ''  // 清空内容，显示加载状态
+  
+  try {
+    const response = await api.get(`/proxies/${currentCaddyProxyId.value}/get_caddyfile/`)
+    if (response.data.content) {
+      caddyfileContent.value = response.data.content
+      caddyResult.value = '读取成功'
+      caddyResultType.value = 'success'
+      caddyResultDetail.value = response.data.message || 'Caddyfile 读取成功'
+    } else {
+      caddyResult.value = '读取失败'
+      caddyResultType.value = 'error'
+      caddyResultDetail.value = response.data.error || 'Caddyfile 不存在或读取失败'
+      caddyActiveTab.value = 'result'
+    }
+  } catch (error) {
+    caddyResult.value = '读取失败'
+    caddyResultType.value = 'error'
+    caddyResultDetail.value = error.response?.data?.error || error.message || '读取 Caddyfile 失败'
+    caddyActiveTab.value = 'result'
+    ElMessage.error('读取 Caddyfile 失败')
+  } finally {
+    caddyLoading.value = false
+  }
+}
+
+const handleSaveCaddyfile = async () => {
+  if (!currentCaddyProxyId.value) return
+  
+  if (!caddyfileContent.value.trim()) {
+    ElMessage.warning('Caddyfile 内容不能为空')
+    return
+  }
+  
+  caddyLoading.value = true
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  
+  try {
+    const response = await api.post(`/proxies/${currentCaddyProxyId.value}/update_caddyfile/`, {
+      content: caddyfileContent.value
+    })
+    
+    if (response.data.message) {
+      caddyResult.value = '保存成功'
+      caddyResultType.value = 'success'
+      caddyResultDetail.value = response.data.result || response.data.message
+      ElMessage.success('Caddyfile 保存并验证成功')
+    } else {
+      caddyResult.value = '保存失败'
+      caddyResultType.value = 'error'
+      caddyResultDetail.value = response.data.error || response.data.result || '保存失败'
+      ElMessage.error('Caddyfile 保存失败')
+    }
+    caddyActiveTab.value = 'result'
+  } catch (error) {
+    caddyResult.value = '保存失败'
+    caddyResultType.value = 'error'
+    caddyResultDetail.value = error.response?.data?.error || error.response?.data?.result || error.message || '保存 Caddyfile 失败'
+    caddyActiveTab.value = 'result'
+    ElMessage.error('保存 Caddyfile 失败')
+  } finally {
+    caddyLoading.value = false
+  }
+}
+
+const handleValidateCaddyfile = async () => {
+  if (!currentCaddyProxyId.value) return
+  
+  caddyLoading.value = true
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  
+  try {
+    const response = await api.post(`/proxies/${currentCaddyProxyId.value}/validate_caddyfile/`)
+    
+    if (response.data.valid) {
+      caddyResult.value = '配置验证成功'
+      caddyResultType.value = 'success'
+      caddyResultDetail.value = response.data.result || response.data.message || '配置验证成功'
+      ElMessage.success('Caddyfile 配置验证成功')
+    } else {
+      caddyResult.value = '配置验证失败'
+      caddyResultType.value = 'error'
+      caddyResultDetail.value = response.data.error || response.data.result || '配置验证失败'
+      ElMessage.error('Caddyfile 配置验证失败')
+    }
+    caddyActiveTab.value = 'result'
+  } catch (error) {
+    caddyResult.value = '验证失败'
+    caddyResultType.value = 'error'
+    caddyResultDetail.value = error.response?.data?.error || error.response?.data?.result || error.message || '验证 Caddyfile 失败'
+    caddyActiveTab.value = 'result'
+    ElMessage.error('验证 Caddyfile 失败')
+  } finally {
+    caddyLoading.value = false
+  }
+}
+
+const handleReloadCaddy = async () => {
+  if (!currentCaddyProxyId.value) return
+  
+  caddyLoading.value = true
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  
+  try {
+    const response = await api.post(`/proxies/${currentCaddyProxyId.value}/reload_caddy/`)
+    
+    if (response.data.message) {
+      caddyResult.value = '重载成功'
+      caddyResultType.value = 'success'
+      caddyResultDetail.value = response.data.result || response.data.message
+      ElMessage.success('Caddy 重载成功')
+    } else {
+      caddyResult.value = '重载失败'
+      caddyResultType.value = 'error'
+      caddyResultDetail.value = response.data.error || response.data.result || '重载失败'
+      ElMessage.error('Caddy 重载失败')
+    }
+    caddyActiveTab.value = 'result'
+  } catch (error) {
+    caddyResult.value = '重载失败'
+    caddyResultType.value = 'error'
+    caddyResultDetail.value = error.response?.data?.error || error.response?.data?.result || error.message || '重载 Caddy 失败'
+    caddyActiveTab.value = 'result'
+    ElMessage.error('重载 Caddy 失败')
+  } finally {
+    caddyLoading.value = false
+  }
+}
+
+const resetCaddyForm = () => {
+  caddyfileContent.value = ''
+  caddyResult.value = ''
+  caddyResultDetail.value = ''
+  caddyActiveTab.value = 'edit'
+  currentCaddyProxyId.value = null
+  certificates.value = []
+}
+
+// 证书管理相关函数
+const handleLoadCertificates = async () => {
+  if (!currentCaddyProxyId.value) return
+  
+  try {
+    const response = await api.get(`/proxies/${currentCaddyProxyId.value}/list_certificates/`)
+    if (response.data.certificates) {
+      certificates.value = response.data.certificates
+    } else {
+      certificates.value = []
+    }
+  } catch (error) {
+    console.error('加载证书列表失败:', error)
+    certificates.value = []
+    ElMessage.error('加载证书列表失败')
+  }
+}
+
+const handleAddCertificate = () => {
+  certEditing.value = false
+  resetCertForm()
+  certDialogVisible.value = true
+}
+
+const handleEditCertificate = async (row) => {
+  certEditing.value = true
+  certForm.domain = row.domain
+  certForm.cert_path = row.cert_path
+  certForm.key_path = row.key_path
+  certForm.cert_content = ''
+  certForm.key_content = ''
+  certDialogVisible.value = true
+  
+  // 读取证书内容
+  certLoading.value = true
+  try {
+    const response = await api.get(`/proxies/${currentCaddyProxyId.value}/get_certificate/`, {
+      params: {
+        cert_path: row.cert_path,
+        key_path: row.key_path
+      }
+    })
+    if (response.data.cert_content && response.data.key_content) {
+      certForm.cert_content = response.data.cert_content
+      certForm.key_content = response.data.key_content
+    } else {
+      ElMessage.warning('读取证书内容失败，请手动输入')
+    }
+  } catch (error) {
+    console.error('读取证书失败:', error)
+    ElMessage.warning('读取证书内容失败，请手动输入')
+  } finally {
+    certLoading.value = false
+  }
+}
+
+const handleSaveCertificate = async () => {
+  if (!certForm.domain || !certForm.cert_path || !certForm.key_path) {
+    ElMessage.warning('请填写完整信息')
+    return
+  }
+  
+  if (!certForm.cert_content || !certForm.key_content) {
+    ElMessage.warning('请填写证书和密钥内容')
+    return
+  }
+  
+  certLoading.value = true
+  try {
+    const response = await api.post(`/proxies/${currentCaddyProxyId.value}/upload_certificate/`, {
+      domain: certForm.domain,
+      cert_path: certForm.cert_path,
+      key_path: certForm.key_path,
+      cert_content: certForm.cert_content,
+      key_content: certForm.key_content
+    })
+    
+    if (response.data.message) {
+      ElMessage.success('证书保存成功')
+      certDialogVisible.value = false
+      // 重新加载证书列表
+      handleLoadCertificates()
+    } else {
+      ElMessage.error(response.data.error || '证书保存失败')
+    }
+  } catch (error) {
+    console.error('保存证书失败:', error)
+    ElMessage.error(error.response?.data?.error || '证书保存失败')
+  } finally {
+    certLoading.value = false
+  }
+}
+
+const handleDeleteCertificate = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除证书 "${row.domain}" 吗？\n证书路径: ${row.cert_path}\n密钥路径: ${row.key_path}`,
+      '确认删除',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    const response = await api.delete(`/proxies/${currentCaddyProxyId.value}/delete_certificate/`, {
+      data: {
+        cert_path: row.cert_path,
+        key_path: row.key_path
+      }
+    })
+    
+    if (response.data.message) {
+      ElMessage.success('证书删除成功')
+      // 重新加载证书列表
+      handleLoadCertificates()
+    } else {
+      ElMessage.error(response.data.error || '证书删除失败')
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除证书失败:', error)
+      ElMessage.error(error.response?.data?.error || '证书删除失败')
+    }
+  }
+}
+
+const resetCertForm = () => {
+  certForm.domain = ''
+  certForm.cert_path = ''
+  certForm.key_path = ''
+  certForm.cert_content = ''
+  certForm.key_content = ''
+  certEditing.value = false
 }
 
 // 监听协议变化，自动生成UUID

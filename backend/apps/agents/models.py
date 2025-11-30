@@ -1,39 +1,43 @@
-import uuid
 from django.db import models
 from django.conf import settings
-from apps.servers.models import Server
 
 
 class Agent(models.Model):
-    """Agent 模型"""
+    """Agent模型"""
     STATUS_CHOICES = [
         ('online', '在线'),
         ('offline', '离线'),
-        ('error', '错误'),
     ]
 
-    server = models.OneToOneField(Server, on_delete=models.CASCADE, related_name='agent', verbose_name='服务器')
-    token = models.UUIDField(default=uuid.uuid4, unique=True, verbose_name='Agent Token')
-    secret_key = models.CharField(max_length=64, verbose_name='加密密钥')
+    HEARTBEAT_MODE_CHOICES = [
+        ('push', '推送模式'),
+        ('pull', '拉取模式'),
+    ]
+
+    server = models.OneToOneField('servers.Server', on_delete=models.CASCADE, related_name='agent', verbose_name='服务器')
+    token = models.CharField(max_length=64, unique=True, verbose_name='Token')
+    secret_key = models.CharField(max_length=255, blank=True, null=True, verbose_name='加密密钥', help_text='用于Agent通信加密的密钥')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='offline', verbose_name='状态')
-    version = models.CharField(max_length=50, blank=True, null=True, verbose_name='Agent版本')
+    version = models.CharField(max_length=50, blank=True, null=True, verbose_name='版本')
     last_heartbeat = models.DateTimeField(null=True, blank=True, verbose_name='最后心跳时间')
-    registered_at = models.DateTimeField(auto_now_add=True, verbose_name='注册时间')
+    heartbeat_mode = models.CharField(max_length=10, choices=HEARTBEAT_MODE_CHOICES, default='push', verbose_name='心跳模式')
+    last_check = models.DateTimeField(null=True, blank=True, verbose_name='最后检查时间（拉取模式）')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
         verbose_name = 'Agent'
         verbose_name_plural = 'Agent'
-        ordering = ['-registered_at']
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f"Agent for {self.server.name}"
+        return f"Agent-{self.server.name}"
 
 
 class AgentCommand(models.Model):
-    """Agent命令队列"""
+    """Agent命令模型"""
     STATUS_CHOICES = [
-        ('pending', '等待中'),
+        ('pending', '待执行'),
         ('running', '执行中'),
         ('success', '成功'),
         ('failed', '失败'),
@@ -41,19 +45,36 @@ class AgentCommand(models.Model):
 
     agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='commands', verbose_name='Agent')
     command = models.CharField(max_length=255, verbose_name='命令')
-    args = models.JSONField(default=list, verbose_name='参数')
+    args = models.JSONField(default=list, blank=True, verbose_name='参数')
     timeout = models.IntegerField(default=300, verbose_name='超时时间（秒）')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='状态')
     result = models.TextField(blank=True, null=True, verbose_name='执行结果')
     error = models.TextField(blank=True, null=True, verbose_name='错误信息')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
     completed_at = models.DateTimeField(null=True, blank=True, verbose_name='完成时间')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
     class Meta:
         verbose_name = 'Agent命令'
         verbose_name_plural = 'Agent命令'
         ordering = ['-created_at']
 
+
+class CommandTemplate(models.Model):
+    """命令模板模型"""
+    name = models.CharField(max_length=100, verbose_name='模板名称')
+    description = models.TextField(blank=True, null=True, verbose_name='描述')
+    command = models.CharField(max_length=255, verbose_name='命令')
+    args = models.JSONField(default=list, blank=True, verbose_name='参数')
+    timeout = models.IntegerField(default=300, verbose_name='超时时间（秒）')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name='创建者')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        verbose_name = '命令模板'
+        verbose_name_plural = '命令模板'
+        ordering = ['-created_at']
+
     def __str__(self):
-        return f"{self.command} ({self.status})"
+        return self.name

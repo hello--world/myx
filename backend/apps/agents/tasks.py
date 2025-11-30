@@ -1,14 +1,55 @@
-from .models import Agent
+"""
+Agent相关异步任务
+"""
 from django.utils import timezone
 from datetime import timedelta
+from .models import Agent
+import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def check_agent_status():
-    """检查Agent状态（定期任务）"""
-    # 检查超过60秒没有心跳的Agent，标记为离线
-    offline_threshold = timezone.now() - timedelta(seconds=60)
-    Agent.objects.filter(
-        last_heartbeat__lt=offline_threshold,
-        status='online'
-    ).update(status='offline')
+    """检查Agent状态（拉取模式）"""
+    # 获取所有使用拉取模式的Agent
+    agents = Agent.objects.filter(heartbeat_mode='pull', status__in=['online', 'offline'])
+    
+    for agent in agents:
+        try:
+            # 获取Agent连接地址
+            server = agent.server
+            connect_host = server.agent_connect_host or server.host
+            connect_port = server.agent_connect_port or 8000
+            
+            # 构建Agent健康检查URL
+            # 假设Agent提供一个健康检查端点
+            health_url = f"http://{connect_host}:{connect_port}/health"
+            
+            # 发送HTTP请求检查Agent是否在线
+            response = requests.get(health_url, timeout=5)
+            
+            if response.status_code == 200:
+                agent.status = 'online'
+                agent.last_check = timezone.now()
+                agent.last_heartbeat = timezone.now()
+            else:
+                agent.status = 'offline'
+                agent.last_check = timezone.now()
+        except Exception as e:
+            logger.error(f"检查Agent {agent.id} 状态失败: {str(e)}")
+            agent.status = 'offline'
+            agent.last_check = timezone.now()
+        
+        agent.save()
 
+
+def mark_offline_agents():
+    """标记长时间未心跳的Agent为离线（推送模式）"""
+    # 对于推送模式，如果超过5分钟没有心跳，标记为离线
+    threshold = timezone.now() - timedelta(minutes=5)
+    Agent.objects.filter(
+        heartbeat_mode='push',
+        status='online',
+        last_heartbeat__lt=threshold
+    ).update(status='offline')

@@ -14,6 +14,7 @@ class Subscription(models.Model):
     token = models.UUIDField(default=uuid.uuid4, unique=True, verbose_name='订阅Token')
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='v2ray', verbose_name='订阅格式')
     enabled = models.BooleanField(default=True, verbose_name='启用')
+    proxy_ids = models.JSONField(default=list, verbose_name='选中的节点ID列表')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name='创建者')

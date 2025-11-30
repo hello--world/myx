@@ -3,6 +3,7 @@ from . import views
 from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
+router.register(r'command-templates', views.CommandTemplateViewSet, basename='command-template')
 router.register(r'', views.AgentViewSet, basename='agent')
 
 urlpatterns = [

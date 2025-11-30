@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Agent
+from .models import Agent, CommandTemplate
 
 
 class AgentSerializer(serializers.ModelSerializer):
@@ -7,6 +7,8 @@ class AgentSerializer(serializers.ModelSerializer):
     server_name = serializers.CharField(source='server.name', read_only=True)
     server_host = serializers.CharField(source='server.host', read_only=True)
     server_port = serializers.IntegerField(source='server.port', read_only=True)
+    agent_connect_host = serializers.CharField(source='server.agent_connect_host', read_only=True)
+    agent_connect_port = serializers.IntegerField(source='server.agent_connect_port', read_only=True)
     connection_method = serializers.CharField(source='server.connection_method', read_only=True)
     deployment_target = serializers.CharField(source='server.deployment_target', read_only=True)
     server_status = serializers.CharField(source='server.status', read_only=True)
@@ -15,11 +17,12 @@ class AgentSerializer(serializers.ModelSerializer):
         model = Agent
         fields = [
             'id', 'server', 'server_name', 'server_host', 'server_port',
+            'agent_connect_host', 'agent_connect_port',
             'connection_method', 'deployment_target', 'server_status',
-            'token', 'status', 'version', 'last_heartbeat',
-            'registered_at', 'updated_at'
+            'token', 'status', 'version', 'heartbeat_mode', 'last_heartbeat', 'last_check',
+            'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'token', 'secret_key', 'status', 'version', 'last_heartbeat', 'registered_at', 'updated_at']
+        read_only_fields = ['id', 'token', 'status', 'version', 'last_heartbeat', 'last_check', 'created_at', 'updated_at']
 
 
 class AgentRegisterSerializer(serializers.Serializer):
@@ -58,4 +61,16 @@ class AgentCommandDetailSerializer(serializers.ModelSerializer):
             'result', 'error', 'created_at', 'started_at', 'completed_at'
         ]
         read_only_fields = ['id', 'agent', 'status', 'result', 'error', 'created_at', 'started_at', 'completed_at']
+
+
+class CommandTemplateSerializer(serializers.ModelSerializer):
+    """命令模板序列化器"""
+    class Meta:
+        model = CommandTemplate
+        fields = ['id', 'name', 'description', 'command', 'args', 'timeout', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def create(self, validated_data):
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)
 

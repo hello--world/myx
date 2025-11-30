@@ -98,6 +98,22 @@
             placeholder="请输入SSH私钥内容（可选）"
           />
         </el-form-item>
+        <el-form-item label="保存密码">
+          <el-switch
+            v-model="form.save_password"
+            active-text="开启"
+            inactive-text="关闭"
+          />
+          <div class="form-tip">开启后，密码将加密保存到数据库</div>
+        </el-form-item>
+        <el-form-item label="启用SSH Key登录">
+          <el-switch
+            v-model="form.enable_ssh_key"
+            active-text="开启"
+            inactive-text="关闭"
+          />
+          <div class="form-tip">开启后，系统将自动生成SSH key并添加到服务器</div>
+        </el-form-item>
         <el-form-item label="连接方式" prop="connection_method">
           <el-select v-model="form.connection_method" placeholder="请选择连接方式" style="width: 100%">
             <el-option label="SSH" value="ssh" />
@@ -109,6 +125,30 @@
             <el-option label="宿主机" value="host" />
             <el-option label="Docker" value="docker" />
           </el-select>
+        </el-form-item>
+        <el-form-item 
+          v-if="form.connection_method === 'agent'" 
+          label="Agent连接地址" 
+          prop="agent_connect_host"
+        >
+          <el-input 
+            v-model="form.agent_connect_host" 
+            placeholder="例如: agent.example.com 或 cloudflare域名（可选，留空使用主机地址）" 
+          />
+          <div class="form-tip">Agent连接地址，用于通过Cloudflare等反向代理访问Agent（可选）</div>
+        </el-form-item>
+        <el-form-item 
+          v-if="form.connection_method === 'agent'" 
+          label="Agent连接端口" 
+          prop="agent_connect_port"
+        >
+          <el-input-number 
+            v-model="form.agent_connect_port" 
+            :min="1" 
+            :max="65535" 
+            placeholder="留空使用默认端口"
+          />
+          <div class="form-tip">Agent连接端口（可选，留空使用默认端口）</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -167,6 +207,8 @@ const form = reactive({
   host: '',
   port: 22,
   username: '',
+  save_password: false,
+  enable_ssh_key: false,
   password: '',
   private_key: '',
   connection_method: 'ssh',
@@ -270,8 +312,12 @@ const handleEdit = (row) => {
     username: row.username,
     password: '',
     private_key: '',
+    save_password: row.save_password || false,
+    enable_ssh_key: row.enable_ssh_key || false,
     connection_method: row.connection_method || 'ssh',
-    deployment_target: row.deployment_target || 'host'
+    deployment_target: row.deployment_target || 'host',
+    agent_connect_host: row.agent_connect_host || '',
+    agent_connect_port: row.agent_connect_port || null
   })
   dialogTestSuccess.value = false // 重置测试状态
   dialogVisible.value = true
@@ -387,6 +433,8 @@ const resetForm = () => {
     username: '',
     password: '',
     private_key: '',
+    save_password: false,
+    enable_ssh_key: false,
     connection_method: 'ssh',
     deployment_target: 'host'
   })

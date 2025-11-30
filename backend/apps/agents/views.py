@@ -1,17 +1,45 @@
 import secrets
+import logging
 from datetime import datetime, timedelta
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.utils import timezone
-from .models import Agent
+from .models import Agent, CommandTemplate
 from .serializers import (
     AgentSerializer, AgentRegisterSerializer,
     AgentHeartbeatSerializer, AgentCommandSerializer,
-    AgentCommandDetailSerializer
+    AgentCommandDetailSerializer, CommandTemplateSerializer
 )
 from apps.servers.models import Server
+
+logger = logging.getLogger(__name__)
+
+
+def get_agent_by_token(token):
+    """
+    通过token查找Agent，自动处理UUID格式转换（带连字符/不带连字符）
+    """
+    import uuid
+    # 先尝试直接查询
+    try:
+        return Agent.objects.get(token=token)
+    except Agent.DoesNotExist:
+        # 如果直接查询失败，尝试格式转换
+        try:
+            # 如果token是带连字符的UUID格式，转换为不带连字符的格式
+            if '-' in token:
+                uuid_obj = uuid.UUID(token)
+                token_hex = uuid_obj.hex
+                return Agent.objects.get(token=token_hex)
+            else:
+                # 如果token是不带连字符的格式，尝试转换为带连字符的格式
+                uuid_obj = uuid.UUID(token)
+                token_with_dash = str(uuid_obj)
+                return Agent.objects.get(token=token_with_dash)
+        except (ValueError, Agent.DoesNotExist):
+            raise Agent.DoesNotExist(f"Agent with token '{token}' does not exist")
 
 
 class AgentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -22,6 +50,21 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         # 只返回当前用户创建的服务器关联的 Agent
         return Agent.objects.filter(server__created_by=self.request.user)
+
+    @action(detail=True, methods=['patch'])
+    def update_heartbeat_mode(self, request, pk=None):
+        """更新Agent心跳模式"""
+        agent = self.get_object()
+        heartbeat_mode = request.data.get('heartbeat_mode')
+        
+        if heartbeat_mode not in ['push', 'pull']:
+            return Response({'error': '心跳模式必须是push或pull'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        agent.heartbeat_mode = heartbeat_mode
+        agent.save()
+        
+        serializer = self.get_serializer(agent)
+        return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
     def send_command(self, request, pk=None):
@@ -47,34 +90,127 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         agent = self.get_object()
         server = agent.server
 
-        # 检查服务器是否有SSH凭据
-        if not server.password and not server.private_key:
-            return Response({'error': '服务器缺少SSH凭据，无法重新部署'}, status=status.HTTP_400_BAD_REQUEST)
+        # 根据服务器连接方式选择部署方法
+        if server.connection_method == 'agent' and agent.status == 'online':
+            # 如果已经是Agent连接且Agent在线，通过Agent执行重新部署
+            from .command_queue import CommandQueue
+            from django.conf import settings
+            import os
+            
+            github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
+            
+            # 通过Agent执行重新部署脚本
+            redeploy_script = f"""#!/bin/bash
+set -e
 
-        # 创建部署任务
-        from apps.deployments.models import Deployment
-        deployment = Deployment.objects.create(
-            server=server,
-            deployment_type='agent',
-            connection_method='ssh',
-            deployment_target=server.deployment_target,
-            created_by=request.user
-        )
+# 检测系统
+OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+    ARCH="amd64"
+elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    ARCH="arm64"
+fi
 
-        # 异步执行部署
-        from apps.deployments.tasks import install_agent_via_ssh
-        import threading
-        def _deploy():
-            install_agent_via_ssh(server, deployment)
+BINARY_NAME="myx-agent-${{OS_NAME}}-${{ARCH}}"
+GITHUB_URL="https://github.com/{github_repo}/releases/download/latest/${{BINARY_NAME}}"
 
-        thread = threading.Thread(target=_deploy)
-        thread.daemon = True
-        thread.start()
+echo "正在停止Agent服务..."
+systemctl stop myx-agent || true
 
-        return Response({
-            'message': 'Agent重新部署已启动',
-            'deployment_id': deployment.id
-        }, status=status.HTTP_202_ACCEPTED)
+echo "正在从 GitHub 下载最新 Agent..."
+if curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
+    echo "Agent 下载成功"
+    chmod +x /tmp/myx-agent
+    mv /tmp/myx-agent /opt/myx-agent/myx-agent
+    chmod +x /opt/myx-agent/myx-agent
+    
+    # 重新注册Agent（如果需要）
+    API_URL=$(grep -oP '"APIURL":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
+    if [ -n "$API_URL" ]; then
+        SERVER_TOKEN=$(grep -oP '"ServerToken":\\s*"\\K[^"]+' /etc/myx-agent/config.json || echo "")
+        if [ -n "$SERVER_TOKEN" ]; then
+            echo "正在重新注册Agent..."
+            /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL" || true
+        fi
+    fi
+    
+    echo "正在启动Agent服务..."
+    systemctl start myx-agent
+    systemctl status myx-agent --no-pager
+    echo "Agent重新部署完成"
+else
+    echo "Agent 下载失败"
+    systemctl start myx-agent || true
+    exit 1
+fi
+"""
+            
+            import base64
+            script_b64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('utf-8')
+            cmd = CommandQueue.add_command(
+                agent=agent,
+                command='bash',
+                args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
+                timeout=600
+            )
+            
+            from .serializers import AgentCommandDetailSerializer
+            serializer = AgentCommandDetailSerializer(cmd)
+            return Response({
+                'message': 'Agent重新部署命令已下发（通过Agent执行）',
+                'command_id': cmd.id,
+                'command': serializer.data
+            }, status=status.HTTP_202_ACCEPTED)
+        else:
+            # 使用SSH重新部署
+            # 检查服务器是否有SSH凭据
+            if not server.password and not server.private_key:
+                return Response({'error': '服务器缺少SSH凭据，无法重新部署。请先配置SSH密码或私钥。'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 创建部署任务
+            from apps.deployments.models import Deployment
+            deployment = Deployment.objects.create(
+                name=f"重新部署Agent - {server.name}",
+                server=server,
+                deployment_type='agent',
+                connection_method='ssh',
+                deployment_target=server.deployment_target or 'host',
+                status='running',
+                created_by=request.user
+            )
+
+            # 异步执行部署
+            from apps.deployments.tasks import install_agent_via_ssh
+            import threading
+            def _deploy():
+                try:
+                    install_agent_via_ssh(server, deployment)
+                    # 等待Agent注册
+                    from apps.deployments.tasks import wait_for_agent_registration
+                    agent_registered = wait_for_agent_registration(server, timeout=60)
+                    if agent_registered:
+                        deployment.status = 'success'
+                        deployment.completed_at = timezone.now()
+                    else:
+                        deployment.status = 'failed'
+                        deployment.error_message = 'Agent注册超时'
+                        deployment.completed_at = timezone.now()
+                except Exception as e:
+                    deployment.status = 'failed'
+                    deployment.error_message = f'部署失败: {str(e)}'
+                    deployment.completed_at = timezone.now()
+                finally:
+                    deployment.save()
+
+            thread = threading.Thread(target=_deploy)
+            thread.daemon = True
+            thread.start()
+
+            return Response({
+                'message': 'Agent重新部署已启动（通过SSH）',
+                'deployment_id': deployment.id
+            }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])
     def upgrade(self, request, pk=None):
@@ -188,11 +324,57 @@ fi
         serializer = AgentCommandDetailSerializer(commands, many=True)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def check_status(self, request, pk=None):
+        """手动检查Agent状态（拉取模式）"""
+        agent = self.get_object()
+        
+        if agent.heartbeat_mode != 'pull':
+            return Response({'error': '此Agent不是拉取模式'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from .tasks import check_agent_status
+        # 只检查这个Agent
+        try:
+            server = agent.server
+            connect_host = server.agent_connect_host or server.host
+            connect_port = server.agent_connect_port or 8000
+            
+            import requests
+            health_url = f"http://{connect_host}:{connect_port}/health"
+            response = requests.get(health_url, timeout=5)
+            
+            if response.status_code == 200:
+                agent.status = 'online'
+                agent.last_check = timezone.now()
+                agent.last_heartbeat = timezone.now()
+            else:
+                agent.status = 'offline'
+                agent.last_check = timezone.now()
+        except Exception as e:
+            agent.status = 'offline'
+            agent.last_check = timezone.now()
+        
+        agent.save()
+        
+        serializer = self.get_serializer(agent)
+        return Response(serializer.data)
+
+
+class CommandTemplateViewSet(viewsets.ModelViewSet):
+    """命令模板视图集"""
+    queryset = CommandTemplate.objects.all()
+    serializer_class = CommandTemplateSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return CommandTemplate.objects.filter(created_by=self.request.user)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def agent_register(request):
     """Agent注册接口"""
+    logger.info(f'[agent_register] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
     serializer = AgentRegisterSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -217,15 +399,35 @@ def agent_register(request):
         return Response({'error': f'查找服务器失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
     # 检查是否已有Agent
+    # 获取心跳模式（从服务器配置或默认值）
+    heartbeat_mode = 'push'  # 默认推送模式
+    # 如果服务器已有Agent，使用现有心跳模式；否则使用默认值
+    try:
+        existing_agent = Agent.objects.get(server=server)
+        heartbeat_mode = existing_agent.heartbeat_mode
+    except Agent.DoesNotExist:
+        pass
+    
     agent, created = Agent.objects.get_or_create(
         server=server,
         defaults={
-            'secret_key': secrets.token_urlsafe(32),
+            'token': secrets.token_urlsafe(32),  # 生成token
+            'secret_key': secrets.token_urlsafe(32),  # 生成加密密钥
             'status': 'online',
             'version': serializer.validated_data.get('version', ''),
-            'last_heartbeat': timezone.now()
+            'last_heartbeat': timezone.now(),
+            'heartbeat_mode': heartbeat_mode
         }
     )
+    
+    # 如果Agent已存在但没有token或secret_key，生成它们
+    if not agent.token:
+        import uuid
+        agent.token = uuid.uuid4().hex
+    if not agent.secret_key:
+        agent.secret_key = secrets.token_urlsafe(32)
+    if not agent.token or not agent.secret_key:
+        agent.save()
 
     if not created:
         # 更新现有Agent
@@ -233,12 +435,19 @@ def agent_register(request):
         agent.last_heartbeat = timezone.now()
         if serializer.validated_data.get('version'):
             agent.version = serializer.validated_data['version']
+        # 保持现有心跳模式，不覆盖
         agent.save()
 
+    # 确保secret_key存在
+    if not agent.secret_key:
+        agent.secret_key = secrets.token_urlsafe(32)
+        agent.save(update_fields=['secret_key'])
+    
     return Response({
         'token': str(agent.token),
-        'secret_key': agent.secret_key,
-        'server_id': server.id
+        'secret_key': agent.secret_key,  # 返回加密密钥
+        'server_id': server.id,
+        'heartbeat_mode': agent.heartbeat_mode  # 返回心跳模式
     })
 
 
@@ -246,14 +455,22 @@ def agent_register(request):
 @permission_classes([AllowAny])
 def agent_heartbeat(request):
     """Agent心跳接口"""
+    logger.info(f'[agent_heartbeat] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
+    
     token = request.headers.get('X-Agent-Token')
+    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
+    logger.info(f'[agent_heartbeat] Token: {token_display}')
+    
     if not token:
+        logger.warning('[agent_heartbeat] ✗ 缺少Agent Token - 返回401 Unauthorized')
         return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        agent = Agent.objects.get(token=token)
+        agent = get_agent_by_token(token)
+        logger.info(f'[agent_heartbeat] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
     except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+        logger.error(f'[agent_heartbeat] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
+        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
 
     serializer = AgentHeartbeatSerializer(data=request.data)
     if serializer.is_valid():
@@ -270,6 +487,7 @@ def agent_heartbeat(request):
     from django.conf import settings
     return Response({
         'status': 'ok',
+        'heartbeat_mode': agent.heartbeat_mode,  # 返回心跳模式
         'config': {
             'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
             'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
@@ -283,14 +501,21 @@ def agent_heartbeat(request):
 @permission_classes([AllowAny])
 def agent_command(request):
     """Agent命令执行接口"""
+    logger.info(f'[agent_command] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
     token = request.headers.get('X-Agent-Token')
+    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
+    logger.info(f'[agent_command] Token: {token_display}')
+    
     if not token:
+        logger.warning('[agent_command] ✗ 缺少Agent Token - 返回401 Unauthorized')
         return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        agent = Agent.objects.get(token=token)
+        agent = get_agent_by_token(token)
+        logger.info(f'[agent_command] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
     except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+        logger.error(f'[agent_command] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
+        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
 
     serializer = AgentCommandSerializer(data=request.data)
     if not serializer.is_valid():
@@ -309,14 +534,22 @@ def agent_command(request):
 @permission_classes([AllowAny])
 def agent_poll_commands(request):
     """Agent轮询命令接口"""
+    logger.info(f'[agent_poll_commands] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
+    
     token = request.headers.get('X-Agent-Token')
+    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
+    logger.info(f'[agent_poll_commands] Token: {token_display}')
+    
     if not token:
+        logger.warning('[agent_poll_commands] ✗ 缺少Agent Token - 返回401 Unauthorized')
         return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        agent = Agent.objects.get(token=token)
+        agent = get_agent_by_token(token)
+        logger.info(f'[agent_poll_commands] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
     except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+        logger.error(f'[agent_poll_commands] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
+        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
 
     # 更新心跳
     agent.last_heartbeat = timezone.now()
@@ -332,6 +565,7 @@ def agent_poll_commands(request):
     return Response({
         'commands': commands,
         'status': 'ok',
+        'heartbeat_mode': agent.heartbeat_mode,  # 返回心跳模式
         'config': {
             'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
             'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
@@ -345,23 +579,31 @@ def agent_poll_commands(request):
 @permission_classes([AllowAny])
 def agent_command_result(request, command_id):
     """Agent命令执行结果接口"""
+    logger.info(f'[agent_command_result] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}, command_id={command_id}')
     token = request.headers.get('X-Agent-Token')
+    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
+    logger.info(f'[agent_command_result] Token: {token_display}')
+    
     if not token:
+        logger.warning('[agent_command_result] ✗ 缺少Agent Token - 返回401 Unauthorized')
         return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
 
     try:
-        agent = Agent.objects.get(token=token)
-        from .command_queue import CommandQueue
-        
-        success = request.data.get('success', False)
-        result = request.data.get('stdout', '')
-        error = request.data.get('error') or request.data.get('stderr', '')
-        
-        CommandQueue.update_command_result(command_id, success, result, error)
-        
-        return Response({'status': 'ok'})
+        agent = get_agent_by_token(token)
+        logger.info(f'[agent_command_result] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
     except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+        logger.error(f'[agent_command_result] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
+        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
+    from .command_queue import CommandQueue
+    
+    success = request.data.get('success', False)
+    result = request.data.get('stdout', '')
+    error = request.data.get('error') or request.data.get('stderr', '')
+    
+    try:
+        CommandQueue.update_command_result(command_id, success, result, error)
+        return Response({'status': 'ok'})
     except Exception as e:
+        logger.error(f'[agent_command_result] ✗ 错误: {str(e)}')
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

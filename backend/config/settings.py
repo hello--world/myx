@@ -211,4 +211,8 @@ AGENT_HEARTBEAT_MAX_INTERVAL = int(os.getenv('AGENT_HEARTBEAT_MAX_INTERVAL', '30
 AGENT_POLL_MIN_INTERVAL = int(os.getenv('AGENT_POLL_MIN_INTERVAL', '5'))  # 默认 5 秒
 AGENT_POLL_MAX_INTERVAL = int(os.getenv('AGENT_POLL_MAX_INTERVAL', '60'))  # 默认 60 秒
 
+# Agent状态检查间隔（秒，用于拉取模式）
+# 平台定时检查Agent状态的间隔，默认30秒
+AGENT_STATUS_CHECK_INTERVAL = int(os.getenv('AGENT_STATUS_CHECK_INTERVAL', '30'))
+
 

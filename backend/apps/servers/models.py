@@ -34,8 +34,15 @@ class Server(models.Model):
     private_key = encrypt(models.TextField(blank=True, null=True, verbose_name='SSH私钥'))
     connection_method = models.CharField(max_length=20, choices=CONNECTION_METHOD_CHOICES, default='ssh', verbose_name='连接方式')
     deployment_target = models.CharField(max_length=20, choices=DEPLOYMENT_TARGET_CHOICES, default='host', verbose_name='部署目标')
+    # Agent连接地址（用于Agent模式，可能是Cloudflare域名等）
+    agent_connect_host = models.CharField(max_length=255, blank=True, null=True, verbose_name='Agent连接地址')
+    agent_connect_port = models.IntegerField(blank=True, null=True, verbose_name='Agent连接端口')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='inactive', verbose_name='状态')
     last_check = models.DateTimeField(null=True, blank=True, verbose_name='最后检查时间')
+    # 密码和SSH key管理选项
+    save_password = models.BooleanField(default=False, verbose_name='保存密码')
+    enable_ssh_key = models.BooleanField(default=False, verbose_name='启用SSH Key登录')
+    generated_public_key = models.TextField(blank=True, null=True, verbose_name='生成的公钥')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name='创建者')

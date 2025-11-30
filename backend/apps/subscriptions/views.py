@@ -26,7 +26,16 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, pk=None):
         """获取订阅内容（通过token）"""
         subscription = get_object_or_404(Subscription, token=pk, enabled=True)
-        proxies = Proxy.objects.filter(created_by=subscription.created_by, status='active', enable=True)
+        
+        # 获取所有可用的节点
+        all_proxies = Proxy.objects.filter(created_by=subscription.created_by, status='active', enable=True)
+        
+        # 如果订阅指定了节点ID列表，则只包含选中的节点
+        if subscription.proxy_ids and len(subscription.proxy_ids) > 0:
+            proxies = all_proxies.filter(id__in=subscription.proxy_ids)
+        else:
+            # 如果没有指定节点，默认包含所有节点（向后兼容）
+            proxies = all_proxies
 
         if subscription.format == 'v2ray':
             content = generate_v2ray_subscription(proxies, request)

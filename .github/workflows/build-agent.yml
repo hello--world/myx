@@ -8,6 +8,8 @@ on:
     paths:
       - 'agent/**'
       - '.github/workflows/build-agent.yml'
+    tags:
+      - 'v*'  # tag push 不受 paths 限制，会自动触发
   pull_request:
     branches:
       - main
@@ -18,17 +20,13 @@ on:
     types: [created]
   workflow_dispatch:
 
-# 注意：tag push 会触发 push 事件，但 github.ref 会是 refs/tags/v1.0.0
-# 我们在 job 级别添加条件判断，如果是 tag push 就跳过 paths 检查
-
 jobs:
   build:
     name: Build Agent
     runs-on: ubuntu-latest
-    # 如果是 tag push (refs/tags/*)，跳过 paths 检查；否则需要匹配 paths
+    # tag push 或 release 事件总是运行；branch push 需要匹配 paths（已在 on.push.paths 中配置）
     if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-      (github.event_name == 'push' && github.event.head_commit != null && (contains(github.event.head_commit.modified, 'agent/') || contains(github.event.head_commit.modified, '.github/workflows/build-agent.yml'))) ||
+      github.event_name == 'push' ||
       github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch'
     strategy:

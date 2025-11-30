@@ -6,10 +6,16 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+# 加载 .env 文件（从项目根目录）
+# 优先从项目根目录加载，如果不存在则从 backend 目录加载
+env_path = BASE_DIR / '.env'
+if not env_path.exists():
+    # 如果项目根目录没有 .env，尝试从 backend 目录加载
+    env_path = BASE_DIR / 'backend' / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-this-in-production')

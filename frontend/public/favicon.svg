@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7C3AED;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 背景圆形 -->
+  <circle cx="50" cy="50" r="48" fill="url(#grad1)" />
+  
+  <!-- 网络节点图标 -->
+  <!-- 中心节点 -->
+  <circle cx="50" cy="50" r="8" fill="#FFFFFF" />
+  
+  <!-- 左上节点 -->
+  <circle cx="30" cy="30" r="6" fill="#FFFFFF" opacity="0.9" />
+  <line x1="50" y1="50" x2="30" y2="30" stroke="#FFFFFF" stroke-width="2" opacity="0.6" />
+  
+  <!-- 右上节点 -->
+  <circle cx="70" cy="30" r="6" fill="#FFFFFF" opacity="0.9" />
+  <line x1="50" y1="50" x2="70" y2="30" stroke="#FFFFFF" stroke-width="2" opacity="0.6" />
+  
+  <!-- 左下节点 -->
+  <circle cx="30" cy="70" r="6" fill="#FFFFFF" opacity="0.9" />
+  <line x1="50" y1="50" x2="30" y2="70" stroke="#FFFFFF" stroke-width="2" opacity="0.6" />
+  
+  <!-- 右下节点 -->
+  <circle cx="70" cy="70" r="6" fill="#FFFFFF" opacity="0.9" />
+  <line x1="50" y1="50" x2="70" y2="70" stroke="#FFFFFF" stroke-width="2" opacity="0.6" />
+  
+  <!-- 顶部节点 -->
+  <circle cx="50" cy="20" r="5" fill="#FFFFFF" opacity="0.8" />
+  <line x1="50" y1="50" x2="50" y2="20" stroke="#FFFFFF" stroke-width="2" opacity="0.5" />
+  
+  <!-- 底部节点 -->
+  <circle cx="50" cy="80" r="5" fill="#FFFFFF" opacity="0.8" />
+  <line x1="50" y1="50" x2="50" y2="80" stroke="#FFFFFF" stroke-width="2" opacity="0.5" />
+</svg>
+

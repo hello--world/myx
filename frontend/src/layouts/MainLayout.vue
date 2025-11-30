@@ -2,6 +2,7 @@
   <el-container class="layout-container">
     <el-header class="header">
       <div class="header-left">
+        <img src="/favicon.svg" alt="MyX Logo" class="logo" />
         <h2>MyX - Xray代理管理平台</h2>
       </div>
       <div class="header-right">
@@ -97,6 +98,18 @@ const handleCommand = async (command) => {
   background: #fff;
   border-bottom: 1px solid #e4e7ed;
   padding: 0 20px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-left .logo {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
 
 .header-left h2 {

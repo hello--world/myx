@@ -253,10 +253,30 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
             # 使用密码
             ssh.connect(server.host, port=server.port, username=server.username, password=server.password, timeout=10)
         
-        # 获取API地址
+        # 获取API地址（优先使用环境变量，否则从settings获取，最后使用默认值）
         from django.conf import settings
         import os
-        api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', 'http://localhost:8000/api/agents'))
+        api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
+        
+        # 如果API URL是localhost，需要替换为可以从服务器访问的地址
+        if not api_url or 'localhost' in api_url or '127.0.0.1' in api_url:
+            # 优先使用 BACKEND_HOST 环境变量
+            backend_host = os.getenv('BACKEND_HOST', getattr(settings, 'BACKEND_HOST', None))
+            if backend_host:
+                api_url = f"http://{backend_host}:8000/api/agents"
+            else:
+                # 尝试从ALLOWED_HOSTS获取
+                allowed_hosts = getattr(settings, 'ALLOWED_HOSTS', [])
+                # 过滤掉localhost和127.0.0.1
+                valid_hosts = [h for h in allowed_hosts if h and h not in ['localhost', '127.0.0.1', '*']]
+                if valid_hosts:
+                    # 使用第一个有效的主机，假设使用HTTP和8000端口
+                    api_url = f"http://{valid_hosts[0]}:8000/api/agents"
+                else:
+                    # 如果都没有，使用默认值并警告
+                    api_url = 'http://localhost:8000/api/agents'
+                    deployment.log = (deployment.log or '') + f"⚠️ 警告: API地址为 {api_url}，Agent可能无法连接。请设置 BACKEND_HOST 环境变量或配置 ALLOWED_HOSTS\n"
+                    deployment.save()
         
         # 检测操作系统和架构
         stdin, stdout, stderr = ssh.exec_command("uname -s", timeout=10)
@@ -277,91 +297,19 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
             arch = "amd64"
         
         deployment.log = (deployment.log or '') + f"检测到系统: {os_name}, 架构: {arch}\n"
+        deployment.log = (deployment.log or '') + f"API地址: {api_url}\n"
         deployment.save()
         
-        # 从 GitHub Releases 下载 Agent 二进制文件
-        import subprocess
-        import os
-        from pathlib import Path
-        import urllib.request
-        from django.conf import settings
-        
         # GitHub Releases URL
-        # 格式: https://github.com/OWNER/REPO/releases/download/latest/myx-agent-{os}-{arch}
+        from django.conf import settings
         github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
         binary_name = f'myx-agent-{os_name}-{arch}'
         github_url = f'https://github.com/{github_repo}/releases/download/latest/{binary_name}'
         
-        # 临时文件路径
-        temp_dir = Path('/tmp/myx-agent-builds')
-        temp_dir.mkdir(exist_ok=True)
-        binary_path = temp_dir / binary_name
-        
-        # 如果二进制文件不存在，从 GitHub 下载
-        if not binary_path.exists():
-            deployment.log = (deployment.log or '') + f"从 GitHub Releases 下载 Agent 二进制文件...\n"
-            deployment.log = (deployment.log or '') + f"下载地址: {github_url}\n"
-            deployment.save()
-            
-            try:
-                # 下载二进制文件
-                deployment.log = (deployment.log or '') + "正在下载...\n"
-                deployment.save()
-                
-                urllib.request.urlretrieve(github_url, binary_path)
-                
-                # 设置执行权限
-                os.chmod(binary_path, 0o755)
-                
-                deployment.log = (deployment.log or '') + f"Agent 二进制文件下载成功: {binary_path}\n"
-                deployment.save()
-                
-            except urllib.error.HTTPError as e:
-                deployment.log = (deployment.log or '') + f"下载失败 (HTTP {e.code}): {e.reason}\n"
-                deployment.log = (deployment.log or '') + f"请确保 GitHub Releases 中存在 {binary_name} 文件\n"
-                deployment.status = 'failed'
-                deployment.error_message = f'Agent下载失败: HTTP {e.code} - {e.reason}'
-                deployment.completed_at = timezone.now()
-                deployment.save()
-                return False
-            except Exception as e:
-                import traceback
-                deployment.log = (deployment.log or '') + f"下载异常: {str(e)}\n{traceback.format_exc()}\n"
-                deployment.status = 'failed'
-                deployment.error_message = f'Agent下载异常: {str(e)}'
-                deployment.completed_at = timezone.now()
-                deployment.save()
-                return False
-        else:
-            deployment.log = (deployment.log or '') + f"使用已存在的 Agent 二进制文件: {binary_path}\n"
-            deployment.save()
-        
-        # 上传二进制文件到服务器
-        deployment.log = (deployment.log or '') + f"上传 Agent 二进制文件到服务器...\n"
+        deployment.log = (deployment.log or '') + f"从 GitHub Releases 下载 Agent: {github_url}\n"
         deployment.save()
         
-        sftp = ssh.open_sftp()
-        remote_binary = '/tmp/myx-agent'
-        
-        try:
-            with open(binary_path, 'rb') as local_file:
-                with sftp.file(remote_binary, 'wb') as remote_file:
-                    remote_file.write(local_file.read())
-            sftp.chmod(remote_binary, 0o755)
-            deployment.log = (deployment.log or '') + "二进制文件上传成功\n"
-            deployment.save()
-        except Exception as e:
-            deployment.log = (deployment.log or '') + f"上传失败: {str(e)}\n"
-            deployment.status = 'failed'
-            deployment.error_message = f'Agent上传失败: {str(e)}'
-            deployment.completed_at = timezone.now()
-            deployment.save()
-            sftp.close()
-            return False
-        
-        sftp.close()
-        
-        # 创建安装脚本
+        # 创建安装脚本（直接在服务器上下载）
         install_script = f"""#!/bin/bash
 set -e
 
@@ -369,11 +317,22 @@ set -e
 mkdir -p /opt/myx-agent
 mkdir -p /etc/myx-agent
 
+# 直接从 GitHub 下载 Agent 二进制文件
+echo "正在从 GitHub 下载 Agent 二进制文件..."
+if curl -L -f -o /tmp/myx-agent "{github_url}"; then
+    echo "Agent 下载成功"
+    chmod +x /tmp/myx-agent
+else
+    echo "Agent 下载失败，请检查网络连接或 GitHub Releases"
+    exit 1
+fi
+
 # 移动二进制文件
 mv /tmp/myx-agent /opt/myx-agent/myx-agent
 chmod +x /opt/myx-agent/myx-agent
 
 # 首次注册Agent
+echo "正在注册 Agent..."
 /opt/myx-agent/myx-agent -token {server.id} -api {api_url}
 
 # 创建systemd服务

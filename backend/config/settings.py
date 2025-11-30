@@ -147,7 +147,14 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Agent API URL (用于Agent注册)
+# 如果设置为 localhost，Agent 将无法从远程服务器连接
+# 应该设置为可以从目标服务器访问的地址，例如: http://your-server-ip:8000/api/agents
 AGENT_API_URL = os.getenv('AGENT_API_URL', 'http://localhost:8000/api/agents')
+
+# Backend Host (用于构建 Agent API URL)
+# 如果 AGENT_API_URL 包含 localhost，将使用此值替换
+# 例如: your-domain.com 或 192.168.1.100
+BACKEND_HOST = os.getenv('BACKEND_HOST', None)
 
 # GitHub Repository (用于下载Agent二进制文件)
 # 格式: owner/repo

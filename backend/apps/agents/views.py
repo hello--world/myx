@@ -375,6 +375,8 @@ if [ -n "$API_URL_CONFIG" ]; then
                 echo "=== 完整执行日志 ==="
                 cat "$LOG_FILE"
             fi
+            # 清理临时脚本文件
+            rm -f /tmp/agent_redeploy_script.sh || true
             exit 1
         fi
     else
@@ -391,6 +393,8 @@ if [ -n "$API_URL_CONFIG" ]; then
                 echo "=== 完整执行日志 ==="
                 cat "$LOG_FILE"
             fi
+            # 清理临时脚本文件
+            rm -f /tmp/agent_redeploy_script.sh || true
             exit 1
         fi
     fi
@@ -408,6 +412,8 @@ else
             echo "=== 完整执行日志 ==="
             cat "$LOG_FILE"
         fi
+        # 清理临时脚本文件
+        rm -f /tmp/agent_redeploy_script.sh || true
         exit 1
     fi
 fi
@@ -425,6 +431,8 @@ if systemctl is-active --quiet myx-agent; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_redeploy_script.sh || true
     exit 0
 else
     report_progress "[错误] Agent服务启动失败，状态异常"
@@ -434,17 +442,35 @@ else
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
 fi
 """
             
             import base64
+            import time
             script_b64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('utf-8')
-            # 使用nohup在后台执行，并重定向输出到日志文件
+            # 生成唯一的服务名称
+            service_name = f'myx-agent-redeploy-{int(time.time())}'
+            log_file = '/tmp/agent_redeploy.log'
+            script_file = '/tmp/agent_redeploy_script.sh'
+            
+            # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
             cmd = CommandQueue.add_command(
                 agent=agent,
                 command='bash',
-                args=['-c', f'echo "{script_b64}" | base64 -d | nohup bash > /tmp/agent_redeploy.log 2>&1 & echo $!'],
+                args=['-c', f'''
+                    echo "{script_b64}" | base64 -d > {script_file}
+                    chmod +x {script_file}
+                    systemd-run --unit={service_name} \\
+                        --service-type=oneshot \\
+                        --no-block \\
+                        --property=StandardOutput=file:{log_file} \\
+                        --property=StandardError=file:{log_file} \\
+                        bash {script_file}
+                    echo $?
+                '''],
                 timeout=600
             )
 
@@ -889,6 +915,8 @@ if [ ! -f /tmp/myx-agent ] || [ ! -x /tmp/myx-agent ]; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_upgrade_script.sh || true
     exit 1
 fi
 # 尝试运行Agent（即使失败也继续，因为Agent可能没有-version参数）
@@ -918,6 +946,8 @@ if systemctl start myx-agent; then
             echo "=== 完整执行日志 ==="
             cat "$LOG_FILE"
         fi
+        # 清理临时脚本文件
+        rm -f /tmp/agent_upgrade_script.sh || true
         exit 0
     else
         report_progress "[错误] Agent服务启动失败，状态异常"
@@ -927,6 +957,8 @@ if systemctl start myx-agent; then
             echo "=== 完整执行日志 ==="
             cat "$LOG_FILE"
         fi
+        # 清理临时脚本文件
+        rm -f /tmp/agent_upgrade_script.sh || true
         exit 1
     fi
 else
@@ -937,6 +969,8 @@ else
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_upgrade_script.sh || true
     exit 1
 fi
 """

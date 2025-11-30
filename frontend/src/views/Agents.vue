@@ -192,7 +192,8 @@ const loadAgents = async () => {
   loading.value = true
   try {
     const response = await api.get('/agents/')
-    agents.value = response.data
+    // 处理分页响应：Django REST Framework 返回 {count, next, previous, results}
+    agents.value = response.data.results || response.data || []
   } catch (error) {
     ElMessage.error('加载Agent列表失败: ' + (error.response?.data?.detail || error.message))
   } finally {

@@ -515,10 +515,27 @@ fi
                             except Exception as e:
                                 logger.debug(f'读取日志文件失败: {str(e)}')
                         
-                        # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
-                        cmd.refresh_from_db()
-                        if cmd.status in ['success', 'failed']:
-                            # 命令执行完成，读取完整日志文件
+                        # 检查日志文件判断脚本是否完成（因为systemd-run会立即返回）
+                        script_completed = False
+                        script_success = False
+                        if os.path.exists(log_file_path):
+                            try:
+                                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    full_log = f.read()
+                                    # 检查日志中是否有完成标记
+                                    if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log:
+                                        script_completed = True
+                                        script_success = True
+                                    elif '[错误]' in full_log and 'exit 1' in full_log:
+                                        # 检查是否有明确的错误退出
+                                        script_completed = True
+                                        script_success = False
+                            except Exception as e:
+                                logger.debug(f'读取日志文件失败: {str(e)}')
+                        
+                        # 如果脚本已完成，更新部署任务状态
+                        if script_completed:
+                            # 读取完整日志文件
                             if os.path.exists(log_file_path):
                                 try:
                                     with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -528,28 +545,30 @@ fi
                                 except Exception as e:
                                     logger.debug(f'读取完整日志文件失败: {str(e)}')
                             
-                            # 更新部署任务状态
-                            deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
-                            if cmd.result:
-                                deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
-                            if cmd.error:
-                                deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
-                            
                             # 验证Agent是否正常运行
                             agent.refresh_from_db()
-                            if agent.status == 'online':
-                                deployment.status = 'success' if cmd.status == 'success' else 'failed'
+                            if agent.status == 'online' and script_success:
+                                deployment.status = 'success'
+                                deployment.log = (deployment.log or '') + f"\n[完成] Agent重新部署成功，服务运行正常\n"
                             else:
-                                # 即使命令成功，如果Agent未上线，标记为失败
                                 deployment.status = 'failed'
-                                deployment.error_message = 'Agent重新部署后未正常上线'
-                            
-                            if cmd.status == 'failed':
-                                deployment.error_message = cmd.error or '重新部署失败'
+                                if agent.status != 'online':
+                                    deployment.error_message = 'Agent重新部署后未正常上线'
+                                else:
+                                    deployment.error_message = '脚本执行失败'
                             
                             deployment.completed_at = timezone.now()
                             deployment.save()
                             break
+                        
+                        # 检查命令状态（作为备用检查）
+                        cmd.refresh_from_db()
+                        if cmd.status in ['success', 'failed']:
+                            # 如果命令已完成但脚本还没完成，等待一段时间
+                            if not script_completed:
+                                # 等待5秒后再次检查日志
+                                time.sleep(5)
+                                continue
                         
                         # 如果Agent离线超过2分钟，尝试通过SSH检查
                         if agent_offline_detected and agent_offline_time and (time.time() - agent_offline_time) > 120:
@@ -1038,10 +1057,27 @@ fi
                         except Exception as e:
                             logger.debug(f'读取日志文件失败: {str(e)}')
                     
-                    # 检查命令状态（脚本通过API上报进度，这里主要检查最终状态）
-                    cmd.refresh_from_db()
-                    if cmd.status in ['success', 'failed']:
-                        # 命令执行完成，读取完整日志文件
+                    # 检查日志文件判断脚本是否完成（因为systemd-run会立即返回）
+                    script_completed = False
+                    script_success = False
+                    if os.path.exists(log_file_path):
+                        try:
+                            with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                full_log = f.read()
+                                # 检查日志中是否有完成标记
+                                if '[完成] Agent重新部署成功' in full_log or '[完成] Agent升级成功' in full_log:
+                                    script_completed = True
+                                    script_success = True
+                                elif '[错误]' in full_log and 'exit 1' in full_log:
+                                    # 检查是否有明确的错误退出
+                                    script_completed = True
+                                    script_success = False
+                        except Exception as e:
+                            logger.debug(f'读取日志文件失败: {str(e)}')
+                    
+                    # 如果脚本已完成，更新部署任务状态
+                    if script_completed:
+                        # 读取完整日志文件
                         if os.path.exists(log_file_path):
                             try:
                                 with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -1051,28 +1087,30 @@ fi
                             except Exception as e:
                                 logger.debug(f'读取完整日志文件失败: {str(e)}')
                         
-                        # 更新部署任务状态
-                        deployment.log = (deployment.log or '') + f"\n[完成] 命令执行完成\n状态: {cmd.status}\n"
-                        if cmd.result:
-                            deployment.log = (deployment.log or '') + f"输出:\n{cmd.result}\n"
-                        if cmd.error:
-                            deployment.log = (deployment.log or '') + f"错误:\n{cmd.error}\n"
-                        
                         # 验证Agent是否正常运行
                         agent.refresh_from_db()
-                        if agent.status == 'online':
-                            deployment.status = 'success' if cmd.status == 'success' else 'failed'
+                        if agent.status == 'online' and script_success:
+                            deployment.status = 'success'
+                            deployment.log = (deployment.log or '') + f"\n[完成] Agent升级成功，服务运行正常\n"
                         else:
-                            # 即使命令成功，如果Agent未上线，标记为失败
                             deployment.status = 'failed'
-                            deployment.error_message = 'Agent升级后未正常上线'
-                        
-                        if cmd.status == 'failed':
-                            deployment.error_message = cmd.error or '升级失败'
+                            if agent.status != 'online':
+                                deployment.error_message = 'Agent升级后未正常上线'
+                            else:
+                                deployment.error_message = '脚本执行失败'
                         
                         deployment.completed_at = timezone.now()
                         deployment.save()
                         break
+                    
+                    # 检查命令状态（作为备用检查）
+                    cmd.refresh_from_db()
+                    if cmd.status in ['success', 'failed']:
+                        # 如果命令已完成但脚本还没完成，等待一段时间
+                        if not script_completed:
+                            # 等待5秒后再次检查日志
+                            time.sleep(5)
+                            continue
                     
                     # 如果Agent离线超过2分钟，尝试通过SSH检查
                     if agent_offline_detected and agent_offline_time and (time.time() - agent_offline_time) > 120:

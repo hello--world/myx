@@ -302,6 +302,8 @@ if ! curl -L -f -o /tmp/myx-agent "${{GITHUB_URL}}"; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
 fi
 report_progress "[2/7] Agent 下载成功"
@@ -318,6 +320,8 @@ if [ ! -f /tmp/myx-agent ] || [ ! -x /tmp/myx-agent ]; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
 fi
 # 尝试运行Agent（即使失败也继续，因为Agent可能没有-version参数）

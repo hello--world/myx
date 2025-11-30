@@ -3,7 +3,10 @@
     <el-header class="header">
       <div class="header-left">
         <img src="/favicon.svg" alt="MyX Logo" class="logo" />
-        <h2>MyX - Xray代理管理平台</h2>
+        <div class="title-container">
+          <h2>{{ siteTitle }}</h2>
+          <span v-if="siteSubtitle" class="subtitle">{{ siteSubtitle }}</span>
+        </div>
       </div>
       <div class="header-right">
         <el-dropdown @command="handleCommand">
@@ -51,6 +54,10 @@
             <el-icon><Monitor /></el-icon>
             <span>Agent管理</span>
           </el-menu-item>
+          <el-menu-item index="/settings">
+            <el-icon><Setting /></el-icon>
+            <span>系统设置</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
       <el-main class="main">
@@ -61,17 +68,48 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { User, ArrowDown, Odometer, Monitor, Connection, Link, Tools } from '@element-plus/icons-vue'
+import { User, ArrowDown, Odometer, Monitor, Connection, Link, Tools, Setting } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import api from '@/api'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
 const activeMenu = computed(() => route.path)
+const siteTitle = ref('MyX - 代理管理平台')
+const siteSubtitle = ref('')
+
+const loadSettings = async () => {
+  try {
+    const response = await api.get('/settings/')
+    siteTitle.value = response.data.site_title || 'MyX - 代理管理平台'
+    siteSubtitle.value = response.data.site_subtitle || ''
+    document.title = siteTitle.value
+  } catch (error) {
+    console.error('加载设置失败:', error)
+  }
+}
+
+const handleSettingsUpdate = (event) => {
+  if (event.detail) {
+    siteTitle.value = event.detail.site_title || 'MyX - 代理管理平台'
+    siteSubtitle.value = event.detail.site_subtitle || ''
+    document.title = siteTitle.value
+  }
+}
+
+onMounted(() => {
+  loadSettings()
+  window.addEventListener('settings-updated', handleSettingsUpdate)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('settings-updated', handleSettingsUpdate)
+})
 
 const handleCommand = async (command) => {
   if (command === 'logout') {
@@ -112,9 +150,23 @@ const handleCommand = async (command) => {
   flex-shrink: 0;
 }
 
+.header-left .title-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .header-left h2 {
   margin: 0;
   color: #303133;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.header-left .subtitle {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1;
 }
 
 .header-right {

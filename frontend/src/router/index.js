@@ -42,6 +42,11 @@ const routes = [
         path: 'agents',
         name: 'Agents',
         component: () => import('@/views/Agents.vue')
+      },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/Settings.vue')
       }
     ]
   }

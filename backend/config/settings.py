@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'apps.deployments',
     'apps.agents',
     'apps.health',
+    'apps.settings',
 ]
 
 MIDDLEWARE = [

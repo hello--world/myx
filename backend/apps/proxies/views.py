@@ -1,6 +1,9 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied, NotFound
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 from .models import Proxy
 from .serializers import ProxySerializer
 from .tasks import auto_deploy_proxy
@@ -8,6 +11,9 @@ import time
 import re
 import os
 import base64
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ProxyViewSet(viewsets.ModelViewSet):
@@ -17,6 +23,70 @@ class ProxyViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Proxy.objects.filter(created_by=self.request.user)
+    
+    @action(detail=False, methods=['get'])
+    def check_port(self, request):
+        """检查端口是否可用"""
+        port = request.query_params.get('port')
+        if not port:
+            return Response({'error': '请提供端口号'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            port = int(port)
+        except ValueError:
+            return Response({'error': '端口号必须是数字'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 检查端口是否已被使用（从数据库查询）
+        proxy_id = request.query_params.get('proxy_id')  # 编辑时排除自己
+        queryset = Proxy.objects.filter(port=port)
+        if proxy_id:
+            queryset = queryset.exclude(pk=proxy_id)
+        
+        if queryset.exists():
+            return Response({
+                'available': False,
+                'message': f'端口{port}已被其他代理节点使用'
+            })
+        
+        return Response({
+            'available': True,
+            'message': f'端口{port}可用'
+        })
+    
+    @action(detail=False, methods=['get'])
+    def random_port(self, request):
+        """获取一个随机可用的端口（从1024开始）"""
+        import random
+        
+        # 从数据库查询所有已使用的端口
+        used_ports = set(Proxy.objects.values_list('port', flat=True))
+        
+        # 从1024开始，到65535结束
+        min_port = 1024
+        max_port = 65535
+        
+        # 尝试最多100次找到可用端口
+        max_attempts = 100
+        for _ in range(max_attempts):
+            port = random.randint(min_port, max_port)
+            if port not in used_ports:
+                return Response({
+                    'port': port,
+                    'message': f'已分配端口{port}'
+                })
+        
+        # 如果随机找不到，尝试顺序查找
+        for port in range(min_port, max_port + 1):
+            if port not in used_ports:
+                return Response({
+                    'port': port,
+                    'message': f'已分配端口{port}'
+                })
+        
+        # 如果所有端口都被使用（理论上不可能）
+        return Response({
+            'error': '没有可用的端口'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def create(self, request, *args, **kwargs):
         """创建代理并自动部署"""
@@ -58,13 +128,39 @@ class ProxyViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def redeploy(self, request, pk=None):
         """重新部署代理"""
-        proxy = self.get_object()
+        logger.info(f'[redeploy] 收到重新部署请求: proxy_id={pk}, user={request.user.username}')
+        
+        try:
+            proxy = self.get_object()
+            logger.info(f'[redeploy] 找到代理: id={proxy.id}, name={proxy.name}, created_by={proxy.created_by.username}')
+        except NotFound:
+            logger.warning(f'[redeploy] 代理不存在: proxy_id={pk}, user={request.user.username}')
+            return Response({
+                'error': '代理不存在',
+                'detail': f'代理 ID {pk} 不存在或无权访问'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f'[redeploy] 获取代理失败: proxy_id={pk}, error={str(e)}')
+            return Response({
+                'error': '获取代理失败',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # 检查权限：确保代理属于当前用户
+        if proxy.created_by != request.user:
+            logger.warning(f'[redeploy] 权限不足: proxy_id={pk}, proxy_owner={proxy.created_by.username}, current_user={request.user.username}')
+            return Response({
+                'error': '无权访问此代理',
+                'detail': '此代理不属于当前用户'
+            }, status=status.HTTP_403_FORBIDDEN)
         
         # 重置部署状态
         proxy.deployment_status = 'pending'
         proxy.deployment_log = ''
         proxy.deployed_at = None
         proxy.save()
+        
+        logger.info(f'[redeploy] 启动重新部署: proxy_id={proxy.id}')
         
         # 异步启动重新部署
         auto_deploy_proxy(proxy.id)

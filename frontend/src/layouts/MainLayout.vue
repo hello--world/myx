@@ -58,6 +58,10 @@
             <el-icon><Setting /></el-icon>
             <span>系统设置</span>
           </el-menu-item>
+          <el-menu-item index="/logs">
+            <el-icon><Document /></el-icon>
+            <span>日志中心</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
       <el-main class="main">
@@ -71,7 +75,7 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { User, ArrowDown, Odometer, Monitor, Connection, Link, Tools, Setting } from '@element-plus/icons-vue'
+import { User, ArrowDown, Odometer, Monitor, Connection, Link, Tools, Setting, Document } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/api'
 

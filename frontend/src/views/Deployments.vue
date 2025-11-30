@@ -111,15 +111,19 @@
       v-model="logDialogVisible"
       title="部署日志"
       width="800px"
+      @close="stopLogRefresh"
     >
-      <el-input
-        v-model="currentLog"
-        type="textarea"
-        :rows="20"
-        readonly
-      />
+      <el-scrollbar height="500px" ref="logScrollbarRef">
+        <pre style="white-space: pre-wrap; font-family: monospace; font-size: 12px; padding: 10px; margin: 0;">{{ currentLog || '暂无日志' }}</pre>
+      </el-scrollbar>
       <template #footer>
-        <el-button @click="logDialogVisible = false">关闭</el-button>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span v-if="currentDeploymentId && getDeploymentById(currentDeploymentId)?.status === 'running'" style="color: #409eff;">
+            ⚡ 部署中，日志每2秒自动刷新
+          </span>
+          <span v-else></span>
+          <el-button @click="logDialogVisible = false">关闭</el-button>
+        </div>
       </template>
     </el-dialog>
 
@@ -202,7 +206,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 
@@ -214,6 +218,9 @@ const logDialogVisible = ref(false)
 const quickDeployDialogVisible = ref(false)
 const quickDeployLoading = ref(false)
 const currentLog = ref('')
+const currentDeploymentId = ref(null)
+const logRefreshInterval = ref(null)
+const logScrollbarRef = ref(null)
 const formRef = ref(null)
 const quickDeployFormRef = ref(null)
 
@@ -344,11 +351,71 @@ const handleDelete = async (row) => {
 
 const handleViewLogs = async (row) => {
   try {
-    const response = await api.get(`/deployments/${row.id}/logs/`)
-    currentLog.value = response.data.log || response.data.error_message || '暂无日志'
+    currentDeploymentId.value = row.id
+    await fetchLogs(row.id)
     logDialogVisible.value = true
+    // 如果任务还在运行中，启动自动刷新
+    if (row.status === 'running' || row.status === 'pending') {
+      startLogRefresh()
+    }
   } catch (error) {
     ElMessage.error('获取日志失败')
+  }
+}
+
+const fetchLogs = async (deploymentId) => {
+  try {
+    const response = await api.get(`/deployments/${deploymentId}/logs/`)
+    const newLog = response.data.log || response.data.error_message || '暂无日志'
+    
+    // 只有在日志内容变化时才更新，并滚动到底部
+    if (newLog !== currentLog.value) {
+      currentLog.value = newLog
+      // 等待DOM更新后滚动到底部
+      await nextTick()
+      scrollLogToBottom()
+    }
+    
+    // 同时获取任务状态，如果已完成则停止刷新
+    const deployment = deployments.value.find(d => d.id === deploymentId)
+    if (deployment && (deployment.status === 'success' || deployment.status === 'failed')) {
+      stopLogRefresh()
+    }
+  } catch (error) {
+    console.error('获取日志失败:', error)
+  }
+}
+
+const scrollLogToBottom = () => {
+  if (logScrollbarRef.value) {
+    // 获取内部滚动容器
+    const scrollbar = logScrollbarRef.value
+    const scrollContainer = scrollbar.$el?.querySelector('.el-scrollbar__wrap')
+    if (scrollContainer) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight
+    }
+  }
+}
+
+const getDeploymentById = (id) => {
+  return deployments.value.find(d => d.id === id)
+}
+
+const startLogRefresh = () => {
+  // 清除之前的定时器
+  stopLogRefresh()
+  // 每2秒刷新一次日志
+  logRefreshInterval.value = setInterval(() => {
+    if (currentDeploymentId.value) {
+      fetchLogs(currentDeploymentId.value)
+    }
+  }, 2000)
+}
+
+const stopLogRefresh = () => {
+  if (logRefreshInterval.value) {
+    clearInterval(logRefreshInterval.value)
+    logRefreshInterval.value = null
   }
 }
 
@@ -517,10 +584,22 @@ onMounted(() => {
   fetchServers()
   updateQuickDeployRules()
   
-  // 每5秒刷新一次部署状态
+  // 每2秒刷新一次部署状态（如果有运行中的任务）
   setInterval(() => {
-    fetchDeployments()
-  }, 5000)
+    const hasRunning = deployments.value.some(d => d.status === 'running' || d.status === 'pending')
+    if (hasRunning) {
+      fetchDeployments()
+      // 如果日志对话框打开且当前任务还在运行，也刷新日志
+      if (logDialogVisible.value && currentDeploymentId.value) {
+        const deployment = deployments.value.find(d => d.id === currentDeploymentId.value)
+        if (deployment && (deployment.status === 'running' || deployment.status === 'pending')) {
+          fetchLogs(currentDeploymentId.value)
+        } else {
+          stopLogRefresh()
+        }
+      }
+    }
+  }, 2000)
   
   // 监听部署任务创建事件（从Agent页面触发）
   window.addEventListener('deployment-created', () => {

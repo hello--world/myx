@@ -16,6 +16,7 @@ urlpatterns = [
     path('api/deployments/', include('apps.deployments.urls')),
     path('api/agents/', include('apps.agents.urls')),
     path('api/settings/', include('apps.settings.urls')),
+    path('api/logs/', include('apps.logs.urls')),
 ]
 
 if settings.DEBUG:

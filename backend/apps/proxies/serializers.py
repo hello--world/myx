@@ -43,6 +43,21 @@ class ProxySerializer(serializers.ModelSerializer):
         """返回 sniffing 字典"""
         return obj.get_sniffing_dict()
 
+    def validate_port(self, value):
+        """验证端口是否可用（从数据库查询已使用的端口）"""
+        # 检查端口是否已被其他代理使用
+        instance = self.instance
+        if instance:
+            # 更新时，排除自己
+            if Proxy.objects.filter(port=value).exclude(pk=instance.pk).exists():
+                raise serializers.ValidationError(f"端口{value}已被其他代理节点使用")
+        else:
+            # 创建时，检查所有代理
+            if Proxy.objects.filter(port=value).exists():
+                raise serializers.ValidationError(f"端口{value}已被其他代理节点使用")
+        
+        return value
+    
     def create(self, validated_data):
         # 处理 JSON 字段
         settings_dict = validated_data.pop('settings', {})

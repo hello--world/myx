@@ -172,7 +172,19 @@
               <el-text type="info" size="small" style="margin-left: 10px;">默认留空即可</el-text>
             </el-form-item>
             <el-form-item label="端口" prop="port">
-              <el-input-number v-model="form.port" :min="1" :max="65535" style="width: 200px;" />
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <el-input-number 
+                  v-model="form.port" 
+                  :min="1" 
+                  :max="65535" 
+                  style="width: 200px;"
+                  @blur="checkPortAvailability"
+                />
+                <el-button size="small" type="primary" @click="getRandomPort">随机端口</el-button>
+              </div>
+              <div v-if="portCheckMessage" :style="{ color: portCheckAvailable ? '#67c23a' : '#f56c6c', marginTop: '5px', fontSize: '12px' }">
+                {{ portCheckMessage }}
+              </div>
             </el-form-item>
             <el-form-item label="总流量(GB)">
               <el-input-number v-model="form.totalGB" :min="0" style="width: 200px;" />
@@ -596,7 +608,7 @@ const form = reactive({
   enable: true,
   protocol: 'vless',
   listen: '',
-  port: 443,
+  port: null,
   totalGB: 0,
   expiryTime: null,
   agent_connect_host: '',
@@ -709,11 +721,70 @@ const sniffingSettings = reactive({
   routeOnly: false
 })
 
+const portCheckMessage = ref('')
+const portCheckAvailable = ref(true)
+
+// 获取随机端口
+const getRandomPort = async () => {
+  try {
+    const response = await api.get('/proxies/random_port/')
+    if (response.data.port) {
+      form.port = response.data.port
+      portCheckMessage.value = response.data.message
+      portCheckAvailable.value = true
+      ElMessage.success(`已分配端口: ${response.data.port}`)
+    } else {
+      ElMessage.error(response.data.error || '获取随机端口失败')
+    }
+  } catch (error) {
+    console.error('获取随机端口失败:', error)
+    ElMessage.error('获取随机端口失败，请重试')
+  }
+}
+
+// 检查端口是否可用
+const checkPortAvailability = async () => {
+  if (!form.port) {
+    portCheckMessage.value = ''
+    return
+  }
+  
+  try {
+    const params = { port: form.port }
+    if (editingId.value) {
+      params.proxy_id = editingId.value
+    }
+    const response = await api.get('/proxies/check_port/', { params })
+    portCheckMessage.value = response.data.message
+    portCheckAvailable.value = response.data.available
+  } catch (error) {
+    console.error('检查端口失败:', error)
+    portCheckMessage.value = '检查端口失败，请重试'
+    portCheckAvailable.value = false
+  }
+}
+
 const rules = {
   name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }],
   server: [{ required: true, message: '请选择服务器', trigger: 'change' }],
   protocol: [{ required: true, message: '请选择协议', trigger: 'change' }],
-  port: [{ required: true, message: '请输入端口', trigger: 'blur' }]
+  port: [
+    { required: true, message: '请输入端口', trigger: 'blur' },
+    { 
+      validator: (rule, value, callback) => {
+        if (!value) {
+          callback()
+          return
+        }
+        if (!portCheckAvailable.value && portCheckMessage.value) {
+          callback(new Error(portCheckMessage.value))
+          return
+        }
+        callback()
+      }, 
+      trigger: 'blur' 
+    }
+  ]
 }
 
 // 生成UUID
@@ -906,11 +977,13 @@ const fetchServers = async () => {
   }
 }
 
-const handleAdd = () => {
+const handleAdd = async () => {
   dialogTitle.value = '添加节点'
   editingId.value = null
   resetForm()
   dialogVisible.value = true
+  // 自动获取随机端口
+  await getRandomPort()
 }
 
 const handleEdit = (row) => {
@@ -1218,6 +1291,8 @@ const handleSubmit = async () => {
 }
 
 const resetForm = () => {
+  portCheckMessage.value = ''
+  portCheckAvailable.value = true
   Object.assign(form, {
     name: '',
     server: null,
@@ -1225,7 +1300,7 @@ const resetForm = () => {
     enable: true,
     protocol: 'vless',
     listen: '',
-    port: 443,
+    port: null,
     totalGB: 0,
     expiryTime: null,
     agent_connect_host: '',

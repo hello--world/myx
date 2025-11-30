@@ -72,7 +72,6 @@
             </el-button>
             <el-button size="small" type="success" @click="startAgent(row)">启动</el-button>
             <el-button size="small" type="warning" @click="stopAgent(row)">停止</el-button>
-            <el-button size="small" type="info" @click="upgradeAgent(row)">升级</el-button>
             <el-button size="small" type="danger" @click="redeployAgent(row)">重新部署</el-button>
           </template>
         </el-table-column>
@@ -220,20 +219,14 @@
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="执行结果">
-          <el-input
-            :model-value="currentCommand?.result || ''"
-            type="textarea"
-            :rows="10"
-            readonly
-          />
+          <el-scrollbar height="300px">
+            <pre style="white-space: pre-wrap; font-family: monospace; padding: 10px; margin: 0; background: #f5f7fa; border-radius: 4px;">{{ currentCommand?.result || '暂无结果' }}</pre>
+          </el-scrollbar>
         </el-descriptions-item>
         <el-descriptions-item label="错误信息" v-if="currentCommand?.error">
-          <el-input
-            :model-value="currentCommand?.error || ''"
-            type="textarea"
-            :rows="5"
-            readonly
-          />
+          <el-scrollbar height="200px">
+            <pre style="white-space: pre-wrap; font-family: monospace; padding: 10px; margin: 0; background: #fef0f0; border-radius: 4px; color: #f56c6c;">{{ currentCommand?.error || '' }}</pre>
+          </el-scrollbar>
         </el-descriptions-item>
       </el-descriptions>
     </el-dialog>
@@ -407,9 +400,60 @@ const handleSendCommand = async () => {
 
     ElMessage.success('命令已下发')
     commandDialogVisible.value = false
+    
+    // 如果有返回的命令ID，立即查看结果
+    if (response.data && response.data.command && response.data.command.id) {
+      const commandId = response.data.command.id
+      // 等待一下让命令开始执行
+      setTimeout(async () => {
+        await viewCommandResultById(commandId)
+      }, 1000)
+    }
   } catch (error) {
     ElMessage.error('下发命令失败: ' + (error.response?.data?.detail || error.message))
   }
+}
+
+const viewCommandResultById = async (commandId) => {
+  try {
+    // 从命令历史中查找
+    const response = await api.get(`/agents/${currentAgent.value.id}/commands/`)
+    const commands = response.data.results || response.data || []
+    const command = commands.find(cmd => cmd.id === commandId)
+    if (command) {
+      viewCommandResult(command)
+    } else {
+      // 如果找不到，尝试直接获取
+      ElMessage.warning('命令可能还在执行中，请稍后查看')
+    }
+  } catch (error) {
+    console.error('获取命令结果失败:', error)
+  }
+}
+
+let commandRefreshInterval = null
+
+const stopCommandRefresh = () => {
+  if (commandRefreshInterval) {
+    clearInterval(commandRefreshInterval)
+    commandRefreshInterval = null
+  }
+}
+
+const startCommandRefresh = () => {
+  stopCommandRefresh()
+  commandRefreshInterval = setInterval(async () => {
+    if (commandsDialogVisible.value && currentAgent.value) {
+      try {
+        const response = await api.get(`/agents/${currentAgent.value.id}/commands/`)
+        commandHistory.value = response.data.results || response.data || []
+      } catch (error) {
+        console.error('刷新命令历史失败:', error)
+      }
+    } else {
+      stopCommandRefresh()
+    }
+  }, 2000) // 每2秒刷新一次
 }
 
 const viewCommands = async (agent) => {
@@ -419,7 +463,9 @@ const viewCommands = async (agent) => {
 
   try {
     const response = await api.get(`/agents/${agent.id}/commands/`)
-    commandHistory.value = response.data
+    commandHistory.value = response.data.results || response.data || []
+    // 自动刷新命令状态
+    startCommandRefresh()
   } catch (error) {
     ElMessage.error('加载命令历史失败: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -464,29 +510,6 @@ const stopAgent = async (agent) => {
   }
 }
 
-const upgradeAgent = async (agent) => {
-  try {
-    await ElMessageBox.confirm('确定要升级该Agent吗？', '提示', {
-      type: 'warning'
-    })
-
-    const response = await api.post(`/agents/${agent.id}/upgrade/`)
-    ElMessage.success({
-      message: 'Agent升级已启动，请查看部署任务',
-      duration: 5000,
-      showClose: true
-    })
-    // 可以跳转到部署任务页面
-    if (response.data.deployment_id) {
-      // 触发事件通知其他组件刷新部署任务列表
-      window.dispatchEvent(new CustomEvent('deployment-created', { detail: { deployment_id: response.data.deployment_id } }))
-    }
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('升级失败: ' + (error.response?.data?.detail || error.message))
-    }
-  }
-}
 
 const redeployAgent = async (agent) => {
   try {

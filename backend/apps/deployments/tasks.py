@@ -66,16 +66,13 @@ def deploy_caddy(deployment_id):
         try:
             # 根据连接方式选择不同的部署方法
             connection_method = deployment.connection_method or deployment.server.connection_method
-            deployment_target = deployment.deployment_target or deployment.server.deployment_target
             
+            # Caddy 仅支持宿主机部署，忽略 deployment_target 设置
             if connection_method == 'agent':
-                deploy_via_agent(deployment, deployment_target)
+                deploy_via_agent(deployment, 'host')  # 强制使用宿主机部署
             else:  # ssh
-                # 根据部署目标选择不同的 playbook
-                if deployment_target == 'docker':
-                    playbook = 'deploy_caddy_docker.yml'
-                else:  # host
-                    playbook = 'deploy_caddy.yml'
+                # Caddy 仅支持宿主机部署，使用宿主机 playbook
+                playbook = 'deploy_caddy.yml'
                 
                 result = run_ansible_playbook(
                     deployment.server,
@@ -195,12 +192,12 @@ def quick_deploy_full(deployment_id, is_temporary=False):
                 server=server,
                 deployment_type='caddy',
                 connection_method='agent',
-                deployment_target=deployment.deployment_target or 'host',
+                deployment_target='host',  # Caddy 仅支持宿主机部署
                 status='running',
                 created_by=deployment.created_by
             )
             
-            deploy_via_agent(caddy_deployment, deployment.deployment_target or 'host')
+            deploy_via_agent(caddy_deployment, 'host')  # 强制使用宿主机部署
             caddy_deployment.refresh_from_db()
             
             if caddy_deployment.status != 'success':

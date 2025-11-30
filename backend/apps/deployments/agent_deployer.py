@@ -14,6 +14,7 @@ def deploy_via_agent(deployment: Deployment, deployment_target: str = 'host'):
     Args:
         deployment: 部署任务
         deployment_target: 部署目标 ('host' 或 'docker')
+        注意：Caddy 目前只支持宿主机部署，即使 deployment_target 为 'docker' 也会部署到宿主机
     """
     try:
         agent = Agent.objects.get(server=deployment.server)
@@ -26,6 +27,12 @@ def deploy_via_agent(deployment: Deployment, deployment_target: str = 'host'):
         deployment.status = 'running'
         deployment.started_at = timezone.now()
         deployment.save()
+
+        # Caddy 目前只支持宿主机部署，强制使用 'host'
+        if deployment.deployment_type == 'caddy':
+            deployment_target = 'host'
+            deployment.log = (deployment.log or '') + "[信息] Caddy 仅支持宿主机部署，忽略部署目标设置\n"
+            deployment.save()
 
         # 构建部署命令（根据部署目标选择不同的命令）
         if deployment_target == 'docker':
@@ -174,23 +181,50 @@ echo "Xray 安装/更新完成"
             elif deployment.deployment_type == 'caddy':
                 # 支持重复安装的 Caddy 安装脚本
                 install_script = """#!/bin/bash
-set -e
+set +e  # 不因错误退出，允许某些命令失败
+
+echo "[开始] Caddy 安装/更新流程"
 
 # 检查 Caddy 是否已安装
 if command -v caddy &> /dev/null; then
-    echo "Caddy 已安装，版本: $(caddy version)"
-    # 如果已安装，尝试更新
-    curl -LsSf https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy || {
-        echo "更新失败，但 Caddy 已存在，继续..."
-    }
-else
-    # 未安装，执行安装
+    echo "[信息] Caddy 已安装，当前版本:"
+    caddy version 2>&1 || echo "无法获取版本信息"
+    echo "[信息] 尝试更新 Caddy..."
     curl -LsSf https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
+    if [ $? -eq 0 ]; then
+        echo "[成功] Caddy 更新完成"
+    else
+        echo "[警告] Caddy 更新失败，但已存在的版本将继续使用"
+    fi
+    chmod +x /usr/local/bin/caddy || true
+else
+    echo "[信息] Caddy 未安装，开始安装..."
+    curl -LsSf https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
+    if [ $? -ne 0 ]; then
+        echo "[错误] Caddy 下载失败"
+        exit 1
+    fi
     chmod +x /usr/local/bin/caddy
+    if [ $? -ne 0 ]; then
+        echo "[错误] 设置 Caddy 可执行权限失败"
+        exit 1
+    fi
+    echo "[成功] Caddy 安装完成"
 fi
+
+# 验证 Caddy 是否可用
+if ! command -v caddy &> /dev/null; then
+    echo "[错误] Caddy 安装后仍不可用"
+    exit 1
+fi
+
+echo "[信息] Caddy 二进制文件位置: $(which caddy)"
+echo "[信息] Caddy 版本:"
+caddy version 2>&1 || echo "无法获取版本信息"
 
 # 创建 systemd 服务（如果不存在）
 if [ ! -f /etc/systemd/system/caddy.service ]; then
+    echo "[信息] 创建 systemd 服务文件..."
     cat > /etc/systemd/system/caddy.service << 'EOF'
 [Unit]
 Description=Caddy
@@ -214,14 +248,51 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target
 EOF
+    if [ $? -ne 0 ]; then
+        echo "[错误] 创建 systemd 服务文件失败"
+        exit 1
+    fi
     systemctl daemon-reload
+    if [ $? -ne 0 ]; then
+        echo "[错误] systemd daemon-reload 失败"
+        exit 1
+    fi
+    echo "[成功] systemd 服务文件已创建"
+else
+    echo "[信息] systemd 服务文件已存在，跳过创建"
 fi
 
-# 确保服务已启动
-systemctl enable caddy || true
-systemctl start caddy || true
+# 确保服务已启用
+echo "[信息] 启用 Caddy 服务..."
+systemctl enable caddy
+if [ $? -ne 0 ]; then
+    echo "[警告] 启用 Caddy 服务失败，但继续执行"
+fi
 
-echo "Caddy 安装/更新完成"
+# 尝试启动服务（如果未运行）
+echo "[信息] 检查 Caddy 服务状态..."
+if systemctl is-active --quiet caddy; then
+    echo "[信息] Caddy 服务已在运行"
+else
+    echo "[信息] 启动 Caddy 服务..."
+    systemctl start caddy
+    if [ $? -eq 0 ]; then
+        echo "[成功] Caddy 服务已启动"
+        # 等待一下确保服务启动成功
+        sleep 2
+        if systemctl is-active --quiet caddy; then
+            echo "[成功] Caddy 服务运行正常"
+        else
+            echo "[警告] Caddy 服务启动后未保持运行状态"
+            systemctl status caddy --no-pager || true
+        fi
+    else
+        echo "[警告] Caddy 服务启动失败，但可能已经运行"
+        systemctl status caddy --no-pager || true
+    fi
+fi
+
+echo "[完成] Caddy 安装/更新流程完成"
 """
                 script_b64 = base64.b64encode(install_script.encode('utf-8')).decode('utf-8')
                 cmd = CommandQueue.add_command(
@@ -311,15 +382,36 @@ echo "Caddy 完成"
                 break
             time.sleep(2)
             wait_time += 2
+            # 每30秒记录一次等待状态
+            if wait_time % 30 == 0:
+                deployment.log = (deployment.log or '') + f"等待命令执行完成... ({wait_time}秒)\n"
+                deployment.save()
+
+        # 如果超时，检查命令状态
+        if wait_time >= max_wait:
+            cmd.refresh_from_db()
+            if cmd.status not in ['success', 'failed']:
+                deployment.status = 'failed'
+                deployment.error_message = f'命令执行超时（{max_wait}秒），命令状态: {cmd.status}'
+                deployment.log = (deployment.log or '') + f"\n[错误] 命令执行超时，最后状态: {cmd.status}\n"
+                if cmd.result:
+                    deployment.log = (deployment.log or '') + f"命令输出: {cmd.result}\n"
+                if cmd.error:
+                    deployment.log = (deployment.log or '') + f"错误信息: {cmd.error}\n"
+                deployment.completed_at = timezone.now()
+                deployment.save()
+                return
 
         # 更新部署状态
         if cmd.status == 'success':
             deployment.status = 'success'
-            deployment.log = cmd.result or '部署成功'
+            deployment.log = (deployment.log or '') + (cmd.result or '部署成功')
         else:
             deployment.status = 'failed'
             deployment.error_message = cmd.error or '部署失败'
-            deployment.log = cmd.result or ''
+            deployment.log = (deployment.log or '') + (cmd.result or '')
+            if cmd.error:
+                deployment.log = (deployment.log or '') + f"\n错误信息: {cmd.error}"
 
         deployment.completed_at = timezone.now()
         deployment.save()

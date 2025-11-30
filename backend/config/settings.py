@@ -55,6 +55,8 @@ INSTALLED_APPS = [
     'apps.agents',
     'apps.health',
     'apps.settings',
+    'apps.logs',
+    'django_filters',  # 用于日志过滤
 ]
 
 MIDDLEWARE = [

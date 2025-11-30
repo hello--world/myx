@@ -29,8 +29,11 @@ def check_service_installed(agent: Agent, service_name: str) -> bool:
         return False
     
     check_script = f"""#!/bin/bash
+set +e  # 不因错误退出
+# 检查命令是否存在
 if command -v {service_name} &> /dev/null; then
     echo "INSTALLED"
+    # 尝试获取版本信息（可能失败，但不影响判断）
     {service_name} version 2>&1 | head -n 1 || echo "已安装"
     exit 0
 else
@@ -60,10 +63,27 @@ fi
         
         if wait_time >= max_wait:
             print(f"检查 {service_name} 超时，命令状态: {cmd.status}")
+            # 超时时也检查命令结果（可能命令已执行但未及时更新状态）
+            if cmd.result and 'INSTALLED' in cmd.result:
+                return True
             return False
         
-        if cmd.status == 'success' and cmd.result and 'INSTALLED' in cmd.result:
-            return True
+        # 检查命令执行结果
+        if cmd.status == 'success':
+            if cmd.result and 'INSTALLED' in cmd.result:
+                print(f"检查 {service_name}: 已安装")
+                return True
+            else:
+                print(f"检查 {service_name}: 未安装 (结果: {cmd.result})")
+                return False
+        elif cmd.status == 'failed':
+            # 即使命令失败，也检查结果中是否有INSTALLED
+            if cmd.result and 'INSTALLED' in cmd.result:
+                print(f"检查 {service_name}: 已安装 (命令失败但检测到INSTALLED)")
+                return True
+            print(f"检查 {service_name}: 未安装 (命令失败: {cmd.error})")
+            return False
+        
         return False
     except Exception as e:
         print(f"检查 {service_name} 异常: {str(e)}")
@@ -217,12 +237,12 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 server=server,
                 deployment_type='caddy',
                 connection_method='agent',
-                deployment_target=server.deployment_target or 'host',
+                deployment_target='host',  # Caddy 仅支持宿主机部署
                 status='running',
                 created_by=user
             )
-            error_log.append("开始执行Caddy部署...")
-            deploy_via_agent(caddy_deployment, server.deployment_target or 'host')
+            error_log.append("开始执行Caddy部署（宿主机）...")
+            deploy_via_agent(caddy_deployment, 'host')  # 强制使用宿主机部署
             
             # 等待部署完成，最多等待5分钟
             max_wait = 300
@@ -261,8 +281,12 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
 def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
     """通过Agent部署Xray配置
     
+    注意：Xray支持多个inbound配置，每次部署时会获取服务器上所有启用的代理，
+    生成包含所有inbound的完整配置。新添加的代理会被合并到配置中，不会覆盖已有的代理。
+    只需要一个Xray进程，所有代理共享同一个Xray实例。
+    
     Args:
-        proxy: 代理对象
+        proxy: 代理对象（当前正在部署的代理）
         
     Returns:
         bool: 是否成功
@@ -271,13 +295,18 @@ def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
     from utils.xray_config import generate_xray_config_json_for_proxies
     
     try:
-        # 获取服务器上的所有代理
-        server_proxies = Proxy.objects.filter(server=proxy.server, status='active')
+        # 获取服务器上的所有启用的代理（包括当前正在部署的代理）
+        # Xray支持多个inbound，所以会合并所有代理的配置，不会覆盖
+        server_proxies = Proxy.objects.filter(
+            server=proxy.server, 
+            status='active',
+            enable=True
+        ).order_by('id')
         
-        # 生成完整的Xray配置
+        # 生成完整的Xray配置（包含所有代理的inbound）
         config_json = generate_xray_config_json_for_proxies(list(server_proxies))
         
-        # 通过Agent部署配置
+        # 通过Agent部署配置（会替换整个Xray配置文件，但包含所有代理）
         return deploy_xray_config_via_agent(proxy.server, config_json)
         
     except Exception as e:

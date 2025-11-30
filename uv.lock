@@ -430,6 +430,18 @@ wheels = [
 ]
 
 [[package]]
+name = "django-filter"
+version = "24.1"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/57/26/17d8bd1ea93b899857caf0283f6b8fa737bebe280738b9d4fb54be01b010/django-filter-24.1.tar.gz", hash = "sha256:65cb43ce272077e5ac6aae1054d76c121cd6b552e296a82a13921e9371baf8c1", size = 141809, upload-time = "2024-03-08T16:00:58.267Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/93/96/8a973c1f45232ce3051ca0c7f40762ed61b1d67e337ae27825b2e53cf57f/django_filter-24.1-py3-none-any.whl", hash = "sha256:335bcae6cbd3e984b024841070f567b22faea57594f27d37c52f8f131f8d8621", size = 94502, upload-time = "2024-03-08T16:00:53.637Z" },
+]
+
+[[package]]
 name = "djangorestframework"
 version = "3.14.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -611,6 +623,7 @@ dependencies = [
     { name = "django" },
     { name = "django-cors-headers" },
     { name = "django-cryptography" },
+    { name = "django-filter" },
     { name = "djangorestframework" },
     { name = "paramiko" },
     { name = "python-dotenv" },
@@ -633,6 +646,7 @@ requires-dist = [
     { name = "django", specifier = "==4.2.7" },
     { name = "django-cors-headers", specifier = "==4.3.1" },
     { name = "django-cryptography", specifier = "==1.1" },
+    { name = "django-filter", specifier = "==24.1" },
     { name = "djangorestframework", specifier = "==3.14.0" },
     { name = "flake8", marker = "extra == 'dev'" },
     { name = "paramiko", specifier = "==3.4.0" },

@@ -13,6 +13,7 @@ from .serializers import (
     AgentCommandDetailSerializer, CommandTemplateSerializer
 )
 from apps.servers.models import Server
+from apps.logs.utils import create_log_entry
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,21 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         if heartbeat_mode not in ['push', 'pull']:
             return Response({'error': '心跳模式必须是push或pull'}, status=status.HTTP_400_BAD_REQUEST)
         
+        old_mode = agent.heartbeat_mode
         agent.heartbeat_mode = heartbeat_mode
         agent.save()
+        
+        # 记录心跳模式更新日志
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=f'更新Agent心跳模式: {agent.server.name}',
+            content=f'心跳模式从 {old_mode} 更新为 {heartbeat_mode}',
+            user=request.user,
+            server=agent.server,
+            related_id=agent.id,
+            related_type='agent'
+        )
         
         serializer = self.get_serializer(agent)
         return Response(serializer.data)
@@ -79,6 +93,18 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
 
         from .command_queue import CommandQueue
         cmd = CommandQueue.add_command(agent, command, args, timeout)
+        
+        # 记录命令下发日志
+        create_log_entry(
+            log_type='command',
+            level='info',
+            title=f'下发命令到Agent: {agent.server.name}',
+            content=f'命令: {command} {", ".join(str(arg) for arg in args) if args else ""}\n超时: {timeout}秒',
+            user=request.user,
+            server=agent.server,
+            related_id=cmd.id,
+            related_type='command'
+        )
 
         from .serializers import AgentCommandDetailSerializer
         serializer = AgentCommandDetailSerializer(cmd)
@@ -145,12 +171,14 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             # 生成唯一的服务名称
             service_name = f'myx-agent-redeploy-{deployment.id}-{int(time.time())}'
             
-            import base64
-            script_b64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('utf-8')
-            
-            # 构建部署命令：先写入脚本文件，然后使用systemd-run执行
-            # 注意：base64字符串使用双引号，变量使用单引号避免shell展开
-            deploy_command = f'echo "{script_b64}" | base64 -d > {script_file} && chmod +x {script_file} && systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash {script_file} && echo $?'
+            # 构建部署命令：使用heredoc写入脚本文件，然后使用systemd-run执行
+            # 使用单引号包裹heredoc标记，避免脚本内容中的特殊字符被shell解析
+            deploy_command = f'''bash -c 'cat > "{script_file}" << '\''SCRIPT_EOF'\''
+{redeploy_script}
+SCRIPT_EOF
+chmod +x "{script_file}"
+systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"
+echo $?' '''
             
             logger.info(f'[redeploy] 创建重新部署命令: deployment_id={deployment.id}, script_file={script_file}, log_file={log_file}')
             logger.debug(f'[redeploy] 命令长度: {len(deploy_command)} 字符')
@@ -171,6 +199,18 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             deployment.log += f"[信息] 日志文件: {log_file}\n"
             deployment.log += f"[信息] 脚本文件: {script_file}\n"
             deployment.save()
+            
+            # 记录Agent重新部署开始日志
+            create_log_entry(
+                log_type='agent',
+                level='info',
+                title=f'开始重新部署Agent: {server.name}',
+                content=f'Agent重新部署已启动，部署任务ID: {deployment.id}，命令ID: {cmd.id}',
+                user=request.user,
+                server=server,
+                related_id=deployment.id,
+                related_type='deployment'
+            )
             
             return Response({
                 'message': 'Agent重新部署已启动，请查看部署任务',
@@ -214,6 +254,18 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         thread = threading.Thread(target=_deploy)
         thread.daemon = True
         thread.start()
+        
+        # 记录Agent重新部署开始日志（通过SSH）
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=f'开始重新部署Agent（通过SSH）: {server.name}',
+            content=f'Agent重新部署已启动（通过SSH），部署任务ID: {deployment.id}',
+            user=request.user,
+            server=server,
+            related_id=deployment.id,
+            related_type='deployment'
+        )
 
         return Response({
             'message': 'Agent重新部署已启动（通过SSH）',
@@ -231,6 +283,18 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             command='systemctl',
             args=['stop', 'myx-agent'],
             timeout=30
+        )
+        
+        # 记录停止Agent命令日志
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=f'停止Agent服务: {agent.server.name}',
+            content=f'停止Agent服务命令已下发，命令ID: {cmd.id}',
+            user=request.user,
+            server=agent.server,
+            related_id=cmd.id,
+            related_type='command'
         )
 
         from .serializers import AgentCommandDetailSerializer
@@ -251,6 +315,18 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             command='systemctl',
             args=['start', 'myx-agent'],
             timeout=30
+        )
+        
+        # 记录启动Agent命令日志
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=f'启动Agent服务: {agent.server.name}',
+            content=f'启动Agent服务命令已下发，命令ID: {cmd.id}',
+            user=request.user,
+            server=agent.server,
+            related_id=cmd.id,
+            related_type='command'
         )
 
         from .serializers import AgentCommandDetailSerializer
@@ -384,6 +460,30 @@ def agent_register(request):
             agent.version = serializer.validated_data['version']
         # 保持现有心跳模式，不覆盖
         agent.save()
+        
+        # 记录Agent重新注册日志
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=f'Agent重新注册: {server.name}',
+            content=f'Agent已重新注册，Token: {agent.token}',
+            user=server.created_by,
+            server=server,
+            related_id=agent.id,
+            related_type='agent'
+        )
+    else:
+        # 记录Agent首次注册日志
+        create_log_entry(
+            log_type='agent',
+            level='success',
+            title=f'Agent注册成功: {server.name}',
+            content=f'Agent首次注册成功，Token: {agent.token}，版本: {agent.version or "未知"}',
+            user=server.created_by,
+            server=server,
+            related_id=agent.id,
+            related_type='agent'
+        )
 
     # 确保secret_key存在
     if not agent.secret_key:
@@ -548,7 +648,34 @@ def agent_command_result(request, command_id):
     error = request.data.get('error') or request.data.get('stderr', '')
     
     try:
+        from .command_queue import CommandQueue
+        from .models import AgentCommand
+        cmd = AgentCommand.objects.get(id=command_id, agent=agent)
         CommandQueue.update_command_result(command_id, success, result, error)
+        
+        # 记录命令执行结果日志
+        log_level = 'success' if success else 'error'
+        log_title = f'命令执行{"成功" if success else "失败"}: {agent.server.name}'
+        log_content = f'命令: {cmd.command} {", ".join(str(arg) for arg in cmd.args) if cmd.args else ""}\n'
+        if success:
+            # 不截断结果，完整显示（会自动解码base64）
+            log_content += f'\n执行结果:\n{result}'
+        else:
+            # 不截断错误，完整显示（会自动解码base64）
+            log_content += f'\n错误信息:\n{error}'
+        
+        create_log_entry(
+            log_type='command',
+            level=log_level,
+            title=log_title,
+            content=log_content,
+            user=agent.server.created_by,
+            server=agent.server,
+            related_id=cmd.id,
+            related_type='command',
+            decode_base64=True  # 自动解码base64内容
+        )
+        
         return Response({'status': 'ok'})
     except Exception as e:
         logger.error(f'[agent_command_result] ✗ 错误: {str(e)}')

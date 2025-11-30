@@ -113,6 +113,18 @@ def quick_deploy_full(deployment_id, is_temporary=False):
         if is_temporary:
             deployment.log = (deployment.log or '') + "注意：这是临时服务器，部署完成后将清除SSH密码，仅保留Agent信息\n"
         deployment.save()
+        
+        # 记录部署任务开始日志
+        create_log_entry(
+            log_type='deployment',
+            level='info',
+            title=f'部署任务开始: {deployment.name}',
+            content=f'部署任务 {deployment.name} 已开始执行',
+            user=deployment.created_by,
+            server=deployment.server,
+            related_id=deployment.id,
+            related_type='deployment'
+        )
 
         try:
             # 步骤1: 通过SSH安装Agent

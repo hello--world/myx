@@ -5,6 +5,7 @@ from django.utils import timezone
 from .models import Deployment
 from apps.agents.models import Agent
 from apps.agents.command_queue import CommandQueue
+from apps.agents.utils import execute_script_via_agent
 from apps.servers.models import Server
 
 
@@ -61,13 +62,7 @@ docker run -d \\
 
 echo "Xray Docker 容器部署完成"
 """
-                script_b64 = base64.b64encode(docker_script.encode('utf-8')).decode('utf-8')
-                cmd = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-                    timeout=600
-                )
+                cmd = execute_script_via_agent(agent, docker_script, timeout=600, script_name='xray_docker.sh')
             elif deployment.deployment_type == 'caddy':
                 docker_script = """#!/bin/bash
 set -e
@@ -93,13 +88,7 @@ docker run -d \\
 
 echo "Caddy Docker 容器部署完成"
 """
-                script_b64 = base64.b64encode(docker_script.encode('utf-8')).decode('utf-8')
-                cmd = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-                    timeout=300
-                )
+                cmd = execute_script_via_agent(agent, docker_script, timeout=300, script_name='caddy_docker.sh')
             else:  # both
                 xray_script = """#!/bin/bash
 set -e
@@ -111,13 +100,7 @@ mkdir -p /etc/xray
 docker run -d --name xray --restart=always -v /etc/xray:/etc/xray -p 443:443 teddysun/xray
 echo "Xray 完成"
 """
-                xray_b64 = base64.b64encode(xray_script.encode('utf-8')).decode('utf-8')
-                cmd1 = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{xray_b64}" | base64 -d | bash'],
-                    timeout=600
-                )
+                cmd1 = execute_script_via_agent(agent, xray_script, timeout=600, script_name='xray_docker.sh')
                 
                 # 等待 Xray 部署完成
                 max_wait = 600
@@ -139,13 +122,7 @@ mkdir -p /etc/caddy
 docker run -d --name caddy --restart=always -v /etc/caddy:/etc/caddy -p 80:80 -p 443:443 caddy:latest
 echo "Caddy 完成"
 """
-                caddy_b64 = base64.b64encode(caddy_script.encode('utf-8')).decode('utf-8')
-                cmd2 = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{caddy_b64}" | base64 -d | bash'],
-                    timeout=300
-                )
+                cmd2 = execute_script_via_agent(agent, caddy_script, timeout=300, script_name='caddy_docker.sh')
                 cmd = cmd2
         else:  # host 宿主机部署
             if deployment.deployment_type == 'xray':
@@ -171,13 +148,7 @@ systemctl start xray || service xray start || true
 
 echo "Xray 安装/更新完成"
 """
-                script_b64 = base64.b64encode(install_script.encode('utf-8')).decode('utf-8')
-                cmd = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-                    timeout=600
-                )
+                cmd = execute_script_via_agent(agent, install_script, timeout=600, script_name='xray_install.sh')
             elif deployment.deployment_type == 'caddy':
                 # 支持重复安装的 Caddy 安装脚本
                 install_script = """#!/bin/bash
@@ -269,38 +240,66 @@ if [ $? -ne 0 ]; then
     echo "[警告] 启用 Caddy 服务失败，但继续执行"
 fi
 
+# 确保 Caddyfile 存在（如果不存在，创建最简单的配置）
+if [ ! -f /etc/caddy/Caddyfile ]; then
+    echo "[信息] Caddyfile 不存在，创建默认配置..."
+    mkdir -p /etc/caddy
+    cat > /etc/caddy/Caddyfile << 'EOF'
+# 默认 Caddyfile 配置
+# 可以根据需要修改
+:80 {
+    respond "Hello from Caddy"
+}
+EOF
+    if [ $? -eq 0 ]; then
+        echo "[成功] 默认 Caddyfile 已创建"
+    else
+        echo "[警告] 创建默认 Caddyfile 失败，但继续执行"
+    fi
+fi
+
 # 尝试启动服务（如果未运行）
 echo "[信息] 检查 Caddy 服务状态..."
 if systemctl is-active --quiet caddy; then
     echo "[信息] Caddy 服务已在运行"
-else
-    echo "[信息] 启动 Caddy 服务..."
-    systemctl start caddy
-    if [ $? -eq 0 ]; then
-        echo "[成功] Caddy 服务已启动"
-        # 等待一下确保服务启动成功
-        sleep 2
-        if systemctl is-active --quiet caddy; then
-            echo "[成功] Caddy 服务运行正常"
-        else
-            echo "[警告] Caddy 服务启动后未保持运行状态"
-            systemctl status caddy --no-pager || true
-        fi
+    echo "[完成] Caddy 安装/更新流程完成"
+    exit 0
+fi
+
+echo "[信息] 启动 Caddy 服务..."
+# 使用 timeout 命令避免 systemctl start 卡住（最多等待10秒）
+timeout 10 bash -c 'systemctl start caddy' 2>&1 || {
+    START_EXIT_CODE=$?
+    echo "[信息] systemctl start 退出码: $START_EXIT_CODE"
+    # 检查服务是否实际已启动（即使命令失败，服务可能已经启动）
+    if systemctl is-active --quiet caddy; then
+        echo "[成功] Caddy 服务实际上已启动（尽管启动命令返回错误）"
+        echo "[完成] Caddy 安装/更新流程完成"
+        exit 0
     else
-        echo "[警告] Caddy 服务启动失败，但可能已经运行"
-        systemctl status caddy --no-pager || true
+        echo "[警告] Caddy 服务启动失败，检查服务状态..."
+        systemctl status caddy --no-pager -l 2>&1 | head -20 || true
+        # 即使启动失败，也不退出（因为可能是配置问题，但安装本身成功）
+        echo "[信息] Caddy 已安装，但服务启动失败（可能需要检查配置）"
+        echo "[完成] Caddy 安装/更新流程完成（服务未启动，请检查配置）"
+        exit 0
     fi
+}
+
+# 等待一下确保服务启动成功
+sleep 2
+if systemctl is-active --quiet caddy; then
+    echo "[成功] Caddy 服务运行正常"
+else
+    echo "[警告] Caddy 服务启动后未保持运行状态（可能是配置问题）"
+    systemctl status caddy --no-pager -l 2>&1 | head -20 || true
+    # 不退出，因为安装本身可能成功，只是服务启动有问题
 fi
 
 echo "[完成] Caddy 安装/更新流程完成"
+exit 0
 """
-                script_b64 = base64.b64encode(install_script.encode('utf-8')).decode('utf-8')
-                cmd = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-                    timeout=300
-                )
+                cmd = execute_script_via_agent(agent, install_script, timeout=300, script_name='caddy_install.sh')
             else:  # both
                 # 安装 Xray
                 xray_script = """#!/bin/bash
@@ -315,13 +314,7 @@ systemctl enable xray || true
 systemctl start xray || service xray start || true
 echo "Xray 完成"
 """
-                xray_b64 = base64.b64encode(xray_script.encode('utf-8')).decode('utf-8')
-                cmd1 = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{xray_b64}" | base64 -d | bash'],
-                    timeout=600
-                )
+                cmd1 = execute_script_via_agent(agent, xray_script, timeout=600, script_name='xray_install.sh')
                 
                 # 等待 Xray 安装完成
                 max_wait = 600
@@ -364,13 +357,7 @@ systemctl enable caddy || true
 systemctl start caddy || true
 echo "Caddy 完成"
 """
-                caddy_b64 = base64.b64encode(caddy_script.encode('utf-8')).decode('utf-8')
-                cmd2 = CommandQueue.add_command(
-                    agent=agent,
-                    command='bash',
-                    args=['-c', f'echo "{caddy_b64}" | base64 -d | bash'],
-                    timeout=300
-                )
+                cmd2 = execute_script_via_agent(agent, caddy_script, timeout=300, script_name='caddy_install.sh')
                 cmd = cmd2
 
         # 等待命令执行完成（轮询）
@@ -382,10 +369,21 @@ echo "Caddy 完成"
                 break
             time.sleep(2)
             wait_time += 2
-            # 每30秒记录一次等待状态
+            # 每30秒记录一次等待状态，并显示命令当前状态
             if wait_time % 30 == 0:
-                deployment.log = (deployment.log or '') + f"等待命令执行完成... ({wait_time}秒)\n"
+                status_info = f"命令状态: {cmd.status}"
+                if cmd.started_at:
+                    elapsed = (timezone.now() - cmd.started_at).total_seconds()
+                    status_info += f", 已执行: {int(elapsed)}秒"
+                deployment.log = (deployment.log or '') + f"等待命令执行完成... ({wait_time}秒, {status_info})\n"
                 deployment.save()
+                
+                # 如果命令执行时间超过超时时间，主动检查并可能标记为失败
+                if cmd.started_at and cmd.timeout:
+                    elapsed = (timezone.now() - cmd.started_at).total_seconds()
+                    if elapsed > cmd.timeout:
+                        deployment.log = (deployment.log or '') + f"[警告] 命令执行时间已超过超时时间（{cmd.timeout}秒），但状态仍为 {cmd.status}\n"
+                        deployment.save()
 
         # 如果超时，检查命令状态
         if wait_time >= max_wait:
@@ -394,10 +392,20 @@ echo "Caddy 完成"
                 deployment.status = 'failed'
                 deployment.error_message = f'命令执行超时（{max_wait}秒），命令状态: {cmd.status}'
                 deployment.log = (deployment.log or '') + f"\n[错误] 命令执行超时，最后状态: {cmd.status}\n"
+                if cmd.started_at:
+                    elapsed = (timezone.now() - cmd.started_at).total_seconds()
+                    deployment.log = (deployment.log or '') + f"命令已执行时间: {int(elapsed)}秒，超时设置: {cmd.timeout}秒\n"
                 if cmd.result:
-                    deployment.log = (deployment.log or '') + f"命令输出: {cmd.result}\n"
+                    # 解码base64内容
+                    from apps.logs.utils import format_log_content
+                    result_preview = cmd.result[-500:] if len(cmd.result) > 500 else cmd.result
+                    formatted_result = format_log_content(result_preview, decode_base64=True)
+                    deployment.log = (deployment.log or '') + f"命令输出（最后500字符）:\n{formatted_result}\n"
                 if cmd.error:
-                    deployment.log = (deployment.log or '') + f"错误信息: {cmd.error}\n"
+                    # 解码base64内容
+                    from apps.logs.utils import format_log_content
+                    formatted_error = format_log_content(cmd.error, decode_base64=True)
+                    deployment.log = (deployment.log or '') + f"错误信息:\n{formatted_error}\n"
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 return
@@ -405,13 +413,20 @@ echo "Caddy 完成"
         # 更新部署状态
         if cmd.status == 'success':
             deployment.status = 'success'
-            deployment.log = (deployment.log or '') + (cmd.result or '部署成功')
+            # 解码base64内容
+            from apps.logs.utils import format_log_content
+            result_content = format_log_content(cmd.result or '部署成功', decode_base64=True)
+            deployment.log = (deployment.log or '') + result_content
         else:
             deployment.status = 'failed'
             deployment.error_message = cmd.error or '部署失败'
-            deployment.log = (deployment.log or '') + (cmd.result or '')
+            # 解码base64内容
+            from apps.logs.utils import format_log_content
+            result_content = format_log_content(cmd.result or '', decode_base64=True)
+            deployment.log = (deployment.log or '') + result_content
             if cmd.error:
-                deployment.log = (deployment.log or '') + f"\n错误信息: {cmd.error}"
+                error_content = format_log_content(cmd.error, decode_base64=True)
+                deployment.log = (deployment.log or '') + f"\n错误信息:\n{error_content}"
 
         deployment.completed_at = timezone.now()
         deployment.save()
@@ -443,46 +458,96 @@ def deploy_xray_config_via_agent(server: Server, config_json: str) -> bool:
         if agent.status != 'online':
             return False
         
-        # 将配置写入临时文件，然后移动到目标位置
-        # 使用base64编码避免特殊字符问题
-        config_b64 = base64.b64encode(config_json.encode('utf-8')).decode('utf-8')
-        
-        # 创建部署脚本
+        # 创建部署脚本（直接使用配置内容，使用heredoc避免特殊字符问题）
         deploy_script = f"""#!/bin/bash
-set -e
+set +e  # 不因错误退出，手动处理错误
 
-# 解码配置
-CONFIG_JSON=$(echo '{config_b64}' | base64 -d)
+# 查找Xray二进制文件位置
+XRAY_BIN=$(command -v xray)
+if [ -z "$XRAY_BIN" ]; then
+    # 尝试常见路径
+    if [ -f /usr/local/bin/xray ]; then
+        XRAY_BIN="/usr/local/bin/xray"
+    elif [ -f /usr/bin/xray ]; then
+        XRAY_BIN="/usr/bin/xray"
+    else
+        echo "[错误] 未找到 Xray 二进制文件"
+        exit 1
+    fi
+fi
+
+echo "[信息] 使用 Xray 二进制文件: $XRAY_BIN"
+
+# 确定配置文件路径（根据Xray安装位置）
+if [ "$XRAY_BIN" = "/usr/local/bin/xray" ]; then
+    CONFIG_DIR="/usr/local/etc/xray"
+elif [ "$XRAY_BIN" = "/usr/bin/xray" ]; then
+    CONFIG_DIR="/etc/xray"
+else
+    # 默认使用 /usr/local/etc/xray
+    CONFIG_DIR="/usr/local/etc/xray"
+fi
+
+echo "[信息] 使用配置目录: $CONFIG_DIR"
 
 # 创建配置目录
-mkdir -p /usr/local/etc/xray
+mkdir -p "$CONFIG_DIR"
 
-# 写入配置文件
-echo "$CONFIG_JSON" > /usr/local/etc/xray/config.json
+# 写入配置文件（使用heredoc避免特殊字符问题）
+cat > "$CONFIG_DIR/config.json" << 'CONFIG_EOF'
+{config_json}
+CONFIG_EOF
+if [ $? -ne 0 ]; then
+    echo "[错误] 写入配置文件失败"
+    exit 1
+fi
+
+echo "[信息] 配置文件已写入: $CONFIG_DIR/config.json"
 
 # 验证配置
-if /usr/local/bin/xray -test -config /usr/local/etc/xray/config.json 2>&1; then
-    echo "配置验证成功"
+echo "[信息] 开始验证配置..."
+VALIDATION_OUTPUT=$($XRAY_BIN -test -config "$CONFIG_DIR/config.json" 2>&1)
+VALIDATION_EXIT=$?
+
+if [ $VALIDATION_EXIT -eq 0 ]; then
+    echo "[成功] 配置验证成功"
+    echo "$VALIDATION_OUTPUT"
+    
     # 重启Xray服务
-    systemctl restart xray || service xray restart || true
-    echo "Xray服务已重启"
+    echo "[信息] 重启 Xray 服务..."
+    if systemctl restart xray 2>&1; then
+        echo "[成功] Xray 服务已重启 (systemctl)"
+    elif service xray restart 2>&1; then
+        echo "[成功] Xray 服务已重启 (service)"
+    else
+        echo "[警告] Xray 服务重启失败，但配置已更新"
+        # 不退出，因为配置已成功写入
+    fi
+    
+    # 等待一下确保服务启动
+    sleep 2
+    if systemctl is-active --quiet xray || service xray status > /dev/null 2>&1; then
+        echo "[成功] Xray 服务运行正常"
+    else
+        echo "[警告] Xray 服务可能未运行，请检查服务状态"
+    fi
+    
     exit 0
 else
-    echo "配置验证失败"
+    echo "[错误] 配置验证失败 (退出码: $VALIDATION_EXIT)"
+    echo "[错误] 验证输出:"
+    echo "$VALIDATION_OUTPUT"
+    
+    # 显示配置文件内容的前几行（用于调试）
+    echo "[信息] 配置文件内容（前20行）:"
+    head -20 "$CONFIG_DIR/config.json" || true
+    
     exit 1
 fi
 """
         
-        # 将脚本编码为base64
-        script_b64 = base64.b64encode(deploy_script.encode('utf-8')).decode('utf-8')
-        
         # 通过Agent执行脚本
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=60
-        )
+        cmd = execute_script_via_agent(agent, deploy_script, timeout=60, script_name='xray_config.sh')
         
         # 等待命令执行完成
         max_wait = 60

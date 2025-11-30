@@ -52,28 +52,62 @@
         </el-input>
       </div>
 
-      <el-table :data="logs" v-loading="loading" stripe style="width: 100%">
+      <el-table 
+        :data="logs" 
+        v-loading="loading" 
+        stripe 
+        style="width: 100%"
+        @expand-change="handleExpandChange"
+      >
+        <el-table-column type="expand" width="50">
+          <template #default="{ row }">
+            <div v-if="row.is_group" style="padding: 10px;">
+              <div v-for="(log, index) in row.logs" :key="log.id" style="margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                  <div>
+                    <el-tag :type="getLogTypeTagType(log.log_type)" size="small" style="margin-right: 8px;">{{ log.log_type_display }}</el-tag>
+                    <el-tag :type="getLevelTagType(log.level)" size="small" style="margin-right: 8px;">{{ log.level_display }}</el-tag>
+                    <span style="font-weight: bold;">{{ log.title }}</span>
+                  </div>
+                  <span style="color: #909399; font-size: 12px;">{{ formatDateTime(log.created_at) }}</span>
+                </div>
+                <el-scrollbar height="200px" style="margin-top: 8px;">
+                  <pre style="white-space: pre-wrap; font-family: monospace; font-size: 12px; margin: 0; padding: 8px; background: white; border-radius: 4px;">{{ log.content || '无内容' }}</pre>
+                </el-scrollbar>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="created_at" label="时间" width="180">
           <template #default="{ row }">
-            {{ formatDateTime(row.created_at) }}
+            <span v-if="row.is_group">{{ formatDateTime(row.last_log_time) }}</span>
+            <span v-else>{{ formatDateTime(row.created_at) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="log_type_display" label="类型" width="120">
           <template #default="{ row }">
-            <el-tag :type="getLogTypeTagType(row.log_type)">{{ row.log_type_display }}</el-tag>
+            <el-tag v-if="row.is_group" type="primary" size="small">任务组</el-tag>
+            <el-tag v-else :type="getLogTypeTagType(row.log_type)">{{ row.log_type_display }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="level_display" label="级别" width="100">
           <template #default="{ row }">
-            <el-tag :type="getLevelTagType(row.level)">{{ row.level_display }}</el-tag>
+            <span v-if="row.is_group">{{ row.log_count }} 条</span>
+            <el-tag v-else :type="getLevelTagType(row.level)">{{ row.level_display }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="标题" min-width="200" />
+        <el-table-column prop="title" label="标题/任务" min-width="200">
+          <template #default="{ row }">
+            <span v-if="row.is_group" style="font-weight: bold;">{{ row.task_name }}</span>
+            <span v-else>{{ row.title }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="server_name" label="服务器" width="150" />
         <el-table-column prop="created_by_username" label="操作人" width="120" />
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" type="primary" @click="viewLogDetail(row)">查看详情</el-button>
+            <el-button v-if="!row.is_group" size="small" type="primary" @click="viewLogDetail(row)">查看详情</el-button>
+            <span v-else style="color: #909399; font-size: 12px;">展开查看详情</span>
           </template>
         </el-table-column>
       </el-table>
@@ -137,6 +171,8 @@ const logs = ref([])
 const servers = ref([])
 const detailDialogVisible = ref(false)
 const currentLog = ref(null)
+const expandedRows = ref([])  // 跟踪展开的行
+const autoRefreshInterval = ref(null)  // 自动刷新定时器
 
 const filters = reactive({
   log_type: '',
@@ -156,7 +192,8 @@ const fetchLogs = async () => {
   try {
     const params = {
       page: pagination.page,
-      page_size: pagination.pageSize
+      page_size: pagination.pageSize,
+      group_by_task: 'true'  // 启用任务分组
     }
     if (filters.log_type) params.log_type = filters.log_type
     if (filters.level) params.level = filters.level
@@ -242,13 +279,44 @@ const getLevelTagType = (level) => {
   return map[level] || ''
 }
 
+const handleExpandChange = (row, expandedRowsArray) => {
+  // 更新展开的行列表
+  // expandedRowsArray 是当前所有展开的行数组
+  if (row && row.is_group) {
+    // 检查当前行是否在展开列表中
+    const isExpanded = expandedRowsArray.some(r => r.id === row.id)
+    if (isExpanded) {
+      // 展开：添加到列表
+      if (!expandedRows.value.includes(row.id)) {
+        expandedRows.value.push(row.id)
+      }
+    } else {
+      // 收起：从列表移除
+      const index = expandedRows.value.indexOf(row.id)
+      if (index > -1) {
+        expandedRows.value.splice(index, 1)
+      }
+    }
+  }
+}
+
 onMounted(() => {
   fetchLogs()
   fetchServers()
-  // 每5秒自动刷新
-  setInterval(() => {
-    fetchLogs()
+  // 智能刷新：只在没有展开的日志时才自动刷新
+  autoRefreshInterval.value = setInterval(() => {
+    if (expandedRows.value.length === 0) {
+      fetchLogs()
+    }
   }, 5000)
+})
+
+// 组件卸载时清除定时器
+import { onUnmounted } from 'vue'
+onUnmounted(() => {
+  if (autoRefreshInterval.value) {
+    clearInterval(autoRefreshInterval.value)
+  }
 })
 </script>
 

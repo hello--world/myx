@@ -211,7 +211,7 @@ const form = reactive({
   enable_ssh_key: false,
   password: '',
   private_key: '',
-  connection_method: 'ssh',
+  connection_method: 'agent',  // 默认使用Agent连接方式
   deployment_target: 'host'
 })
 
@@ -314,7 +314,7 @@ const handleEdit = (row) => {
     private_key: '',
     save_password: row.save_password || false,
     enable_ssh_key: row.enable_ssh_key || false,
-    connection_method: row.connection_method || 'ssh',
+    connection_method: row.connection_method || 'agent',  // 默认使用Agent连接方式
     deployment_target: row.deployment_target || 'host',
     agent_connect_host: row.agent_connect_host || '',
     agent_connect_port: row.agent_connect_port || null
@@ -435,7 +435,7 @@ const resetForm = () => {
     private_key: '',
     save_password: false,
     enable_ssh_key: false,
-    connection_method: 'ssh',
+    connection_method: 'agent',  // 默认使用Agent连接方式
     deployment_target: 'host'
   })
   formRef.value?.resetFields()

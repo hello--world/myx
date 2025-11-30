@@ -7,6 +7,8 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from .models import Proxy
 from .serializers import ProxySerializer
 from .tasks import auto_deploy_proxy
+from apps.logs.utils import create_log_entry
+from apps.agents.utils import execute_script_via_agent
 import time
 import re
 import os
@@ -101,6 +103,18 @@ class ProxyViewSet(viewsets.ModelViewSet):
         # 创建代理
         proxy = serializer.save()
         
+        # 记录代理创建日志
+        create_log_entry(
+            log_type='proxy',
+            level='info',
+            title=f'创建代理节点: {proxy.name}',
+            content=f'代理名称: {proxy.name}\n协议: {proxy.get_protocol_display()}\n端口: {proxy.port}\n服务器: {proxy.server.name}',
+            user=request.user,
+            server=proxy.server,
+            related_id=proxy.id,
+            related_type='proxy'
+        )
+        
         # 如果提供了Agent连接信息，更新服务器
         if agent_connect_host or agent_connect_port:
             server = proxy.server
@@ -122,6 +136,18 @@ class ProxyViewSet(viewsets.ModelViewSet):
         
         # 异步启动自动部署（传递心跳模式）
         auto_deploy_proxy(proxy.id, heartbeat_mode=heartbeat_mode)
+        
+        # 记录部署开始日志
+        create_log_entry(
+            log_type='proxy',
+            level='info',
+            title=f'开始部署代理节点: {proxy.name}',
+            content=f'代理节点 {proxy.name} 的自动部署已启动',
+            user=request.user,
+            server=proxy.server,
+            related_id=proxy.id,
+            related_type='proxy'
+        )
         
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -161,6 +187,18 @@ class ProxyViewSet(viewsets.ModelViewSet):
         proxy.save()
         
         logger.info(f'[redeploy] 启动重新部署: proxy_id={proxy.id}')
+        
+        # 记录重新部署开始日志
+        create_log_entry(
+            log_type='proxy',
+            level='info',
+            title=f'开始重新部署代理节点: {proxy.name}',
+            content=f'代理节点 {proxy.name} 的重新部署已启动',
+            user=request.user,
+            server=proxy.server,
+            related_id=proxy.id,
+            related_type='proxy'
+        )
         
         # 异步启动重新部署
         auto_deploy_proxy(proxy.id)
@@ -219,14 +257,7 @@ else
     exit 1
 fi
 """
-        script_b64 = base64.b64encode(read_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, read_script, timeout=30, script_name='read_caddyfile.sh')
         
         # 等待命令执行完成
         import time
@@ -271,15 +302,10 @@ fi
         
         # 通过 Agent 更新 Caddyfile
         from apps.agents.command_queue import CommandQueue
-        import base64
         
-        # 创建更新脚本
-        content_b64 = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        # 创建更新脚本（直接使用内容，不需要base64编码）
         update_script = f"""#!/bin/bash
 set -e
-
-# 解码内容
-CADDYFILE_CONTENT=$(echo '{content_b64}' | base64 -d)
 
 # 备份原文件
 if [ -f /etc/caddy/Caddyfile ]; then
@@ -287,7 +313,9 @@ if [ -f /etc/caddy/Caddyfile ]; then
 fi
 
 # 写入新文件
-echo "$CADDYFILE_CONTENT" > /etc/caddy/Caddyfile
+cat > /etc/caddy/Caddyfile << 'CADDYFILE_EOF'
+{content}
+CADDYFILE_EOF
 
 # 验证配置
 if caddy validate --config /etc/caddy/Caddyfile 2>&1; then
@@ -302,14 +330,7 @@ else
     exit 1
 fi
 """
-        script_b64 = base64.b64encode(update_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=60
-        )
+        cmd = execute_script_via_agent(agent, update_script, timeout=60, script_name='update_caddyfile.sh')
         
         # 等待命令执行完成
         import time
@@ -361,14 +382,7 @@ else
     exit 1
 fi
 """
-        script_b64 = base64.b64encode(validate_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, validate_script, timeout=30, script_name='validate_caddyfile.sh')
         
         # 等待命令执行完成
         import time
@@ -426,14 +440,7 @@ else
     exit 1
 fi
 """
-        script_b64 = base64.b64encode(reload_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, reload_script, timeout=30, script_name='reload_caddy.sh')
         
         # 等待命令执行完成
         import time
@@ -482,14 +489,7 @@ else
     echo ""
 fi
 """
-        script_b64 = base64.b64encode(read_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, read_script, timeout=30, script_name='read_caddyfile_certs.sh')
         
         # 等待命令执行完成
         max_wait = 30
@@ -576,23 +576,22 @@ fi
         cert_dir = os.path.dirname(cert_path)
         key_dir = os.path.dirname(key_path)
         
-        cert_content_b64 = base64.b64encode(cert_content.encode('utf-8')).decode('utf-8')
-        key_content_b64 = base64.b64encode(key_content.encode('utf-8')).decode('utf-8')
-        
+        # 创建上传脚本（直接使用内容，不需要base64编码）
         upload_script = f"""#!/bin/bash
 set -e
-
-# 解码证书内容
-CERT_CONTENT=$(echo '{cert_content_b64}' | base64 -d)
-KEY_CONTENT=$(echo '{key_content_b64}' | base64 -d)
 
 # 创建目录（如果不存在）
 mkdir -p "{cert_dir}"
 mkdir -p "{key_dir}"
 
 # 写入证书文件
-echo "$CERT_CONTENT" > "{cert_path}"
-echo "$KEY_CONTENT" > "{key_path}"
+cat > "{cert_path}" << 'CERT_EOF'
+{cert_content}
+CERT_EOF
+
+cat > "{key_path}" << 'KEY_EOF'
+{key_content}
+KEY_EOF
 
 # 设置权限
 chmod 600 "{cert_path}"
@@ -600,14 +599,7 @@ chmod 600 "{key_path}"
 
 echo "证书上传成功"
 """
-        script_b64 = base64.b64encode(upload_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, upload_script, timeout=30, script_name='upload_cert.sh')
         
         # 等待命令执行完成
         max_wait = 30
@@ -665,14 +657,7 @@ else
     exit 1
 fi
 """
-        script_b64 = base64.b64encode(read_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, read_script, timeout=30, script_name='read_cert.sh')
         
         # 等待命令执行完成
         max_wait = 30
@@ -737,14 +722,7 @@ fi
 rm -f "{cert_path}" "{key_path}"
 echo "证书删除成功"
 """
-        script_b64 = base64.b64encode(delete_script.encode('utf-8')).decode('utf-8')
-        
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=30
-        )
+        cmd = execute_script_via_agent(agent, delete_script, timeout=30, script_name='delete_cert.sh')
         
         # 等待命令执行完成
         max_wait = 30

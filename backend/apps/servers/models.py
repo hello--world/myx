@@ -32,7 +32,7 @@ class Server(models.Model):
     username = models.CharField(max_length=100, verbose_name='SSH用户名')
     password = encrypt(models.CharField(max_length=255, blank=True, null=True, verbose_name='SSH密码'))
     private_key = encrypt(models.TextField(blank=True, null=True, verbose_name='SSH私钥'))
-    connection_method = models.CharField(max_length=20, choices=CONNECTION_METHOD_CHOICES, default='ssh', verbose_name='连接方式')
+    connection_method = models.CharField(max_length=20, choices=CONNECTION_METHOD_CHOICES, default='agent', verbose_name='连接方式')
     deployment_target = models.CharField(max_length=20, choices=DEPLOYMENT_TARGET_CHOICES, default='host', verbose_name='部署目标')
     # Agent连接地址（用于Agent模式，可能是Cloudflare域名等）
     agent_connect_host = models.CharField(max_length=255, blank=True, null=True, verbose_name='Agent连接地址')

@@ -2,6 +2,7 @@ import threading
 import time
 from django.utils import timezone
 from .models import Proxy
+from apps.logs.utils import create_log_entry
 from apps.servers.models import Server
 from apps.agents.models import Agent
 from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_registration
@@ -20,7 +21,7 @@ def check_service_installed(agent: Agent, service_name: str) -> bool:
         bool: 是否已安装
     """
     from apps.agents.command_queue import CommandQueue
-    import base64
+    from apps.agents.utils import execute_script_via_agent
     
     # 检查 Agent 是否在线
     agent.refresh_from_db()
@@ -41,15 +42,8 @@ else
     exit 1
 fi
 """
-    script_b64 = base64.b64encode(check_script.encode('utf-8')).decode('utf-8')
-    
     try:
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='bash',
-            args=['-c', f'echo "{script_b64}" | base64 -d | bash'],
-            timeout=10
-        )
+        cmd = execute_script_via_agent(agent, check_script, timeout=10, script_name='check_service.sh')
         
         # 等待命令执行完成，增加超时时间
         max_wait = 30  # 增加到30秒
@@ -115,20 +109,32 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
         except Agent.DoesNotExist:
             error_log.append("未找到Agent，需要安装")
         
-        # 如果服务器连接方式是SSH，需要先安装Agent
+        # 如果Agent不存在，需要先安装Agent
         if not agent:
-            if server.connection_method == 'ssh':
+            # 检查是否有SSH凭证（密码或私钥），有凭证才能通过SSH安装Agent
+            if server.password or server.private_key:
                 error_log.append("通过SSH安装Agent...")
-                # 创建临时部署任务用于安装Agent
+                
+                # 保存原始连接方式（安装Agent时需要使用SSH）
+                original_connection_method = server.connection_method
+                
+                # 临时将连接方式设置为SSH，以便安装Agent
+                if server.connection_method == 'agent':
+                    server.connection_method = 'ssh'
+                    server.save()
+                
+                # 创建部署任务用于安装Agent
                 deployment = Deployment.objects.create(
                     name=f"安装Agent - {server.name}",
                     server=server,
-                    deployment_type='full',
+                    deployment_type='agent',  # 使用 'agent' 类型，更明确
                     connection_method='ssh',
                     deployment_target=server.deployment_target or 'host',
                     status='running',
                     created_by=user
                 )
+                
+                error_log.append(f"部署任务已创建: {deployment.id}")
                 
                 # 安装Agent
                 if not install_agent_via_ssh(server, deployment):
@@ -141,6 +147,10 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                         error_log.append(f"部署日志:\n{deployment.log}")
                     if deployment.error_message:
                         error_log.append(f"错误信息: {deployment.error_message}")
+                    # 如果原始连接方式为Agent但安装失败，保持为SSH
+                    if original_connection_method == 'agent':
+                        server.connection_method = 'ssh'
+                        server.save()
                     return False, "\n".join(error_log)
                 
                 # 等待Agent注册
@@ -154,10 +164,19 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                     error_log.append("Agent注册超时（60秒）")
                     if deployment.log:
                         error_log.append(f"部署日志:\n{deployment.log}")
+                    # 如果原始连接方式为Agent但注册失败，保持为SSH
+                    if original_connection_method == 'agent':
+                        server.connection_method = 'ssh'
+                        server.save()
                     return False, "\n".join(error_log)
                 
                 # 更新服务器连接方式
-                server.connection_method = 'agent'
+                # 如果原始连接方式选择为Agent，安装成功后切换为Agent
+                if original_connection_method == 'agent':
+                    server.connection_method = 'agent'
+                else:
+                    # 如果原始连接方式为SSH，保持SSH（但Agent已安装，可以随时切换）
+                    server.connection_method = 'ssh'
                 server.status = 'active'
                 server.save()
                 
@@ -171,8 +190,9 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 deployment.save()
                 error_log.append("Agent安装并注册成功")
             else:
-                # 没有Agent且不是SSH连接，无法安装
-                error_log.append(f"服务器连接方式为 {server.connection_method}，无法通过SSH安装Agent")
+                # 没有SSH凭证，无法安装Agent
+                error_log.append("缺少SSH凭证（密码或私钥），无法通过SSH安装Agent")
+                error_log.append("请先在服务器管理页面添加SSH凭证，然后手动安装Agent")
                 return False, "\n".join(error_log)
         
         # 确保Agent在线
@@ -353,12 +373,34 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                     proxy.deployment_status = 'failed'
                     proxy.deployment_log = (proxy.deployment_log or '') + "\n❌ Agent、Xray、Caddy安装失败\n"
                     proxy.save()
+                    # 记录部署失败日志
+                    create_log_entry(
+                        log_type='proxy',
+                        level='error',
+                        title=f'代理节点部署失败: {proxy.name}',
+                        content=f'代理节点 {proxy.name} 部署失败：Agent、Xray、Caddy安装失败',
+                        user=proxy.created_by,
+                        server=proxy.server,
+                        related_id=proxy.id,
+                        related_type='proxy'
+                    )
                     return
             except Exception as e:
                 import traceback
                 proxy.deployment_status = 'failed'
                 proxy.deployment_log = (proxy.deployment_log or '') + f"Agent、Xray、Caddy安装异常: {str(e)}\n{traceback.format_exc()}\n"
                 proxy.save()
+                # 记录部署异常日志
+                create_log_entry(
+                    log_type='proxy',
+                    level='error',
+                    title=f'代理节点部署异常: {proxy.name}',
+                    content=f'代理节点 {proxy.name} 部署异常：{str(e)}',
+                    user=proxy.created_by,
+                    server=proxy.server,
+                    related_id=proxy.id,
+                    related_type='proxy'
+                )
                 return
             
             proxy.deployment_log = (proxy.deployment_log or '') + "✅ Agent、Xray、Caddy安装成功\n"
@@ -372,12 +414,35 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                 proxy.deployment_status = 'failed'
                 proxy.deployment_log = (proxy.deployment_log or '') + "❌ Xray配置部署失败\n"
                 proxy.save()
+                # 记录Xray配置部署失败日志
+                create_log_entry(
+                    log_type='proxy',
+                    level='error',
+                    title=f'代理节点Xray配置部署失败: {proxy.name}',
+                    content=f'代理节点 {proxy.name} 的Xray配置部署失败',
+                    user=proxy.created_by,
+                    server=proxy.server,
+                    related_id=proxy.id,
+                    related_type='proxy'
+                )
                 return
             
             proxy.deployment_status = 'success'
             proxy.deployment_log = (proxy.deployment_log or '') + "✅ 部署完成！\n"
             proxy.deployed_at = timezone.now()
             proxy.save()
+            
+            # 记录部署成功日志
+            create_log_entry(
+                log_type='proxy',
+                level='success',
+                title=f'代理节点部署成功: {proxy.name}',
+                content=f'代理节点 {proxy.name} 部署成功',
+                user=proxy.created_by,
+                server=proxy.server,
+                related_id=proxy.id,
+                related_type='proxy'
+            )
             
         except Proxy.DoesNotExist:
             pass
@@ -388,6 +453,17 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                 proxy.deployment_status = 'failed'
                 proxy.deployment_log = (proxy.deployment_log or '') + f"❌ 部署异常: {str(e)}\n{traceback.format_exc()}\n"
                 proxy.save()
+                # 记录部署异常日志
+                create_log_entry(
+                    log_type='proxy',
+                    level='error',
+                    title=f'代理节点部署异常: {proxy.name}',
+                    content=f'代理节点 {proxy.name} 部署过程中发生异常：{str(e)}',
+                    user=proxy.created_by,
+                    server=proxy.server,
+                    related_id=proxy.id,
+                    related_type='proxy'
+                )
             except:
                 pass
     

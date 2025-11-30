@@ -8,6 +8,7 @@ import logging
 from django.utils import timezone
 from .models import Deployment
 from apps.agents.models import Agent, AgentCommand
+from apps.logs.utils import create_log_entry
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,17 @@ def _check_deployment(deployment: Deployment):
             # 检查是否已经添加过这个日志（避免重复）
             result_preview = command.result[:100] if len(command.result) > 100 else command.result
             if f"[命令结果-{command.id}]" not in (deployment.log or ''):
-                deployment.log = (deployment.log or '') + f"\n[命令结果-{command.id}] {command.result}\n"
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_result = format_log_content(command.result, decode_base64=True)
+                deployment.log = (deployment.log or '') + f"\n[命令结果-{command.id}]\n{formatted_result}\n"
                 deployment.save()
         if command.error:
             if f"[命令错误-{command.id}]" not in (deployment.log or ''):
-                deployment.log = (deployment.log or '') + f"\n[命令错误-{command.id}] {command.error}\n"
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_error = format_log_content(command.error, decode_base64=True)
+                deployment.log = (deployment.log or '') + f"\n[命令错误-{command.id}]\n{formatted_error}\n"
                 deployment.save()
     
     # 尝试通过Agent读取日志文件（优先读取日志文件，因为实际日志在那里）
@@ -104,7 +111,10 @@ def _check_deployment(deployment: Deployment):
                 current_log = deployment.log or ''
                 # 如果新日志和当前日志不同，就更新（可能是日志文件有新内容）
                 if log_content != current_log:
-                    deployment.log = log_content
+                    # 解码base64内容
+                    from apps.logs.utils import format_log_content
+                    formatted_log = format_log_content(log_content, decode_base64=True)
+                    deployment.log = formatted_log
                     deployment.save()
                     logger.debug(f'更新部署任务日志: deployment_id={deployment.id}, 新日志长度={len(log_content)}, 旧日志长度={len(current_log)}')
 
@@ -144,9 +154,15 @@ def _handle_completion(deployment: Deployment, agent: Agent, script_success: boo
     
     # 读取完整日志
     if log_content:
-        deployment.log = (deployment.log or '') + f"\n=== 完整执行日志 ===\n{log_content}\n"
+        # 解码base64内容
+        from apps.logs.utils import format_log_content
+        formatted_log = format_log_content(log_content, decode_base64=True)
+        deployment.log = (deployment.log or '') + f"\n=== 完整执行日志 ===\n{formatted_log}\n"
     elif command and command.result:
-        deployment.log = (deployment.log or '') + f"\n=== 命令执行结果 ===\n{command.result}\n"
+        # 解码base64内容
+        from apps.logs.utils import format_log_content
+        formatted_result = format_log_content(command.result, decode_base64=True)
+        deployment.log = (deployment.log or '') + f"\n=== 命令执行结果 ===\n{formatted_result}\n"
     
     if script_success:
         # 测试Agent是否在线
@@ -155,10 +171,32 @@ def _handle_completion(deployment: Deployment, agent: Agent, script_success: boo
         if agent_online:
             deployment.status = 'success'
             deployment.log = (deployment.log or '') + f"\n[完成] Agent重新部署成功，服务运行正常\n"
+            # 记录部署成功日志
+            create_log_entry(
+                log_type='deployment',
+                level='success',
+                title=f'部署任务成功: {deployment.name}',
+                content=f'部署任务 {deployment.name} 执行成功',
+                user=deployment.created_by,
+                server=deployment.server,
+                related_id=deployment.id,
+                related_type='deployment'
+            )
         else:
             # 即使测试失败，如果脚本成功执行，也标记为成功
             deployment.status = 'success'
             deployment.log = (deployment.log or '') + f"\n[完成] Agent重新部署成功，但Agent尚未重新注册（可能需要等待）\n"
+            # 记录部署成功日志（但Agent未重新注册）
+            create_log_entry(
+                log_type='deployment',
+                level='warning',
+                title=f'部署任务完成（Agent未重新注册）: {deployment.name}',
+                content=f'部署任务 {deployment.name} 执行成功，但Agent尚未重新注册',
+                user=deployment.created_by,
+                server=deployment.server,
+                related_id=deployment.id,
+                related_type='deployment'
+            )
     else:
         deployment.status = 'failed'
         agent.refresh_from_db()
@@ -166,6 +204,17 @@ def _handle_completion(deployment: Deployment, agent: Agent, script_success: boo
             deployment.error_message = 'Agent重新部署后未正常上线'
         else:
             deployment.error_message = '脚本执行失败'
+        # 记录部署失败日志
+        create_log_entry(
+            log_type='deployment',
+            level='error',
+            title=f'部署任务失败: {deployment.name}',
+            content=f'部署任务 {deployment.name} 执行失败：{deployment.error_message}',
+            user=deployment.created_by,
+            server=deployment.server,
+            related_id=deployment.id,
+            related_type='deployment'
+        )
     
     deployment.completed_at = timezone.now()
     deployment.save()
@@ -191,7 +240,9 @@ def _read_log_file_via_agent(agent: Agent, log_file_path: str, deployment: Deplo
             if read_cmd.status in ['success', 'failed']:
                 if read_cmd.status == 'success' and read_cmd.result:
                     logger.debug(f'成功读取日志文件: {log_file_path}, 长度: {len(read_cmd.result)}')
-                    return read_cmd.result
+                    # 解码base64内容
+                    from apps.logs.utils import format_log_content
+                    return format_log_content(read_cmd.result, decode_base64=True)
                 elif read_cmd.status == 'failed':
                     logger.debug(f'读取日志文件失败: {read_cmd.error}')
                     break

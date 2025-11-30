@@ -170,19 +170,51 @@ restore_backup() {{
             report_progress "[恢复] 配置文件已恢复"
         fi
         
-        # 重新加载systemd并启动服务
+        # 确保systemd服务文件存在
+        if [ ! -f /etc/systemd/system/myx-agent.service ]; then
+            report_progress "[恢复] 创建systemd服务文件..."
+            cat > /etc/systemd/system/myx-agent.service << 'EOFSERVICE'
+[Unit]
+Description=MyX Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/myx-agent/myx-agent
+Restart=always
+RestartSec=10
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target
+EOFSERVICE
+            report_progress "[恢复] systemd服务文件已创建"
+        fi
+        
+        # 重新加载systemd并启用服务
         systemctl daemon-reload || true
-        systemctl start myx-agent
+        systemctl enable myx-agent || true
+        
+        # 启动服务并检查返回值
+        report_progress "[恢复] 正在启动Agent服务..."
+        if systemctl start myx-agent; then
+            report_progress "[恢复] systemctl start 命令执行成功"
+        else
+            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+            report_progress "[错误] systemctl start 命令执行失败"
+            report_progress "[错误] $start_error"
+        fi
         
         # 等待服务启动
-        report_progress "[恢复] 正在启动Agent服务..."
         sleep 5
         
-        # 验证服务状态
+        # 验证服务状态（重试机制）
         local retry_count=0
         local max_retries=6
         while [ $retry_count -lt $max_retries ]; do
-            if systemctl is-active --quiet myx-agent; then
+            local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+            if [ "$service_status" = "active" ]; then
                 report_progress "[恢复] Agent服务已启动"
                 
                 # 尝试重新注册Agent（如果配置存在）
@@ -201,6 +233,8 @@ restore_backup() {{
                     report_progress "[恢复] 备份已恢复，Agent服务运行正常"
                     return 0
                 fi
+            else
+                report_progress "[恢复] 服务状态: $service_status"
             fi
             
             retry_count=$((retry_count + 1))
@@ -208,12 +242,14 @@ restore_backup() {{
             sleep 2
         done
         
-        # 如果仍然无法启动，检查服务状态
+        # 如果仍然无法启动，检查服务状态和日志
         local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
-        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -5)
+        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+        local journal_log=$(journalctl -u myx-agent --no-pager -n 20 2>&1 | tail -10)
         report_progress "[错误] 恢复后Agent服务仍无法启动"
         report_progress "[错误] 服务状态: $service_status"
-        report_progress "[错误] 服务日志: $service_error"
+        report_progress "[错误] 服务状态详情: $service_error"
+        report_progress "[错误] 服务日志: $journal_log"
         return 1
     else
         report_progress "[错误] 未找到备份文件，无法恢复"
@@ -590,19 +626,51 @@ restore_backup() {{
         chmod +x /opt/myx-agent/myx-agent
         report_progress "[恢复] 二进制文件已恢复"
         
-        # 重新加载systemd并启动服务
+        # 确保systemd服务文件存在
+        if [ ! -f /etc/systemd/system/myx-agent.service ]; then
+            report_progress "[恢复] 创建systemd服务文件..."
+            cat > /etc/systemd/system/myx-agent.service << 'EOFSERVICE'
+[Unit]
+Description=MyX Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/myx-agent/myx-agent
+Restart=always
+RestartSec=10
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target
+EOFSERVICE
+            report_progress "[恢复] systemd服务文件已创建"
+        fi
+        
+        # 重新加载systemd并启用服务
         systemctl daemon-reload || true
-        systemctl start myx-agent
+        systemctl enable myx-agent || true
+        
+        # 启动服务并检查返回值
+        report_progress "[恢复] 正在启动Agent服务..."
+        if systemctl start myx-agent; then
+            report_progress "[恢复] systemctl start 命令执行成功"
+        else
+            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+            report_progress "[错误] systemctl start 命令执行失败"
+            report_progress "[错误] $start_error"
+        fi
         
         # 等待服务启动
-        report_progress "[恢复] 正在启动Agent服务..."
         sleep 5
         
         # 验证服务状态（重试机制）
         local retry_count=0
         local max_retries=6
         while [ $retry_count -lt $max_retries ]; do
-            if systemctl is-active --quiet myx-agent; then
+            local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+            if [ "$service_status" = "active" ]; then
                 report_progress "[恢复] Agent服务已启动"
                 
                 # 尝试重新注册Agent（如果配置存在）
@@ -621,6 +689,8 @@ restore_backup() {{
                     report_progress "[恢复] 备份已恢复，Agent服务运行正常"
                     return 0
                 fi
+            else
+                report_progress "[恢复] 服务状态: $service_status"
             fi
             
             retry_count=$((retry_count + 1))
@@ -628,12 +698,14 @@ restore_backup() {{
             sleep 2
         done
         
-        # 如果仍然无法启动，检查服务状态
+        # 如果仍然无法启动，检查服务状态和日志
         local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
-        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -5)
+        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+        local journal_log=$(journalctl -u myx-agent --no-pager -n 20 2>&1 | tail -10)
         report_progress "[错误] 恢复后Agent服务仍无法启动"
         report_progress "[错误] 服务状态: $service_status"
-        report_progress "[错误] 服务日志: $service_error"
+        report_progress "[错误] 服务状态详情: $service_error"
+        report_progress "[错误] 服务日志: $journal_log"
         return 1
     else
         report_progress "[错误] 未找到备份文件，无法恢复"

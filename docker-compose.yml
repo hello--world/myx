@@ -38,18 +38,8 @@ services:
     environment:
       - VITE_API_URL=http://localhost:8000/api
 
-  agent:
-    image: ghcr.io/${GITHUB_REPO:-hello--world/myx}/agent:latest
-    container_name: myx-agent
-    restart: unless-stopped
-    environment:
-      - API_URL=http://backend:8000/api/agents
-    volumes:
-      - /etc/myx-agent:/etc/myx-agent
-    networks:
-      - myx-network
-    # Note: Agent 需要服务器 ID 和 Token 才能运行
-    # 首次运行需要: docker run --rm -it -e SERVER_TOKEN=xxx -e API_URL=xxx agent:latest
+  # 注意: Agent 仅支持宿主机安装，不支持 Docker 容器部署
+  # 请通过 Web 界面或手动方式在宿主机上安装 Agent
 
 networks:
   myx-network:

@@ -86,18 +86,25 @@ fi
         return False
 
 
-def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'):
+def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push', log_callback=None):
     """安装Agent、Xray、Caddy（支持重复安装）
     
     Args:
         server: 服务器对象
         user: 用户对象
         heartbeat_mode: Agent心跳模式（push/pull），默认push
+        log_callback: 日志回调函数，用于实时更新日志
         
     Returns:
         tuple[bool, str]: (是否成功, 错误信息或日志)
     """
     error_log = []
+    
+    def _log(message: str):
+        """记录日志并调用回调"""
+        error_log.append(message)
+        if log_callback:
+            log_callback(message)
     try:
         # 检查是否已安装Agent
         agent = None
@@ -105,15 +112,15 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
             agent = Agent.objects.get(server=server)
             if agent.status != 'online':
                 agent = None
-                error_log.append(f"Agent状态为离线，需要重新安装")
+                _log(f"Agent状态为离线，需要重新安装")
         except Agent.DoesNotExist:
-            error_log.append("未找到Agent，需要安装")
+            _log("未找到Agent，需要安装")
         
         # 如果Agent不存在，需要先安装Agent
         if not agent:
             # 检查是否有SSH凭证（密码或私钥），有凭证才能通过SSH安装Agent
             if server.password or server.private_key:
-                error_log.append("通过SSH安装Agent...")
+                _log("通过SSH安装Agent...")
                 
                 # 保存原始连接方式（安装Agent时需要使用SSH）
                 original_connection_method = server.connection_method
@@ -134,36 +141,37 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                     created_by=user
                 )
                 
-                error_log.append(f"部署任务已创建: {deployment.id}")
+                _log(f"部署任务已创建: {deployment.id}")
                 
-                # 安装Agent
+                # 安装Agent，并实时更新日志
+                _log("开始安装Agent...")
                 if not install_agent_via_ssh(server, deployment):
                     deployment.status = 'failed'
                     deployment.error_message = 'Agent安装失败'
                     deployment.completed_at = timezone.now()
                     deployment.save()
-                    error_log.append(f"Agent安装失败")
+                    _log(f"Agent安装失败")
                     if deployment.log:
-                        error_log.append(f"部署日志:\n{deployment.log}")
+                        _log(f"部署日志:\n{deployment.log}")
                     if deployment.error_message:
-                        error_log.append(f"错误信息: {deployment.error_message}")
+                        _log(f"错误信息: {deployment.error_message}")
                     # 如果原始连接方式为Agent但安装失败，保持为SSH
                     if original_connection_method == 'agent':
                         server.connection_method = 'ssh'
                         server.save()
                     return False, "\n".join(error_log)
                 
-                # 等待Agent注册
-                error_log.append("等待Agent注册...")
+                # 等待Agent注册，实时更新进度
+                _log("等待Agent注册...")
                 agent = wait_for_agent_registration(server, timeout=60)
                 if not agent:
                     deployment.status = 'failed'
                     deployment.error_message = 'Agent注册超时'
                     deployment.completed_at = timezone.now()
                     deployment.save()
-                    error_log.append("Agent注册超时（60秒）")
+                    _log("Agent注册超时（60秒）")
                     if deployment.log:
-                        error_log.append(f"部署日志:\n{deployment.log}")
+                        _log(f"部署日志:\n{deployment.log}")
                     # 如果原始连接方式为Agent但注册失败，保持为SSH
                     if original_connection_method == 'agent':
                         server.connection_method = 'ssh'
@@ -188,29 +196,29 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 deployment.status = 'success'
                 deployment.completed_at = timezone.now()
                 deployment.save()
-                error_log.append("Agent安装并注册成功")
+                _log("Agent安装并注册成功")
             else:
                 # 没有SSH凭证，无法安装Agent
-                error_log.append("缺少SSH凭证（密码或私钥），无法通过SSH安装Agent")
-                error_log.append("请先在服务器管理页面添加SSH凭证，然后手动安装Agent")
+                _log("缺少SSH凭证（密码或私钥），无法通过SSH安装Agent")
+                _log("请先在服务器管理页面添加SSH凭证，然后手动安装Agent")
                 return False, "\n".join(error_log)
         
         # 确保Agent在线
         agent = Agent.objects.get(server=server)
         agent.refresh_from_db()
         if agent.status != 'online':
-            error_log.append(f"Agent状态为 {agent.status}，不在线")
-            error_log.append(f"请检查Agent是否正常运行，最后心跳时间: {agent.last_heartbeat}")
+            _log(f"Agent状态为 {agent.status}，不在线")
+            _log(f"请检查Agent是否正常运行，最后心跳时间: {agent.last_heartbeat}")
             return False, "\n".join(error_log)
         
-        error_log.append(f"Agent在线，开始部署服务... (Agent ID: {agent.id}, Token: {agent.token})")
+        _log(f"Agent在线，开始部署服务... (Agent ID: {agent.id}, Token: {agent.token})")
         
         # 检查并安装Xray（支持重复安装）
-        error_log.append("检查Xray是否已安装...")
+        _log("检查Xray是否已安装...")
         xray_installed = check_service_installed(agent, 'xray')
-        error_log.append(f"Xray检查结果: {'已安装' if xray_installed else '未安装'}")
+        _log(f"Xray检查结果: {'已安装' if xray_installed else '未安装'}")
         if not xray_installed:
-            error_log.append("Xray未安装，开始部署...")
+            _log("Xray未安装，开始部署...")
             xray_deployment = Deployment.objects.create(
                 name=f"Xray部署 - {server.name}",
                 server=server,
@@ -220,38 +228,44 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 status='running',
                 created_by=user
             )
-            error_log.append("开始执行Xray部署...")
+            _log("开始执行Xray部署...")
             deploy_via_agent(xray_deployment, server.deployment_target or 'host')
             
-            # 等待部署完成，最多等待5分钟
+            # 等待部署完成，最多等待5分钟，实时更新日志
             max_wait = 300
             wait_time = 0
+            last_log_length = 0
             while wait_time < max_wait:
                 xray_deployment.refresh_from_db()
                 if xray_deployment.status in ['success', 'failed']:
                     break
+                # 实时读取并更新部署日志
+                if xray_deployment.log and len(xray_deployment.log) > last_log_length:
+                    new_log = xray_deployment.log[last_log_length:]
+                    _log(f"[Xray部署] {new_log}")
+                    last_log_length = len(xray_deployment.log)
                 time.sleep(2)
                 wait_time += 2
                 if wait_time % 10 == 0:
-                    error_log.append(f"等待Xray部署完成... ({wait_time}秒)")
+                    _log(f"等待Xray部署完成... ({wait_time}秒)")
             
             if xray_deployment.status != 'success':
-                error_log.append(f"Xray部署失败")
+                _log(f"Xray部署失败")
                 if xray_deployment.log:
-                    error_log.append(f"Xray部署日志:\n{xray_deployment.log}")
+                    _log(f"Xray部署日志:\n{xray_deployment.log}")
                 if xray_deployment.error_message:
-                    error_log.append(f"错误信息: {xray_deployment.error_message}")
+                    _log(f"错误信息: {xray_deployment.error_message}")
                 return False, "\n".join(error_log)
-            error_log.append("Xray部署成功")
+            _log("Xray部署成功")
         else:
-            error_log.append("Xray已安装，跳过部署")
+            _log("Xray已安装，跳过部署")
         
         # 检查并安装Caddy（支持重复安装）
-        error_log.append("检查Caddy是否已安装...")
+        _log("检查Caddy是否已安装...")
         caddy_installed = check_service_installed(agent, 'caddy')
-        error_log.append(f"Caddy检查结果: {'已安装' if caddy_installed else '未安装'}")
+        _log(f"Caddy检查结果: {'已安装' if caddy_installed else '未安装'}")
         if not caddy_installed:
-            error_log.append("Caddy未安装，开始部署...")
+            _log("Caddy未安装，开始部署...")
             caddy_deployment = Deployment.objects.create(
                 name=f"Caddy部署 - {server.name}",
                 server=server,
@@ -261,38 +275,44 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 status='running',
                 created_by=user
             )
-            error_log.append("开始执行Caddy部署（宿主机）...")
+            _log("开始执行Caddy部署（宿主机）...")
             deploy_via_agent(caddy_deployment, 'host')  # 强制使用宿主机部署
             
-            # 等待部署完成，最多等待5分钟
+            # 等待部署完成，最多等待5分钟，实时更新日志
             max_wait = 300
             wait_time = 0
+            last_log_length = 0
             while wait_time < max_wait:
                 caddy_deployment.refresh_from_db()
                 if caddy_deployment.status in ['success', 'failed']:
                     break
+                # 实时读取并更新部署日志
+                if caddy_deployment.log and len(caddy_deployment.log) > last_log_length:
+                    new_log = caddy_deployment.log[last_log_length:]
+                    _log(f"[Caddy部署] {new_log}")
+                    last_log_length = len(caddy_deployment.log)
                 time.sleep(2)
                 wait_time += 2
                 if wait_time % 10 == 0:
-                    error_log.append(f"等待Caddy部署完成... ({wait_time}秒)")
+                    _log(f"等待Caddy部署完成... ({wait_time}秒)")
             
             if caddy_deployment.status != 'success':
-                error_log.append(f"Caddy部署失败")
+                _log(f"Caddy部署失败")
                 if caddy_deployment.log:
-                    error_log.append(f"Caddy部署日志:\n{caddy_deployment.log}")
+                    _log(f"Caddy部署日志:\n{caddy_deployment.log}")
                 if caddy_deployment.error_message:
-                    error_log.append(f"错误信息: {caddy_deployment.error_message}")
+                    _log(f"错误信息: {caddy_deployment.error_message}")
                 return False, "\n".join(error_log)
-            error_log.append("Caddy部署成功")
+            _log("Caddy部署成功")
         else:
-            error_log.append("Caddy已安装，跳过部署")
+            _log("Caddy已安装，跳过部署")
         
         return True, "\n".join(error_log)
         
     except Exception as e:
         import traceback
         error_msg = f"部署异常: {str(e)}\n{traceback.format_exc()}"
-        error_log.append(error_msg)
+        _log(error_msg)
         # 记录错误到日志
         print(f"deploy_agent_and_services 错误: {error_msg}")
         return False, "\n".join(error_log)
@@ -365,7 +385,20 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                 except Agent.DoesNotExist:
                     heartbeat_mode = 'push'  # 默认推送模式
                 
-                result, log_message = deploy_agent_and_services(server, proxy.created_by, heartbeat_mode=heartbeat_mode)
+                # 实时更新日志的回调函数
+                def update_log_callback(message: str):
+                    """实时更新部署日志"""
+                    proxy.refresh_from_db()
+                    proxy.deployment_log = (proxy.deployment_log or '') + message + "\n"
+                    proxy.save()
+                
+                result, log_message = deploy_agent_and_services(
+                    server, 
+                    proxy.created_by, 
+                    heartbeat_mode=heartbeat_mode,
+                    log_callback=update_log_callback
+                )
+                proxy.refresh_from_db()
                 proxy.deployment_log = (proxy.deployment_log or '') + log_message + "\n"
                 proxy.save()
                 

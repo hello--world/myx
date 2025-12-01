@@ -34,40 +34,43 @@ report_progress "[开始] Agent重新部署脚本开始执行"
 
 # 恢复备份函数
 restore_backup() {
-    local latest_binary=$(ls -t "${BACKUP_DIR}"/myx-agent-* 2>/dev/null | head -1)
+    local latest_python_main=$(ls -t "${BACKUP_DIR}"/python/main.py-* 2>/dev/null | head -1)
     local latest_config=$(ls -t "${BACKUP_DIR}"/config-* 2>/dev/null | head -1)
     
-    if [ -n "$latest_binary" ] && [ -f "$latest_binary" ]; then
-        report_progress "[恢复] 正在恢复备份..."
-        report_progress "[恢复] 备份文件: $latest_binary"
-        
-        # 停止Agent服务
-        systemctl stop myx-agent || true
-        sleep 2
-        
-        # 恢复二进制文件
-        cp "$latest_binary" /opt/myx-agent/myx-agent
-        chmod +x /opt/myx-agent/myx-agent
-        report_progress "[恢复] 二进制文件已恢复"
-        
-        # 恢复配置文件（如果存在）
-        if [ -n "$latest_config" ] && [ -f "$latest_config" ]; then
-            cp "$latest_config" /etc/myx-agent/config.json
-            report_progress "[恢复] 配置文件已恢复"
-        fi
-        
-        # 确保systemd服务文件存在
-        if [ ! -f /etc/systemd/system/myx-agent.service ]; then
-            report_progress "[恢复] 创建systemd服务文件..."
-            cat > /etc/systemd/system/myx-agent.service << 'EOFSERVICE'
+    # 检查备份文件
+    if [ -z "$latest_python_main" ] || [ ! -f "$latest_python_main" ]; then
+        report_progress "[错误] 未找到备份文件，无法恢复"
+        return 1
+    fi
+    
+    report_progress "[恢复] 检测到备份，正在恢复..."
+    
+    # 停止Agent服务
+    systemctl stop myx-agent || true
+    sleep 2
+    
+    # 恢复Python版本
+    cp "$latest_python_main" /opt/myx-agent/main.py
+    chmod +x /opt/myx-agent/main.py
+    report_progress "[恢复] Agent文件已恢复"
+    
+    # 恢复requirements.txt（如果存在）
+    local latest_requirements=$(ls -t "${BACKUP_DIR}"/python/requirements.txt-* 2>/dev/null | head -1)
+    if [ -n "$latest_requirements" ] && [ -f "$latest_requirements" ]; then
+        cp "$latest_requirements" /opt/myx-agent/requirements.txt || true
+    fi
+    
+    # 创建systemd服务文件
+    cat > /etc/systemd/system/myx-agent.service << 'EOFSERVICE'
 [Unit]
-Description=MyX Agent
+Description=MyX Agent (Python)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/opt/myx-agent/myx-agent
+WorkingDirectory=/opt/myx-agent
+ExecStart=/usr/bin/python3 /opt/myx-agent/main.py
 Restart=always
 RestartSec=10
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -75,97 +78,116 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [Install]
 WantedBy=multi-user.target
 EOFSERVICE
-            report_progress "[恢复] systemd服务文件已创建"
-        fi
-        
-        # 重新加载systemd并启用服务
-        systemctl daemon-reload || true
-        systemctl enable myx-agent || true
-        
-        # 启动服务并检查返回值
-        report_progress "[恢复] 正在启动Agent服务..."
-        if systemctl start myx-agent; then
-            report_progress "[恢复] systemctl start 命令执行成功"
-        else
-            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
-            report_progress "[错误] systemctl start 命令执行失败"
-            report_progress "[错误] $start_error"
-        fi
-        
-        # 等待服务启动
-        sleep 5
-        
-        # 验证服务状态（重试机制）
-        local retry_count=0
-        local max_retries=6
-        while [ $retry_count -lt $max_retries ]; do
-            local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
-            if [ "$service_status" = "active" ]; then
-                report_progress "[恢复] Agent服务已启动"
-                
-                # 尝试重新注册Agent（如果配置存在）
-                if [ -f /etc/myx-agent/config.json ]; then
-                    API_URL_CONFIG=$(grep -oP '"APIURL":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
-                    SERVER_TOKEN=$(grep -oP '"ServerToken":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
-                    if [ -n "$API_URL_CONFIG" ] && [ -n "$SERVER_TOKEN" ]; then
-                        report_progress "[恢复] 正在重新注册Agent..."
-                        /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" > /dev/null 2>&1 || true
-                        sleep 2
-                    fi
+    
+    # 恢复配置文件（如果存在）
+    if [ -n "$latest_config" ] && [ -f "$latest_config" ]; then
+        cp "$latest_config" /etc/myx-agent/config.json
+        report_progress "[恢复] 配置文件已恢复"
+    fi
+    
+    # 重新加载systemd并启用服务
+    systemctl daemon-reload || true
+    systemctl enable myx-agent || true
+    
+    # 启动服务并检查返回值
+    report_progress "[恢复] 正在启动Agent服务..."
+    if systemctl start myx-agent; then
+        report_progress "[恢复] systemctl start 命令执行成功"
+    else
+        local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+        report_progress "[错误] systemctl start 命令执行失败"
+        report_progress "[错误] $start_error"
+    fi
+    
+    # 等待服务启动
+    sleep 5
+    
+    # 验证服务状态（重试机制）
+    local retry_count=0
+    local max_retries=6
+    while [ $retry_count -lt $max_retries ]; do
+        local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+        if [ "$service_status" = "active" ]; then
+            report_progress "[恢复] Agent服务已启动"
+            
+            # 尝试重新注册Agent（如果配置存在）
+            if [ -f /etc/myx-agent/config.json ]; then
+                API_URL_CONFIG=$(grep -oP '"APIURL":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                SERVER_TOKEN=$(grep -oP '"ServerToken":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+                if [ -n "$API_URL_CONFIG" ] && [ -n "$SERVER_TOKEN" ]; then
+                    report_progress "[恢复] 正在重新注册Agent..."
+                    python3 /opt/myx-agent/main.py --token "$SERVER_TOKEN" --api "$API_URL_CONFIG" > /dev/null 2>&1 || true
+                    sleep 2
                 fi
-                
-                # 最终验证
-                if systemctl is-active --quiet myx-agent; then
-                    report_progress "[恢复] 备份已恢复，Agent服务运行正常"
-                    return 0
-                fi
-            else
-                report_progress "[恢复] 服务状态: $service_status"
             fi
             
-            retry_count=$((retry_count + 1))
-            report_progress "[恢复] 等待Agent服务启动... ($retry_count/$max_retries)"
-            sleep 2
-        done
+            # 最终验证
+            if systemctl is-active --quiet myx-agent; then
+                report_progress "[恢复] 备份已恢复，Agent服务运行正常"
+                return 0
+            fi
+        else
+            report_progress "[恢复] 服务状态: $service_status"
+        fi
         
-        # 如果仍然无法启动，检查服务状态和日志
-        local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
-        local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
-        local journal_log=$(journalctl -u myx-agent --no-pager -n 20 2>&1 | tail -10)
-        report_progress "[错误] 恢复后Agent服务仍无法启动"
-        report_progress "[错误] 服务状态: $service_status"
-        report_progress "[错误] 服务状态详情: $service_error"
-        report_progress "[错误] 服务日志: $journal_log"
-        return 1
-    else
-        report_progress "[错误] 未找到备份文件，无法恢复"
-        return 1
-    fi
+        retry_count=$((retry_count + 1))
+        report_progress "[恢复] 等待Agent服务启动... ($retry_count/$max_retries)"
+        sleep 2
+    done
+    
+    # 如果仍然无法启动，检查服务状态和日志
+    local service_status=$(systemctl is-active myx-agent 2>&1 || echo "inactive")
+    local service_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+    local journal_log=$(journalctl -u myx-agent --no-pager -n 20 2>&1 | tail -10)
+    report_progress "[错误] 恢复后Agent服务仍无法启动"
+    report_progress "[错误] 服务状态: $service_status"
+    report_progress "[错误] 服务状态详情: $service_error"
+    report_progress "[错误] 服务日志: $journal_log"
+    return 1
 }
 
-# 检测系统
-OS_NAME=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-    ARCH="amd64"
-elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    ARCH="arm64"
+# 检查Python版本
+report_progress "[信息] 检测Python版本..."
+if ! command -v python3 &> /dev/null; then
+    report_progress "[错误] 未检测到Python3，Agent需要Python 3.6+"
+    restore_backup || true
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    rm -f /tmp/agent_redeploy_script.sh || true
+    exit 1
 fi
 
-BINARY_NAME="myx-agent-${OS_NAME}-${ARCH}"
-GITHUB_URL="https://github.com/{GITHUB_REPO}/releases/latest/download/${BINARY_NAME}"
+PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 6 ]); then
+    report_progress "[错误] Python版本过低 ($PYTHON_VERSION)，需要3.6+"
+    restore_backup || true
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    rm -f /tmp/agent_redeploy_script.sh || true
+    exit 1
+fi
+
+report_progress "[信息] 检测到Python $PYTHON_VERSION，继续更新..."
 
 # 创建备份目录
 mkdir -p "$BACKUP_DIR"
 
 # 步骤1: 备份现有Agent和配置
 report_progress "[1/7] 正在备份现有Agent和配置..."
-if [ -f /opt/myx-agent/myx-agent ]; then
-    cp /opt/myx-agent/myx-agent "$BACKUP_FILE"
-    chmod +x "$BACKUP_FILE"
-    report_progress "[1/7] Agent二进制备份完成: $BACKUP_FILE"
-else
-    report_progress "[1/7] 警告: 未找到现有Agent，跳过备份"
+if [ -f /opt/myx-agent/main.py ]; then
+    mkdir -p "${BACKUP_DIR}/python"
+    cp /opt/myx-agent/main.py "${BACKUP_DIR}/python/main.py-$(date +%Y%m%d_%H%M%S)"
+    report_progress "[1/7] Python版本Agent备份完成"
+fi
+if [ -f /opt/myx-agent/requirements.txt ]; then
+    cp /opt/myx-agent/requirements.txt "${BACKUP_DIR}/python/requirements.txt-$(date +%Y%m%d_%H%M%S)" || true
 fi
 
 if [ -f /etc/myx-agent/config.json ]; then
@@ -173,41 +195,96 @@ if [ -f /etc/myx-agent/config.json ]; then
     report_progress "[1/7] 配置文件备份完成: $CONFIG_BACKUP"
 fi
 
-# 步骤2: 下载新版本
-report_progress "[2/7] 正在从 GitHub 下载最新 Agent..."
-if ! curl -L -f -o /tmp/myx-agent "${GITHUB_URL}"; then
-    report_progress "[错误] Agent 下载失败"
+# 步骤2: 从API下载新版本
+report_progress "[2/7] 正在从API下载最新Agent..."
+AGENT_API_BASE_URL="{API_URL}/files"
+
+# 下载main.py
+if curl -L -f -o /tmp/main.py "$AGENT_API_BASE_URL/main.py/"; then
+    chmod +x /tmp/main.py
+    report_progress "[2/7] main.py 下载成功"
+else
+    report_progress "[错误] main.py 下载失败"
     restore_backup || true
-    # 读取完整日志并输出
     if [ -f "$LOG_FILE" ]; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
-    # 清理临时脚本文件
     rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
 fi
-report_progress "[2/7] Agent 下载成功"
+
+# 下载requirements.txt
+if curl -L -f -o /tmp/requirements.txt "$AGENT_API_BASE_URL/requirements.txt/"; then
+    report_progress "[2/7] requirements.txt 下载成功"
+else
+    report_progress "[警告] requirements.txt 下载失败，将使用默认依赖"
+    echo "requests>=2.31.0" > /tmp/requirements.txt
+    echo "urllib3>=2.0.0" >> /tmp/requirements.txt
+fi
+
+# 安装Python依赖
+report_progress "[2/7] 安装Python依赖..."
+if command -v pip3 &> /dev/null; then
+    pip3 install --quiet --upgrade pip || true
+    pip3 install --quiet -r /tmp/requirements.txt || {
+        report_progress "[错误] pip3安装依赖失败"
+        restore_backup || true
+        if [ -f "$LOG_FILE" ]; then
+            echo "=== 完整执行日志 ==="
+            cat "$LOG_FILE"
+        fi
+        rm -f /tmp/agent_redeploy_script.sh || true
+        exit 1
+    }
+else
+    report_progress "[错误] 未找到pip3"
+    restore_backup || true
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    rm -f /tmp/agent_redeploy_script.sh || true
+    exit 1
+fi
+
+# 验证依赖
+if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
+    report_progress "[错误] Python依赖验证失败"
+    restore_backup || true
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    rm -f /tmp/agent_redeploy_script.sh || true
+    exit 1
+fi
 
 # 步骤3: 验证新版本
 report_progress "[3/7] 正在验证新版本..."
-chmod +x /tmp/myx-agent
-# 检查文件是否存在、可执行，并尝试运行（不检查返回值，因为Agent可能没有-version参数）
-if [ ! -f /tmp/myx-agent ] || [ ! -x /tmp/myx-agent ]; then
-    report_progress "[错误] 新版本文件不存在或不可执行"
+if [ ! -f /tmp/main.py ] || [ ! -x /tmp/main.py ]; then
+    report_progress "[错误] Agent文件不存在或不可执行"
     restore_backup || true
-    # 读取完整日志并输出
     if [ -f "$LOG_FILE" ]; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
-    # 清理临时脚本文件
     rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
 fi
-# 尝试运行Agent（即使失败也继续，因为Agent可能没有-version参数）
-/tmp/myx-agent -help > /dev/null 2>&1 || /tmp/myx-agent > /dev/null 2>&1 || true
-report_progress "[3/7] 新版本验证成功（文件存在且可执行）"
+
+# 验证Python脚本语法
+if ! python3 -m py_compile /tmp/main.py 2>/dev/null; then
+    report_progress "[错误] Agent语法验证失败"
+    restore_backup || true
+    if [ -f "$LOG_FILE" ]; then
+        echo "=== 完整执行日志 ==="
+        cat "$LOG_FILE"
+    fi
+    rm -f /tmp/agent_redeploy_script.sh || true
+    exit 1
+fi
+report_progress "[3/7] Agent验证成功"
 
 # 步骤4: 停止Agent服务
 report_progress "[4/7] 正在停止Agent服务..."
@@ -218,89 +295,83 @@ else
 fi
 sleep 2
 
-# 步骤5: 替换二进制文件
-report_progress "[5/7] 正在替换Agent二进制文件..."
-if mv /tmp/myx-agent /opt/myx-agent/myx-agent; then
-    report_progress "[5/7] 二进制文件移动成功"
-    if chmod +x /opt/myx-agent/myx-agent; then
-        report_progress "[5/7] 二进制文件权限设置成功"
+# 步骤5: 替换Agent文件
+report_progress "[5/7] 正在替换Agent文件..."
+# 清理旧的Go版本（如果存在）
+rm -f /opt/myx-agent/myx-agent || true
+# 移动Python版本文件
+if mv /tmp/main.py /opt/myx-agent/main.py && mv /tmp/requirements.txt /opt/myx-agent/requirements.txt 2>/dev/null; then
+    chmod +x /opt/myx-agent/main.py
+    report_progress "[5/7] Agent文件移动成功"
+else
+    if mv /tmp/main.py /opt/myx-agent/main.py; then
+        chmod +x /opt/myx-agent/main.py
+        report_progress "[5/7] Agent文件移动成功（requirements.txt已存在）"
     else
-        report_progress "[5/7] 警告: 设置二进制文件权限失败"
+        report_progress "[错误] 替换Agent文件失败"
+        restore_backup || true
+        if [ -f "$LOG_FILE" ]; then
+            echo "=== 完整执行日志 ==="
+            cat "$LOG_FILE"
+        fi
+        exit 1
+    fi
+fi
+
+# 步骤6: 更新systemd服务文件并启动
+report_progress "[6/7] 正在更新systemd服务文件并启动Agent服务..."
+
+# 创建systemd服务文件
+cat > /etc/systemd/system/myx-agent.service << 'EOFSERVICE'
+[Unit]
+Description=MyX Agent (Python)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/myx-agent
+ExecStart=/usr/bin/python3 /opt/myx-agent/main.py
+Restart=always
+RestartSec=10
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target
+EOFSERVICE
+report_progress "[6/7] systemd服务文件已更新"
+
+# 重新加载systemd配置
+systemctl daemon-reload || true
+systemctl enable myx-agent || true
+
+# 读取配置并启动服务
+API_URL_CONFIG=$(grep -oP '"APIURL":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+SERVER_TOKEN=$(grep -oP '"ServerToken":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
+
+report_progress "[6/7] 正在启动Agent服务..."
+if systemctl start myx-agent; then
+    report_progress "[6/7] Agent服务启动命令执行成功"
+    sleep 2
+    
+    # 如果需要，重新注册Agent
+    if [ -n "$API_URL_CONFIG" ] && [ -n "$SERVER_TOKEN" ]; then
+        report_progress "[6/7] 正在重新注册Agent..."
+        python3 /opt/myx-agent/main.py --token "$SERVER_TOKEN" --api "$API_URL_CONFIG" > /dev/null 2>&1 || report_progress "[6/7] 警告: 重新注册Agent失败，但服务已启动"
     fi
 else
-    report_progress "[错误] 替换二进制文件失败"
+    report_progress "[错误] 启动Agent服务失败"
+    local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
+    report_progress "[错误] $start_error"
     restore_backup || true
     # 读取完整日志并输出
     if [ -f "$LOG_FILE" ]; then
         echo "=== 完整执行日志 ==="
         cat "$LOG_FILE"
     fi
+    # 清理临时脚本文件
+    rm -f /tmp/agent_redeploy_script.sh || true
     exit 1
-fi
-
-# 步骤6: 重新注册Agent（如果需要）
-report_progress "[6/7] 正在准备启动Agent服务..."
-API_URL_CONFIG=$(grep -oP '"APIURL":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
-if [ -n "$API_URL_CONFIG" ]; then
-    SERVER_TOKEN=$(grep -oP '"ServerToken":\s*"\K[^"]+' /etc/myx-agent/config.json 2>/dev/null || echo "")
-    if [ -n "$SERVER_TOKEN" ]; then
-        report_progress "[6/7] 正在启动Agent服务并重新注册..."
-        if systemctl start myx-agent; then
-            report_progress "[6/7] Agent服务启动命令执行成功"
-            sleep 2
-            report_progress "[6/7] 正在重新注册Agent..."
-            /opt/myx-agent/myx-agent -token "$SERVER_TOKEN" -api "$API_URL_CONFIG" > /dev/null 2>&1 || report_progress "[6/7] 警告: 重新注册Agent失败，但服务已启动"
-        else
-            report_progress "[错误] 启动Agent服务失败"
-            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
-            report_progress "[错误] $start_error"
-            restore_backup || true
-            # 读取完整日志并输出
-            if [ -f "$LOG_FILE" ]; then
-                echo "=== 完整执行日志 ==="
-                cat "$LOG_FILE"
-            fi
-            # 清理临时脚本文件
-            rm -f /tmp/agent_redeploy_script.sh || true
-            exit 1
-        fi
-    else
-        report_progress "[6/7] 正在启动Agent服务..."
-        if systemctl start myx-agent; then
-            report_progress "[6/7] Agent服务启动命令执行成功"
-        else
-            report_progress "[错误] 启动Agent服务失败"
-            local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
-            report_progress "[错误] $start_error"
-            restore_backup || true
-            # 读取完整日志并输出
-            if [ -f "$LOG_FILE" ]; then
-                echo "=== 完整执行日志 ==="
-                cat "$LOG_FILE"
-            fi
-            # 清理临时脚本文件
-            rm -f /tmp/agent_redeploy_script.sh || true
-            exit 1
-        fi
-    fi
-else
-    report_progress "[6/7] 正在启动Agent服务..."
-    if systemctl start myx-agent; then
-        report_progress "[6/7] Agent服务启动命令执行成功"
-    else
-        report_progress "[错误] 启动Agent服务失败"
-        local start_error=$(systemctl status myx-agent --no-pager -l 2>&1 | tail -10)
-        report_progress "[错误] $start_error"
-        restore_backup || true
-        # 读取完整日志并输出
-        if [ -f "$LOG_FILE" ]; then
-            echo "=== 完整执行日志 ==="
-            cat "$LOG_FILE"
-        fi
-        # 清理临时脚本文件
-        rm -f /tmp/agent_redeploy_script.sh || true
-        exit 1
-    fi
 fi
 
 # 步骤7: 验证Agent服务
@@ -309,7 +380,8 @@ sleep 3
 if systemctl is-active --quiet myx-agent; then
     report_progress "[完成] Agent重新部署成功，服务运行正常"
     # 清理旧备份（保留最近5个）
-    ls -t "${BACKUP_DIR}"/myx-agent-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+    ls -t "${BACKUP_DIR}"/python/main.py-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+    ls -t "${BACKUP_DIR}"/python/requirements.txt-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
     ls -t "${BACKUP_DIR}"/config-* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
     # 读取完整日志并输出（供命令结果接口收集）
     if [ -f "$LOG_FILE" ]; then

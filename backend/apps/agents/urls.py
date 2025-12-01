@@ -12,7 +12,9 @@ urlpatterns = [
     path('command/', views.agent_command, name='agent-command'),
     path('poll/', views.agent_poll_commands, name='agent-poll'),
     path('commands/<int:command_id>/result/', views.agent_command_result, name='agent-command-result'),
+    path('commands/<int:command_id>/progress/', views.agent_command_progress, name='agent-command-progress'),
     path('deployments/<int:deployment_id>/progress/', views.agent_report_progress, name='agent-report-progress'),
+    path('files/<str:filename>/', views.agent_file_download, name='agent-file-download'),
     path('', include(router.urls)),
 ]
 

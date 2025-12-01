@@ -6,11 +6,6 @@ on:
       - 'v*'  # tag push 会自动触发并发布带版本号的镜像
   workflow_dispatch:
     inputs:
-      build_agent:
-        description: '构建 Agent 镜像'
-        required: false
-        default: 'true'
-        type: boolean
       build_backend:
         description: '构建 Backend 镜像'
         required: false
@@ -35,10 +30,6 @@ jobs:
     strategy:
       matrix:
         service:
-          - name: agent
-            context: .
-            file: ./agent/Dockerfile
-            platforms: linux/amd64,linux/arm64
           - name: backend
             context: .
             file: ./backend/Dockerfile
@@ -80,12 +71,6 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             case "${{ matrix.service.name }}" in
-              agent)
-                if [ "${{ inputs.build_agent }}" == "false" ]; then
-                  echo "skip=true" >> $GITHUB_OUTPUT
-                  exit 0
-                fi
-                ;;
               backend)
                 if [ "${{ inputs.build_backend }}" == "false" ]; then
                   echo "skip=true" >> $GITHUB_OUTPUT

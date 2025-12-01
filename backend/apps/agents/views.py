@@ -1,10 +1,12 @@
 import secrets
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from django.http import HttpResponse, FileResponse
 from django.utils import timezone
 from .models import Agent, CommandTemplate
 from .serializers import (
@@ -139,9 +141,7 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             import os
             import time
             
-            github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
-            
-            # 获取API URL用于上报进度
+            # 获取API URL用于上报进度和下载文件
             api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
             if not api_url:
                 # 从request构建API URL
@@ -162,7 +162,6 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             redeploy_script = redeploy_script.replace('{DEPLOYMENT_ID}', str(deployment.id))
             redeploy_script = redeploy_script.replace('{API_URL}', api_url)
             redeploy_script = redeploy_script.replace('{AGENT_TOKEN}', str(agent.token))
-            redeploy_script = redeploy_script.replace('{GITHUB_REPO}', github_repo)
             
             # 使用deployment_id作为日志文件路径的唯一标识
             log_file = f'/tmp/agent_redeploy_{deployment.id}.log'
@@ -646,12 +645,13 @@ def agent_command_result(request, command_id):
     success = request.data.get('success', False)
     result = request.data.get('stdout', '')
     error = request.data.get('error') or request.data.get('stderr', '')
+    append = request.data.get('append', False)  # 默认为最终结果，不追加
     
     try:
         from .command_queue import CommandQueue
         from .models import AgentCommand
         cmd = AgentCommand.objects.get(id=command_id, agent=agent)
-        CommandQueue.update_command_result(command_id, success, result, error)
+        CommandQueue.update_command_result(command_id, success, result, error, append=append)
         
         # 记录命令执行结果日志
         log_level = 'success' if success else 'error'
@@ -684,6 +684,43 @@ def agent_command_result(request, command_id):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+def agent_command_progress(request, command_id):
+    """Agent命令执行进度接口（实时上报增量输出）"""
+    logger.debug(f'[agent_command_progress] 收到命令进度更新: command_id={command_id}')
+    token = request.headers.get('X-Agent-Token')
+    
+    if not token:
+        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        agent = get_agent_by_token(token)
+    except Agent.DoesNotExist:
+        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
+    
+    stdout = request.data.get('stdout', '')
+    stderr = request.data.get('stderr', '')
+    append = request.data.get('append', True)  # 默认为增量更新
+    
+    try:
+        from .command_queue import CommandQueue
+        from .models import AgentCommand
+        cmd = AgentCommand.objects.get(id=command_id, agent=agent)
+        
+        # 更新命令结果（增量追加）
+        CommandQueue.update_command_result(command_id, None, stdout, stderr, append=True)
+        
+        logger.debug(f'[agent_command_progress] 命令进度已更新: command_id={command_id}, stdout_len={len(stdout)}, stderr_len={len(stderr)}')
+        
+        return Response({'status': 'ok'})
+    except AgentCommand.DoesNotExist:
+        return Response({'error': '命令不存在'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f'[agent_command_progress] 错误: {str(e)}')
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
 def agent_report_progress(request, deployment_id):
     """Agent上报部署进度接口"""
     token = request.headers.get('X-Agent-Token')
@@ -708,4 +745,44 @@ def agent_report_progress(request, deployment_id):
         deployment.save()
     
     return Response({'status': 'ok'})
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])  # Agent需要访问，所以允许匿名
+def agent_file_download(request, filename):
+    """提供Agent文件下载"""
+    # 只允许下载特定文件
+    allowed_files = ['main.py', 'requirements.txt']
+    if filename not in allowed_files:
+        return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # 获取Agent文件路径（从deployment-tool目录）
+    # __file__ 是 backend/apps/agents/views.py
+    # 需要回到项目根目录: backend/apps/agents -> backend/apps -> backend -> 项目根
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    agent_dir = base_dir / 'deployment-tool' / 'agent'
+    file_path = agent_dir / filename
+    
+    if not file_path.exists():
+        return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # 读取文件内容
+    try:
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        
+        # 根据文件类型设置Content-Type
+        if filename.endswith('.py'):
+            content_type = 'text/x-python; charset=utf-8'
+        elif filename.endswith('.txt'):
+            content_type = 'text/plain; charset=utf-8'
+        else:
+            content_type = 'application/octet-stream'
+        
+        response = HttpResponse(content, content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+    except Exception as e:
+        logger.error(f'下载Agent文件失败: {e}')
+        return Response({'error': '文件读取失败'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

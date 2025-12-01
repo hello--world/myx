@@ -331,23 +331,196 @@ func executeCommand(cmd CommandResponse) {
 	defer cancel()
 
 	execCmd := exec.CommandContext(ctx, cmd.Command, cmd.Args...)
-	var stdout, stderr bytes.Buffer
-	execCmd.Stdout = &stdout
-	execCmd.Stderr = &stderr
 
-	err := execCmd.Run()
-
-	success := err == nil
-	stdoutStr := stdout.String()
-	stderrStr := stderr.String()
-
-	log.Printf("命令执行完成 [ID:%d]: success=%v", cmd.ID, success)
-	if !success {
-		log.Printf("错误: %v", err)
+	// 使用Pipe实时读取输出
+	stdoutPipe, err := execCmd.StdoutPipe()
+	if err != nil {
+		log.Printf("创建stdout pipe失败: %v", err)
+		// 回退到原来的方式
+		var stdout, stderr bytes.Buffer
+		execCmd.Stdout = &stdout
+		execCmd.Stderr = &stderr
+		execErr := execCmd.Run()
+		success := execErr == nil
+		sendCommandResult(cmd.ID, success, stdout.String(), stderr.String(), execErr)
+		return
 	}
 
-	// 发送执行结果到API
-	sendCommandResult(cmd.ID, success, stdoutStr, stderrStr, err)
+	stderrPipe, err := execCmd.StderrPipe()
+	if err != nil {
+		log.Printf("创建stderr pipe失败: %v", err)
+		stdoutPipe.Close()
+		// 回退到原来的方式
+		var stdout, stderr bytes.Buffer
+		execCmd.Stdout = &stdout
+		execCmd.Stderr = &stderr
+		execErr := execCmd.Run()
+		success := execErr == nil
+		sendCommandResult(cmd.ID, success, stdout.String(), stderr.String(), execErr)
+		return
+	}
+
+	// 启动命令
+	if err := execCmd.Start(); err != nil {
+		log.Printf("启动命令失败: %v", err)
+		stdoutPipe.Close()
+		stderrPipe.Close()
+		sendCommandResult(cmd.ID, false, "", err.Error(), err)
+		return
+	}
+
+	// 实时读取并上报输出
+	var stdoutBuf, stderrBuf bytes.Buffer
+	outputChan := make(chan string, 100) // 缓冲通道，避免阻塞
+	done := make(chan bool, 2)
+
+	// 读取stdout
+	go func() {
+		defer func() {
+			stdoutPipe.Close()
+			done <- true
+		}()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdoutPipe.Read(buf)
+			if n > 0 {
+				stdoutBuf.Write(buf[:n])
+				outputChan <- string(buf[:n])
+			}
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("读取stdout错误: %v", err)
+				}
+				break
+			}
+		}
+	}()
+
+	// 读取stderr
+	go func() {
+		defer func() {
+			stderrPipe.Close()
+			done <- true
+		}()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderrPipe.Read(buf)
+			if n > 0 {
+				stderrBuf.Write(buf[:n])
+				outputChan <- string(buf[:n])
+			}
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("读取stderr错误: %v", err)
+				}
+				break
+			}
+		}
+	}()
+
+	// 定时上报输出（每2秒上报一次）
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var accumulatedOutput bytes.Buffer
+
+	// 等待命令完成或超时
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- execCmd.Wait()
+	}()
+
+	for {
+		select {
+		case output := <-outputChan:
+			// 累积输出
+			accumulatedOutput.WriteString(output)
+
+		case <-ticker.C:
+			// 每2秒上报一次累积的输出
+			if accumulatedOutput.Len() > 0 {
+				output := accumulatedOutput.String()
+				accumulatedOutput.Reset()
+				sendCommandProgress(cmd.ID, output, "")
+			}
+
+		case err := <-cmdDone:
+			// 命令执行完成
+			// 等待所有输出读取完成
+			<-done
+			<-done
+
+			// 读取剩余输出
+			for {
+				select {
+				case output := <-outputChan:
+					accumulatedOutput.WriteString(output)
+				default:
+					goto doneReading
+				}
+			}
+		doneReading:
+
+			// 上报剩余输出
+			if accumulatedOutput.Len() > 0 {
+				sendCommandProgress(cmd.ID, accumulatedOutput.String(), "")
+			}
+
+			// 上报最终结果
+			success := err == nil
+			stdoutStr := stdoutBuf.String()
+			stderrStr := stderrBuf.String()
+
+			log.Printf("命令执行完成 [ID:%d]: success=%v", cmd.ID, success)
+			if !success {
+				log.Printf("错误: %v", err)
+			}
+
+			sendCommandResult(cmd.ID, success, stdoutStr, stderrStr, err)
+			return
+
+		case <-ctx.Done():
+			// 超时
+			execCmd.Process.Kill()
+			<-done
+			<-done
+
+			// 上报剩余输出
+			if accumulatedOutput.Len() > 0 {
+				sendCommandProgress(cmd.ID, accumulatedOutput.String(), "")
+			}
+
+			sendCommandResult(cmd.ID, false, stdoutBuf.String(), stderrBuf.String(), ctx.Err())
+			return
+		}
+	}
+}
+
+func sendCommandProgress(commandID int, stdout, stderr string) {
+	// 发送增量输出（实时上报）
+	result := map[string]interface{}{
+		"stdout": stdout,
+		"stderr": stderr,
+		"append": true, // 标记为增量更新
+	}
+
+	jsonData, _ := json.Marshal(result)
+	httpReq, _ := http.NewRequest("POST",
+		fmt.Sprintf("%s/commands/%d/progress/", config.APIURL, commandID),
+		bytes.NewBuffer(jsonData))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Agent-Token", config.AgentToken)
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		log.Printf("发送命令进度失败: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("发送命令进度失败: %d", resp.StatusCode)
+	}
 }
 
 func sendCommandResult(commandID int, success bool, stdout, stderr string, err error) {
@@ -355,6 +528,7 @@ func sendCommandResult(commandID int, success bool, stdout, stderr string, err e
 		"success": success,
 		"stdout":  stdout,
 		"stderr":  stderr,
+		"append":  false, // 最终结果，不追加
 	}
 
 	if err != nil {

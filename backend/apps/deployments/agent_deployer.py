@@ -7,6 +7,10 @@ from apps.agents.models import Agent
 from apps.agents.command_queue import CommandQueue
 from apps.agents.utils import execute_script_via_agent
 from apps.servers.models import Server
+from .deployment_tool import AGENT_DEPLOYMENT_TOOL_DIR
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def deploy_via_agent(deployment: Deployment, deployment_target: str = 'host'):
@@ -130,23 +134,34 @@ echo "Caddy 完成"
                 install_script = """#!/bin/bash
 set -e
 
-# 检查 Xray 是否已安装
+echo "[1/4] 检查 Xray 是否已安装..."
 if command -v xray &> /dev/null; then
-    echo "Xray 已安装，版本: $(xray version | head -n 1)"
-    # 如果已安装，尝试更新
+    echo "[信息] Xray 已安装，当前版本: $(xray version | head -n 1)"
+    echo "[2/4] 开始更新 Xray..."
     curl -LsSf https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash -s -- install || {
-        echo "更新失败，但 Xray 已存在，继续..."
+        echo "[警告] 更新失败，但 Xray 已存在，继续..."
     }
+    echo "[2/4] Xray 更新完成"
 else
-    # 未安装，执行安装
+    echo "[信息] Xray 未安装，开始安装..."
+    echo "[2/4] 正在从 GitHub 下载 Xray 安装脚本..."
     curl -LsSf https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash
+    echo "[2/4] Xray 安装完成"
 fi
 
-# 确保服务已启动
+echo "[3/4] 配置 Xray 服务..."
 systemctl enable xray || true
-systemctl start xray || service xray start || true
+echo "[3/4] 服务已启用"
 
-echo "Xray 安装/更新完成"
+echo "[4/4] 启动 Xray 服务..."
+systemctl start xray || service xray start || true
+if systemctl is-active --quiet xray; then
+    echo "[4/4] Xray 服务已启动"
+else
+    echo "[警告] Xray 服务启动可能失败，请检查服务状态"
+fi
+
+echo "[完成] Xray 安装/更新流程完成"
 """
                 cmd = execute_script_via_agent(agent, install_script, timeout=600, script_name='xray_install.sh')
             elif deployment.deployment_type == 'caddy':
@@ -161,7 +176,7 @@ if command -v caddy &> /dev/null; then
     echo "[信息] Caddy 已安装，当前版本:"
     caddy version 2>&1 || echo "无法获取版本信息"
     echo "[信息] 尝试更新 Caddy..."
-    curl -LsSf https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
+    curl -LsSf --max-time 60 https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
     if [ $? -eq 0 ]; then
         echo "[成功] Caddy 更新完成"
     else
@@ -170,7 +185,7 @@ if command -v caddy &> /dev/null; then
     chmod +x /usr/local/bin/caddy || true
 else
     echo "[信息] Caddy 未安装，开始安装..."
-    curl -LsSf https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
+    curl -LsSf --max-time 60 https://caddyserver.com/api/download?os=linux&arch=amd64&id=standard | tar -xz -C /usr/local/bin caddy
     if [ $? -ne 0 ]; then
         echo "[错误] Caddy 下载失败"
         exit 1
@@ -267,24 +282,42 @@ if systemctl is-active --quiet caddy; then
 fi
 
 echo "[信息] 启动 Caddy 服务..."
-# 使用 timeout 命令避免 systemctl start 卡住（最多等待10秒）
-timeout 10 bash -c 'systemctl start caddy' 2>&1 || {
-    START_EXIT_CODE=$?
-    echo "[信息] systemctl start 退出码: $START_EXIT_CODE"
-    # 检查服务是否实际已启动（即使命令失败，服务可能已经启动）
-    if systemctl is-active --quiet caddy; then
-        echo "[成功] Caddy 服务实际上已启动（尽管启动命令返回错误）"
-        echo "[完成] Caddy 安装/更新流程完成"
-        exit 0
-    else
-        echo "[警告] Caddy 服务启动失败，检查服务状态..."
-        systemctl status caddy --no-pager -l 2>&1 | head -20 || true
-        # 即使启动失败，也不退出（因为可能是配置问题，但安装本身成功）
-        echo "[信息] Caddy 已安装，但服务启动失败（可能需要检查配置）"
-        echo "[完成] Caddy 安装/更新流程完成（服务未启动，请检查配置）"
-        exit 0
+# 直接启动服务，不等待结果（避免卡住）
+systemctl start caddy 2>&1 &
+START_PID=$!
+
+# 等待最多5秒
+for i in {1..5}; do
+    if ! kill -0 $START_PID 2>/dev/null; then
+        # 进程已结束
+        wait $START_PID 2>/dev/null || true
+        break
     fi
-}
+    sleep 1
+done
+
+# 如果进程还在运行，强制终止（不等待）
+if kill -0 $START_PID 2>/dev/null; then
+    kill $START_PID 2>/dev/null || true
+    kill -9 $START_PID 2>/dev/null || true
+fi
+
+# 等待1秒让服务有时间启动
+sleep 1
+
+# 检查服务是否实际已启动
+if systemctl is-active --quiet caddy; then
+    echo "[成功] Caddy 服务已启动"
+    echo "[完成] Caddy 安装/更新流程完成"
+    exit 0
+else
+    echo "[警告] Caddy 服务启动失败，检查服务状态..."
+    systemctl status caddy --no-pager -l 2>&1 | head -20 || true
+    # 即使启动失败，也不退出（因为可能是配置问题，但安装本身成功）
+    echo "[信息] Caddy 已安装，但服务启动失败（可能需要检查配置）"
+    echo "[完成] Caddy 安装/更新流程完成（服务未启动，请检查配置）"
+    exit 0
+fi
 
 # 等待一下确保服务启动成功
 sleep 2
@@ -299,7 +332,7 @@ fi
 echo "[完成] Caddy 安装/更新流程完成"
 exit 0
 """
-                cmd = execute_script_via_agent(agent, install_script, timeout=300, script_name='caddy_install.sh')
+                cmd = execute_script_via_agent(agent, install_script, timeout=600, script_name='caddy_install.sh')
             else:  # both
                 # 安装 Xray
                 xray_script = """#!/bin/bash
@@ -360,17 +393,35 @@ echo "Caddy 完成"
                 cmd2 = execute_script_via_agent(agent, caddy_script, timeout=300, script_name='caddy_install.sh')
                 cmd = cmd2
 
-        # 等待命令执行完成（轮询）
-        max_wait = 600  # 最多等待10分钟
+        # 等待命令执行完成（轮询），实时读取命令结果
+        max_wait = max(cmd.timeout * 2, 600)  # 最多等待超时时间的2倍，或10分钟
         wait_time = 0
+        last_result_length = 0
         while wait_time < max_wait:
             cmd.refresh_from_db()
             if cmd.status in ['success', 'failed']:
                 break
+            
+            # 实时读取命令输出（如果有新内容）
+            if cmd.result and len(cmd.result) > last_result_length:
+                new_output = cmd.result[last_result_length:]
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_output = format_log_content(new_output, decode_base64=True)
+                deployment.log = (deployment.log or '') + formatted_output
+                deployment.save()
+                last_result_length = len(cmd.result)
+            elif wait_time > 10 and wait_time % 10 == 0:
+                # 即使没有新输出，也显示进度提示（避免用户以为卡住了）
+                if cmd.status == 'running':
+                    elapsed = (timezone.now() - cmd.started_at).total_seconds() if cmd.started_at else wait_time
+                    deployment.log = (deployment.log or '') + f"[进度] 命令执行中... (已执行 {int(elapsed)}秒)\n"
+                    deployment.save()
+            
             time.sleep(2)
             wait_time += 2
-            # 每30秒记录一次等待状态，并显示命令当前状态
-            if wait_time % 30 == 0:
+            # 每10秒记录一次等待状态，并显示命令当前状态（更频繁的更新）
+            if wait_time % 10 == 0:
                 status_info = f"命令状态: {cmd.status}"
                 if cmd.started_at:
                     elapsed = (timezone.now() - cmd.started_at).total_seconds()
@@ -444,7 +495,7 @@ echo "Caddy 完成"
 
 
 def deploy_xray_config_via_agent(server: Server, config_json: str) -> bool:
-    """通过Agent部署Xray配置
+    """通过Agent部署Xray配置（使用Ansible部署工具）
     
     Args:
         server: 服务器对象
@@ -453,115 +504,217 @@ def deploy_xray_config_via_agent(server: Server, config_json: str) -> bool:
     Returns:
         bool: 是否成功
     """
+    import time
+    import json
+    import tempfile
+    from apps.agents.models import Agent
+    from apps.agents.utils import execute_script_via_agent
+    from .deployment_tool import check_deployment_tool_version, sync_deployment_tool_to_agent
+    
     try:
         agent = Agent.objects.get(server=server)
         if agent.status != 'online':
             return False
         
-        # 创建部署脚本（直接使用配置内容，使用heredoc避免特殊字符问题）
-        deploy_script = f"""#!/bin/bash
-set +e  # 不因错误退出，手动处理错误
-
-# 查找Xray二进制文件位置
-XRAY_BIN=$(command -v xray)
-if [ -z "$XRAY_BIN" ]; then
-    # 尝试常见路径
-    if [ -f /usr/local/bin/xray ]; then
-        XRAY_BIN="/usr/local/bin/xray"
-    elif [ -f /usr/bin/xray ]; then
-        XRAY_BIN="/usr/bin/xray"
-    else
-        echo "[错误] 未找到 Xray 二进制文件"
-        exit 1
+        # 检查并同步部署工具
+        try:
+            version_check = check_deployment_tool_version(agent)
+            if not version_check:
+                logger.info(f"Agent {agent.id} 部署工具版本不一致或不存在，开始同步...")
+                sync_result = sync_deployment_tool_to_agent(agent)
+                if not sync_result:
+                    logger.warning(f"同步部署工具到Agent {agent.id} 失败，继续尝试部署（假设Agent端已有工具）")
+            else:
+                logger.info(f"Agent {agent.id} 部署工具版本一致，跳过同步")
+        except Exception as e:
+            logger.warning(f"检查/同步部署工具时出错: {e}，继续尝试部署", exc_info=True)
+        
+        # 将配置写入临时文件（通过Agent）
+        # 使用base64编码JSON配置，避免特殊字符问题
+        import base64
+        config_json_base64 = base64.b64encode(config_json.encode('utf-8')).decode('ascii')
+        config_file = f'/tmp/xray_config_{int(time.time())}.json'
+        config_script = f"""#!/bin/bash
+set -e
+# 将base64编码的JSON配置解码并写入文件
+echo "{config_json_base64}" | base64 -d > {config_file}
+if [ $? -eq 0 ]; then
+    echo "配置文件已写入: {config_file}"
+    # 验证JSON格式
+    if command -v python3 &> /dev/null; then
+        python3 -m json.tool {config_file} > /dev/null 2>&1 && echo "JSON格式验证通过" || echo "警告: JSON格式验证失败"
+    elif command -v python &> /dev/null; then
+        python -m json.tool {config_file} > /dev/null 2>&1 && echo "JSON格式验证通过" || echo "警告: JSON格式验证失败"
     fi
-fi
-
-echo "[信息] 使用 Xray 二进制文件: $XRAY_BIN"
-
-# 确定配置文件路径（根据Xray安装位置）
-if [ "$XRAY_BIN" = "/usr/local/bin/xray" ]; then
-    CONFIG_DIR="/usr/local/etc/xray"
-elif [ "$XRAY_BIN" = "/usr/bin/xray" ]; then
-    CONFIG_DIR="/etc/xray"
-else
-    # 默认使用 /usr/local/etc/xray
-    CONFIG_DIR="/usr/local/etc/xray"
-fi
-
-echo "[信息] 使用配置目录: $CONFIG_DIR"
-
-# 创建配置目录
-mkdir -p "$CONFIG_DIR"
-
-# 写入配置文件（使用heredoc避免特殊字符问题）
-cat > "$CONFIG_DIR/config.json" << 'CONFIG_EOF'
-{config_json}
-CONFIG_EOF
-if [ $? -ne 0 ]; then
-    echo "[错误] 写入配置文件失败"
-    exit 1
-fi
-
-echo "[信息] 配置文件已写入: $CONFIG_DIR/config.json"
-
-# 验证配置
-echo "[信息] 开始验证配置..."
-VALIDATION_OUTPUT=$($XRAY_BIN -test -config "$CONFIG_DIR/config.json" 2>&1)
-VALIDATION_EXIT=$?
-
-if [ $VALIDATION_EXIT -eq 0 ]; then
-    echo "[成功] 配置验证成功"
-    echo "$VALIDATION_OUTPUT"
-    
-    # 重启Xray服务
-    echo "[信息] 重启 Xray 服务..."
-    if systemctl restart xray 2>&1; then
-        echo "[成功] Xray 服务已重启 (systemctl)"
-    elif service xray restart 2>&1; then
-        echo "[成功] Xray 服务已重启 (service)"
-    else
-        echo "[警告] Xray 服务重启失败，但配置已更新"
-        # 不退出，因为配置已成功写入
-    fi
-    
-    # 等待一下确保服务启动
-    sleep 2
-    if systemctl is-active --quiet xray || service xray status > /dev/null 2>&1; then
-        echo "[成功] Xray 服务运行正常"
-    else
-        echo "[警告] Xray 服务可能未运行，请检查服务状态"
-    fi
-    
     exit 0
 else
-    echo "[错误] 配置验证失败 (退出码: $VALIDATION_EXIT)"
-    echo "[错误] 验证输出:"
-    echo "$VALIDATION_OUTPUT"
-    
-    # 显示配置文件内容的前几行（用于调试）
-    echo "[信息] 配置文件内容（前20行）:"
-    head -20 "$CONFIG_DIR/config.json" || true
-    
+    echo "错误: 写入配置文件失败"
     exit 1
 fi
 """
         
-        # 通过Agent执行脚本
-        cmd = execute_script_via_agent(agent, deploy_script, timeout=60, script_name='xray_config.sh')
-        
-        # 等待命令执行完成
-        max_wait = 60
+        # 写入配置文件
+        write_cmd = execute_script_via_agent(agent, config_script, timeout=30, script_name='write_config.sh')
+        max_wait = 30
         wait_time = 0
+        while wait_time < max_wait:
+            write_cmd.refresh_from_db()
+            if write_cmd.status in ['success', 'failed']:
+                break
+            time.sleep(1)
+            wait_time += 1
+        
+        if write_cmd.status != 'success':
+            # 解码base64内容
+            from apps.logs.utils import format_log_content
+            error_msg = format_log_content(write_cmd.error or '未知错误', decode_base64=True)
+            result_msg = format_log_content(write_cmd.result or '', decode_base64=True)
+            logger.error(f"写入配置文件失败: {error_msg}")
+            if result_msg:
+                logger.error(f"写入配置文件输出: {result_msg}")
+            return False
+        
+        # 执行Ansible playbook部署配置
+        deploy_script = f"""#!/bin/bash
+set -e
+
+cd {AGENT_DEPLOYMENT_TOOL_DIR}
+
+# 确保Ansible已安装
+if ! command -v ansible-playbook &> /dev/null; then
+    echo "[信息] 检测到Ansible未安装，开始安装..."
+    if command -v apt-get &> /dev/null; then
+        echo "[信息] 使用apt-get安装Ansible..."
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ansible || {{
+            echo "[错误] apt-get安装Ansible失败，尝试使用pip安装..."
+            if command -v pip3 &> /dev/null; then
+                pip3 install ansible
+            elif command -v pip &> /dev/null; then
+                pip install ansible
+            else
+                echo "[错误] 无法安装Ansible，请手动安装"
+                exit 1
+            fi
+        }}
+    elif command -v yum &> /dev/null; then
+        echo "[信息] 使用yum安装Ansible..."
+        yum install -y -q ansible || {{
+            echo "[错误] yum安装Ansible失败，尝试使用pip安装..."
+            if command -v pip3 &> /dev/null; then
+                pip3 install ansible
+            elif command -v pip &> /dev/null; then
+                pip install ansible
+            else
+                echo "[错误] 无法安装Ansible，请手动安装"
+                exit 1
+            fi
+        }}
+    elif command -v pip3 &> /dev/null || command -v pip &> /dev/null; then
+        echo "[信息] 使用pip安装Ansible..."
+        if command -v pip3 &> /dev/null; then
+            pip3 install ansible
+        else
+            pip install ansible
+        fi
+    else
+        echo "[错误] 无法安装Ansible，请手动安装"
+        exit 1
+    fi
+    
+    # 验证安装
+    if command -v ansible-playbook &> /dev/null; then
+        echo "[成功] Ansible安装成功: $(ansible-playbook --version | head -1)"
+    else
+        echo "[错误] Ansible安装失败"
+        exit 1
+    fi
+fi
+
+# 检查部署工具目录是否存在
+if [ ! -d "{AGENT_DEPLOYMENT_TOOL_DIR}" ]; then
+    echo "[错误] 部署工具目录不存在: {AGENT_DEPLOYMENT_TOOL_DIR}"
+    echo "[信息] 如果这是首次部署，请先同步部署工具"
+    exit 1
+fi
+
+# 检查playbook文件是否存在
+if [ ! -f "{AGENT_DEPLOYMENT_TOOL_DIR}/playbooks/deploy_xray_config.yml" ]; then
+    echo "[错误] Playbook文件不存在: {AGENT_DEPLOYMENT_TOOL_DIR}/playbooks/deploy_xray_config.yml"
+    echo "[信息] 部署工具可能未正确同步，请检查版本"
+    exit 1
+fi
+
+# 执行playbook
+echo "[信息] 开始执行Ansible playbook..."
+ansible-playbook -i {AGENT_DEPLOYMENT_TOOL_DIR}/inventory/localhost.ini {AGENT_DEPLOYMENT_TOOL_DIR}/playbooks/deploy_xray_config.yml -e config_file={config_file} -v
+
+EXIT_CODE=$?
+
+# 清理临时配置文件
+rm -f {config_file}
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "[成功] Xray配置部署完成"
+else
+    echo "[错误] Xray配置部署失败，退出码: $EXIT_CODE"
+fi
+
+exit $EXIT_CODE
+"""
+        
+        # 通过Agent执行部署脚本
+        logger.info(f"开始执行Ansible playbook部署Xray配置...")
+        cmd = execute_script_via_agent(agent, deploy_script, timeout=120, script_name='deploy_xray_config.sh')
+        
+        # 等待命令执行完成，实时记录日志
+        max_wait = max(cmd.timeout * 2, 120)  # 最多等待超时时间的2倍，或2分钟
+        wait_time = 0
+        last_result_length = 0
         while wait_time < max_wait:
             cmd.refresh_from_db()
             if cmd.status in ['success', 'failed']:
                 break
+            
+            # 实时读取命令输出（如果有新内容）
+            if cmd.result and len(cmd.result) > last_result_length:
+                new_output = cmd.result[last_result_length:]
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_output = format_log_content(new_output, decode_base64=True)
+                logger.info(f"Ansible部署输出: {formatted_output}")
+                last_result_length = len(cmd.result)
+            
             time.sleep(2)
             wait_time += 2
+            if wait_time % 10 == 0:
+                status_info = f"命令状态: {cmd.status}"
+                if cmd.started_at:
+                    elapsed = (timezone.now() - cmd.started_at).total_seconds()
+                    status_info += f", 已执行: {int(elapsed)}秒"
+                logger.info(f"等待Ansible部署完成... ({wait_time}秒, {status_info})")
         
-        return cmd.status == 'success'
+        if cmd.status == 'success':
+            logger.info(f"Xray配置部署成功")
+            if cmd.result:
+                logger.debug(f"部署结果: {cmd.result[:500]}...")  # 只记录前500字符
+            return True
+        else:
+            logger.error(f"Xray配置部署失败: status={cmd.status}")
+            if cmd.error:
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_error = format_log_content(cmd.error, decode_base64=True)
+                logger.error(f"错误信息: {formatted_error}")
+            if cmd.result:
+                # 解码base64内容
+                from apps.logs.utils import format_log_content
+                formatted_result = format_log_content(cmd.result, decode_base64=True)
+                logger.error(f"执行结果: {formatted_result}")
+            return False
         
     except Agent.DoesNotExist:
         return False
     except Exception as e:
+        logger.error(f"部署Xray配置失败: {e}", exc_info=True)
         return False

@@ -309,51 +309,155 @@ def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
         deployment.log = (deployment.log or '') + f"API地址: {api_url}\n"
         deployment.save()
         
-        # GitHub Releases URL
-        from django.conf import settings
-        github_repo = os.getenv('GITHUB_REPO', getattr(settings, 'GITHUB_REPO', 'hello--world/myx'))
-        binary_name = f'myx-agent-{os_name}-{arch}'
-        github_url = f'https://github.com/{github_repo}/releases/latest/download/{binary_name}'
+        # 获取Agent文件路径（从deployment-tool目录）
+        from pathlib import Path
+        # __file__ 是 backend/apps/deployments/tasks.py
+        # 需要回到项目根目录: backend/apps/deployments -> backend/apps -> backend -> 项目根
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        agent_dir = base_dir / 'deployment-tool' / 'agent'
+        agent_main = agent_dir / 'main.py'
+        agent_requirements = agent_dir / 'requirements.txt'
         
-        deployment.log = (deployment.log or '') + f"从 GitHub Releases 下载 Agent: {github_url}\n"
+        if not agent_main.exists():
+            deployment.log = (deployment.log or '') + f"错误: 找不到Agent文件: {agent_main}\n"
+            deployment.save()
+            ssh.close()
+            return False
+        
+        deployment.log = (deployment.log or '') + f"准备上传Agent文件: {agent_main}\n"
         deployment.save()
         
-        # 创建安装脚本（直接在服务器上下载）
+        # 通过SFTP上传Agent文件
+        sftp = ssh.open_sftp()
+        try:
+            # 创建目录
+            ssh.exec_command('mkdir -p /opt/myx-agent')
+            ssh.exec_command('mkdir -p /etc/myx-agent')
+            
+            # 上传main.py
+            remote_main = '/opt/myx-agent/main.py'
+            sftp.put(str(agent_main), remote_main)
+            sftp.chmod(remote_main, 0o755)
+            deployment.log = (deployment.log or '') + f"已上传: main.py\n"
+            deployment.save()
+            
+            # 上传requirements.txt
+            if agent_requirements.exists():
+                remote_requirements = '/opt/myx-agent/requirements.txt'
+                sftp.put(str(agent_requirements), remote_requirements)
+                deployment.log = (deployment.log or '') + f"已上传: requirements.txt\n"
+                deployment.save()
+            else:
+                # 创建默认的requirements.txt
+                remote_requirements = '/opt/myx-agent/requirements.txt'
+                with sftp.file(remote_requirements, 'w') as f:
+                    f.write('requests>=2.31.0\nurllib3>=2.0.0\n')
+                deployment.log = (deployment.log or '') + f"已创建默认: requirements.txt\n"
+                deployment.save()
+        finally:
+            sftp.close()
+        
+        # 创建安装脚本（仅支持Python版本）
         install_script = f"""#!/bin/bash
 set -e
 
-# 创建目录
-mkdir -p /opt/myx-agent
-mkdir -p /etc/myx-agent
-
-# 直接从 GitHub 下载 Agent 二进制文件
-echo "正在从 GitHub 下载 Agent 二进制文件..."
-if curl -L -f -o /tmp/myx-agent "{github_url}"; then
-    echo "Agent 下载成功"
-    chmod +x /tmp/myx-agent
-else
-    echo "Agent 下载失败，请检查网络连接或 GitHub Releases"
+# 检查Python版本
+echo "[信息] 检测Python版本..."
+if ! command -v python3 &> /dev/null; then
+    echo "[错误] 未检测到Python3，Agent需要Python 3.6+"
     exit 1
 fi
 
-# 移动二进制文件
-mv /tmp/myx-agent /opt/myx-agent/myx-agent
-chmod +x /opt/myx-agent/myx-agent
+PYTHON_VERSION=$(python3 --version 2>&1 | awk '{{print $2}}')
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 6 ]); then
+    echo "[错误] Python版本过低 ($PYTHON_VERSION)，需要3.6+"
+    exit 1
+fi
+
+echo "[信息] 检测到Python $PYTHON_VERSION，继续安装..."
+
+# 验证Agent文件是否存在
+if [ ! -f /opt/myx-agent/main.py ]; then
+    echo "[错误] Agent文件不存在: /opt/myx-agent/main.py"
+    exit 1
+fi
+
+# 安装Python依赖
+echo "[信息] 安装Python依赖..."
+if command -v pip3 &> /dev/null; then
+    # 优先使用pip3安装
+    pip3 install --quiet --upgrade pip || true
+    pip3 install --quiet -r /opt/myx-agent/requirements.txt || {{
+        echo "[警告] pip3安装依赖失败，尝试使用系统包管理器"
+        if command -v apt-get &> /dev/null; then
+            apt-get update -qq > /dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip python3-requests python3-urllib3 || {{
+                echo "[错误] 系统包管理器安装失败"
+                exit 1
+            }}
+        elif command -v yum &> /dev/null; then
+            yum install -y -q python3-pip python3-requests python3-urllib3 || {{
+                echo "[错误] 系统包管理器安装失败"
+                exit 1
+            }}
+        else
+            echo "[错误] 未找到包管理器"
+            exit 1
+        fi
+    }}
+else
+    echo "[信息] 未找到pip3，尝试安装pip3..."
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq > /dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip || {{
+            echo "[错误] pip3安装失败"
+            exit 1
+        }}
+        pip3 install --quiet -r /opt/myx-agent/requirements.txt || {{
+            echo "[错误] 依赖安装失败"
+            exit 1
+        }}
+    elif command -v yum &> /dev/null; then
+        yum install -y -q python3-pip || {{
+            echo "[错误] pip3安装失败"
+            exit 1
+        }}
+        pip3 install --quiet -r /opt/myx-agent/requirements.txt || {{
+            echo "[错误] 依赖安装失败"
+            exit 1
+        }}
+    else
+        echo "[错误] 未找到包管理器，无法安装pip3"
+        exit 1
+    fi
+fi
+
+# 验证Python依赖是否安装成功
+if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
+    echo "[错误] Python依赖验证失败"
+    exit 1
+fi
+
+echo "[成功] Python依赖安装完成"
 
 # 首次注册Agent
-echo "正在注册 Agent..."
-/opt/myx-agent/myx-agent -token {server.id} -api {api_url}
+echo "[信息] 正在注册 Agent..."
+python3 /opt/myx-agent/main.py --token {server.id} --api {api_url}
 
 # 创建systemd服务
 cat > /etc/systemd/system/myx-agent.service << 'EOF'
 [Unit]
-Description=MyX Agent
+Description=MyX Agent (Python)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/opt/myx-agent/myx-agent
+WorkingDirectory=/opt/myx-agent
+ExecStart=/usr/bin/python3 /opt/myx-agent/main.py
 Restart=always
 RestartSec=10
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -367,7 +471,7 @@ systemctl daemon-reload
 systemctl enable myx-agent
 systemctl start myx-agent
 
-echo "Agent安装完成"
+echo "[完成] Agent安装完成"
 """
         
         # 上传安装脚本并执行

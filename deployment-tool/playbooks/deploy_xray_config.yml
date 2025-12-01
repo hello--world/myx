@@ -1,0 +1,83 @@
+---
+- name: Deploy Xray Configuration
+  hosts: local
+  become: yes
+  vars:
+    config_file: /tmp/xray_config.json
+    xray_config_dir: /usr/local/etc/xray
+    xray_bin: /usr/local/bin/xray
+    deployment_tool_dir: /opt/myx-deployment-tool
+  tasks:
+    - name: Ensure logs directory exists
+      file:
+        path: "{{ deployment_tool_dir }}/logs"
+        state: directory
+        mode: '0755'
+    - name: Find Xray binary
+      command: which xray
+      register: xray_bin_result
+      changed_when: false
+      failed_when: false
+
+    - name: Set Xray binary path
+      set_fact:
+        xray_bin: "{{ xray_bin_result.stdout | default('/usr/local/bin/xray') }}"
+
+    - name: Determine Xray config directory
+      set_fact:
+        xray_config_dir: "{{ '/usr/local/etc/xray' if xray_bin == '/usr/local/bin/xray' else '/etc/xray' }}"
+
+    - name: Create Xray config directory
+      file:
+        path: "{{ xray_config_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy Xray configuration file
+      copy:
+        src: "{{ config_file }}"
+        dest: "{{ xray_config_dir }}/config.json"
+        mode: '0644'
+        remote_src: yes
+      register: config_copy
+
+    - name: Validate Xray configuration
+      command: "{{ xray_bin }} -test -config {{ xray_config_dir }}/config.json"
+      register: validation_result
+      changed_when: false
+      failed_when: validation_result.rc != 0
+
+    - name: Display validation output
+      debug:
+        msg: "{{ validation_result.stdout_lines }}"
+      when: validation_result.rc == 0
+
+    - name: Reload Xray service
+      systemd:
+        name: xray
+        state: reloaded
+      ignore_errors: yes
+      register: reload_result
+
+    - name: Restart Xray service if reload failed
+      systemd:
+        name: xray
+        state: restarted
+      when: reload_result.failed
+
+    - name: Wait for Xray service to be active
+      systemd:
+        name: xray
+        state: started
+      register: service_status
+
+    - name: Check Xray service status
+      command: systemctl is-active xray
+      register: service_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display service status
+      debug:
+        msg: "Xray service is {{ service_check.stdout }}"
+

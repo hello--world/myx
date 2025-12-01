@@ -48,14 +48,34 @@ class CommandQueue:
         return result
     
     @staticmethod
-    def update_command_result(command_id: int, success: bool, result: str = None, error: str = None):
-        """更新命令执行结果"""
+    def update_command_result(command_id: int, success: bool, result: str = None, error: str = None, append: bool = False):
+        """更新命令执行结果
+        
+        Args:
+            command_id: 命令ID
+            success: 是否成功
+            result: 执行结果
+            error: 错误信息
+            append: 是否追加到现有结果（用于实时上报）
+        """
         try:
             cmd = AgentCommand.objects.get(id=command_id)
-            cmd.status = 'success' if success else 'failed'
-            cmd.result = result
-            cmd.error = error
-            cmd.completed_at = timezone.now()
+            if append:
+                # 增量更新：追加到现有结果
+                if result:
+                    cmd.result = (cmd.result or '') + result
+                if error:
+                    cmd.error = (cmd.error or '') + error
+            else:
+                # 最终结果：替换
+                if success is not None:
+                    cmd.status = 'success' if success else 'failed'
+                if result is not None:
+                    cmd.result = result
+                if error is not None:
+                    cmd.error = error
+                if success is not None:
+                    cmd.completed_at = timezone.now()
             cmd.save()
         except AgentCommand.DoesNotExist:
             pass

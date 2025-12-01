@@ -8,7 +8,7 @@ MyX Agent 系统允许在目标服务器上安装轻量级 Agent 程序，通过
 
 ### 组件
 
-1. **Go Agent** (`agent/`): 运行在目标服务器上的轻量级代理程序
+1. **Python Agent** (`deployment-tool/agent/`): 运行在目标服务器上的轻量级代理程序
 2. **Django API** (`backend/apps/agents/`): Agent 管理 API
 3. **命令队列** (`backend/apps/agents/command_queue.py`): 命令队列管理器
 4. **部署集成** (`backend/apps/deployments/agent_deployer.py`): Agent 部署逻辑
@@ -16,7 +16,7 @@ MyX Agent 系统允许在目标服务器上安装轻量级 Agent 程序，通过
 ### 通信流程
 
 ```
-控制中心 (Django)          Agent (Go)
+控制中心 (Django)          Agent (Python)
      |                         |
      |---- 注册请求 ----------->|
      |<--- Token + Secret -----|
@@ -76,22 +76,29 @@ MyX Agent 系统允许在目标服务器上安装轻量级 Agent 程序，通过
 
 ## 使用指南
 
-### 1. 编译 Agent
+### 1. 安装 Agent（通过 Web 界面，推荐）
+
+1. 登录 MyX 平台
+2. 进入"服务器管理"页面
+3. 添加服务器，选择"部署方式"为 "Agent"
+4. 点击"安装Agent"按钮
+5. 系统会自动通过 SSH 安装 Agent 到宿主机
+
+### 2. 手动安装 Agent
 
 ```bash
-cd agent
-go mod download
-go build -o myx-agent main.go
-```
+# 1. 下载 Agent 文件
+curl -L http://your-backend:8000/api/agents/files/main.py/ -o /opt/myx-agent/main.py
+curl -L http://your-backend:8000/api/agents/files/requirements.txt/ -o /opt/myx-agent/requirements.txt
 
-### 2. 在服务器上安装 Agent
+# 2. 安装依赖
+pip3 install -r /opt/myx-agent/requirements.txt
 
-```bash
-# 首次注册（需要服务器ID）
-./myx-agent -token <服务器ID> -api http://your-server:8000/api/agents
+# 3. 设置权限
+chmod +x /opt/myx-agent/main.py
 
-# 运行 Agent
-./myx-agent
+# 4. 首次注册（需要服务器ID）
+python3 /opt/myx-agent/main.py --token <服务器ID> --api http://your-server:8000/api/agents
 ```
 
 ### 3. 配置系统服务
@@ -100,15 +107,17 @@ go build -o myx-agent main.go
 
 ```ini
 [Unit]
-Description=MyX Agent
+Description=MyX Agent (Python)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/myx-agent
+WorkingDirectory=/opt/myx-agent
+ExecStart=/usr/bin/python3 /opt/myx-agent/main.py
 Restart=always
 RestartSec=10
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 [Install]
 WantedBy=multi-user.target
@@ -117,6 +126,7 @@ WantedBy=multi-user.target
 启动服务：
 
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable myx-agent
 sudo systemctl start myx-agent
 ```

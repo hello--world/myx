@@ -1,0 +1,105 @@
+---
+- name: Deploy Xray (Docker) - Official Image
+  hosts: local
+  become: yes
+  vars:
+    xray_image: "ghcr.io/xtls/xray-core:latest"  # 官方镜像，可以指定版本如 ghcr.io/xtls/xray-core:25.10.15
+    xray_config_dir: "/etc/xray"
+  tasks:
+    - name: Check if Docker is installed
+      command: which docker
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker if not present
+      shell: |
+        if command -v apt-get &> /dev/null; then
+          apt-get update -qq > /dev/null 2>&1
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io > /dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+          yum install -y -q docker > /dev/null 2>&1
+        elif command -v dnf &> /dev/null; then
+          dnf install -y -q docker > /dev/null 2>&1
+        fi
+        systemctl enable docker
+        systemctl start docker
+      when: docker_check.rc != 0
+      ignore_errors: yes
+
+    - name: Ensure Docker service is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Stop and remove existing Xray container
+      shell: |
+        if docker ps -a --format '{{.Names}}' | grep -q '^xray$'; then
+          docker stop xray || true
+          docker rm xray || true
+        fi
+      ignore_errors: yes
+
+    - name: Create Xray config directory
+      file:
+        path: "{{ xray_config_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Pull Xray Docker image (Official)
+      shell: docker pull {{ xray_image }}
+      register: pull_result
+      changed_when: true
+
+    - name: Run Xray Docker container (Official)
+      shell: |
+        docker run -d \
+          --name xray \
+          --restart=always \
+          -v {{ xray_config_dir }}:/etc/xray \
+          --network host \
+          {{ xray_image }}
+      register: run_result
+      changed_when: true
+
+    - name: Verify Xray container deployment
+      block:
+        - name: Check if Xray container exists
+          shell: docker ps -a --filter name=xray --format "{{.Names}}"
+          register: container_exists
+          changed_when: false
+          failed_when: false
+
+        - name: Check if Xray container is running
+          shell: docker ps --filter name=xray --filter status=running --format "{{.Names}}"
+          register: container_running
+          changed_when: false
+          failed_when: false
+
+        - name: Get container status
+          shell: docker ps --filter name=xray --format "{{.Status}}"
+          register: container_status
+          changed_when: false
+          failed_when: false
+
+        - name: Check container logs for errors
+          shell: docker logs xray 2>&1 | tail -n 20 || echo "no_logs"
+          register: container_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Set deployment success fact
+          set_fact:
+            container_deployed: "{{ container_exists.stdout | default('') == 'xray' and container_running.stdout | default('') == 'xray' }}"
+
+      always:
+        - name: Fail if container not properly deployed
+          fail:
+            msg: "Xray Docker container deployment verification failed. Container exists: {{ container_exists.stdout | default('') == 'xray' }}, Container running: {{ container_running.stdout | default('') == 'xray' }}, Status: {{ container_status.stdout | default('unknown') }}, Logs: {{ container_logs.stdout | default('no_logs') }}"
+          when: not container_deployed | default(false)
+
+        - name: Display container status
+          debug:
+            msg: "Xray Docker container deployed successfully. Status: {{ container_status.stdout | default('unknown') }}"
+

@@ -44,9 +44,27 @@
             {{ formatDateTime(row.completed_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="操作" width="350">
           <template #default="{ row }">
             <el-button size="small" @click="handleViewLogs(row)">查看日志</el-button>
+            <el-button 
+              v-if="row.status === 'running'" 
+              size="small" 
+              type="danger" 
+              @click="handleStop(row)"
+              :loading="stoppingDeploymentId === row.id"
+            >
+              停止
+            </el-button>
+            <el-button 
+              v-if="row.status === 'failed' || row.status === 'timeout' || row.status === 'cancelled'" 
+              size="small" 
+              type="warning" 
+              @click="handleRetry(row)"
+              :loading="retryingDeploymentId === row.id"
+            >
+              重试
+            </el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -223,6 +241,8 @@ const logRefreshInterval = ref(null)
 const logScrollbarRef = ref(null)
 const formRef = ref(null)
 const quickDeployFormRef = ref(null)
+const retryingDeploymentId = ref(null)
+const stoppingDeploymentId = ref(null)
 
 const form = reactive({
   name: '',
@@ -312,7 +332,9 @@ const getStatusType = (status) => {
     pending: 'info',
     running: 'warning',
     success: 'success',
-    failed: 'danger'
+    failed: 'danger',
+    timeout: 'danger',
+    cancelled: 'info'
   }
   return map[status] || 'info'
 }
@@ -322,7 +344,9 @@ const getStatusText = (status) => {
     pending: '等待中',
     running: '运行中',
     success: '成功',
-    failed: '失败'
+    failed: '失败',
+    timeout: '超时',
+    cancelled: '已取消'
   }
   return map[status] || status
 }
@@ -363,6 +387,68 @@ const handleViewLogs = async (row) => {
   }
 }
 
+const handleStop = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要停止部署任务 "${row.name}" 吗？\n\n` +
+      `停止后任务将标记为"已取消"状态，无法继续执行。`,
+      '确认停止',
+      {
+        confirmButtonText: '确定停止',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    if (stoppingDeploymentId.value === row.id) return // 防止重复点击
+    
+    stoppingDeploymentId.value = row.id
+    try {
+      const response = await api.post(`/deployments/${row.id}/stop/`)
+      ElMessage.success(response.data.message || '部署任务已停止')
+      await fetchDeployments()
+      // 如果当前正在查看这个任务的日志，刷新日志
+      if (currentDeploymentId.value === row.id) {
+        await fetchLogs(row.id)
+        stopLogRefresh()
+      }
+    } catch (error) {
+      console.error('停止部署任务失败:', error)
+      ElMessage.error(error.response?.data?.error || '停止失败')
+    } finally {
+      stoppingDeploymentId.value = null
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('停止部署任务失败:', error)
+    }
+  }
+}
+
+const handleRetry = async (row) => {
+  if (retryingDeploymentId.value === row.id) return // 防止重复点击
+  
+  try {
+    await ElMessageBox.confirm('确定要重试这个部署任务吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    
+    retryingDeploymentId.value = row.id
+    await api.post(`/deployments/${row.id}/retry/`)
+    ElMessage.success('重试任务已启动')
+    fetchDeployments()
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errorMsg = error.response?.data?.error || '重试失败'
+      ElMessage.error(errorMsg)
+    }
+  } finally {
+    retryingDeploymentId.value = null
+  }
+}
+
 const fetchLogs = async (deploymentId) => {
   try {
     const response = await api.get(`/deployments/${deploymentId}/logs/`)
@@ -378,9 +464,9 @@ const fetchLogs = async (deploymentId) => {
     
     // 同时获取任务状态，如果已完成则停止刷新
     const deployment = deployments.value.find(d => d.id === deploymentId)
-    if (deployment && (deployment.status === 'success' || deployment.status === 'failed')) {
-      stopLogRefresh()
-    }
+          if (deployment && (deployment.status === 'success' || deployment.status === 'failed' || deployment.status === 'timeout' || deployment.status === 'cancelled')) {
+            stopLogRefresh()
+          }
   } catch (error) {
     console.error('获取日志失败:', error)
   }

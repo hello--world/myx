@@ -8,7 +8,8 @@ from apps.servers.models import Server
 def run_ansible_playbook(server: Server, playbook_name: str):
     """运行Ansible playbook"""
     BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
-    playbook_path = BASE_DIR / 'ansible' / 'playbooks' / playbook_name
+    # 统一使用deployment-tool/playbooks/中的playbook
+    playbook_path = BASE_DIR / 'deployment-tool' / 'playbooks' / playbook_name
 
     if not playbook_path.exists():
         return {

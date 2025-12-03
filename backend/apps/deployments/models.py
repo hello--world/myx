@@ -28,6 +28,8 @@ class Deployment(models.Model):
         ('running', '运行中'),
         ('success', '成功'),
         ('failed', '失败'),
+        ('cancelled', '已取消'),
+        ('timeout', '超时'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='任务名称')

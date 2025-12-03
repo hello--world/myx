@@ -9,6 +9,13 @@ def generate_xray_config(proxy: Proxy) -> dict:
     stream_settings_dict = proxy.get_stream_settings_dict()
     sniffing_dict = proxy.get_sniffing_dict()
     
+    # 清理 VLESS 配置：移除 clients 中的 encryption 字段（不应该在 inbound settings 中）
+    if proxy.protocol == 'vless' and 'clients' in settings_dict:
+        if isinstance(settings_dict['clients'], list):
+            for client in settings_dict['clients']:
+                if isinstance(client, dict) and 'encryption' in client:
+                    del client['encryption']
+    
     # 构建 inbound 配置
     inbound = {
         "port": proxy.port,

@@ -5,6 +5,9 @@ from .models import Server
 class ServerSerializer(serializers.ModelSerializer):
     """服务器序列化器"""
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    has_password = serializers.SerializerMethodField()
+    has_private_key = serializers.SerializerMethodField()
+    has_agent = serializers.SerializerMethodField()
 
     class Meta:
         model = Server
@@ -13,13 +16,31 @@ class ServerSerializer(serializers.ModelSerializer):
             'password', 'private_key', 'connection_method', 'deployment_target',
             'agent_connect_host', 'agent_connect_port',
             'status', 'last_check', 'save_password', 'enable_ssh_key',
+            'has_password', 'has_private_key', 'has_agent',
             'created_at', 'updated_at', 'created_by', 'created_by_username'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'has_password', 'has_private_key', 'has_agent']
         extra_kwargs = {
             'password': {'write_only': True, 'required': False},
             'private_key': {'write_only': True, 'required': False},
         }
+
+    def get_has_password(self, obj):
+        """检查是否有密码（不返回密码内容）"""
+        return bool(obj.password)
+
+    def get_has_private_key(self, obj):
+        """检查是否有私钥（不返回私钥内容）"""
+        return bool(obj.private_key)
+
+    def get_has_agent(self, obj):
+        """检查是否有Agent"""
+        try:
+            from apps.agents.models import Agent
+            Agent.objects.get(server=obj)
+            return True
+        except:
+            return False
 
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user

@@ -15,11 +15,62 @@ logger = logging.getLogger(__name__)
 
 def check_running_deployments():
     """检查所有运行中的部署任务"""
+    from datetime import timedelta
+    
     # 获取所有运行中的部署任务
     running_deployments = Deployment.objects.filter(status='running')
     
+    # 超时阈值：30分钟（1800秒）
+    timeout_threshold = timedelta(minutes=30)
+    current_time = timezone.now()
+    
     for deployment in running_deployments:
         try:
+            # 首先检查是否超时
+            timeout_occurred = False
+            timeout_duration = None
+            
+            # 如果有开始时间，检查是否超过阈值
+            if deployment.started_at:
+                elapsed_time = current_time - deployment.started_at
+                if elapsed_time > timeout_threshold:
+                    timeout_occurred = True
+                    timeout_duration = elapsed_time
+            # 如果没有开始时间，但创建时间超过阈值，也认为超时
+            elif deployment.created_at:
+                elapsed_time = current_time - deployment.created_at
+                if elapsed_time > timeout_threshold:
+                    timeout_occurred = True
+                    timeout_duration = elapsed_time
+            
+            if timeout_occurred:
+                # 标记为超时失败
+                hours = int(timeout_duration.total_seconds() // 3600)
+                minutes = int((timeout_duration.total_seconds() % 3600) // 60)
+                timeout_message = f'部署任务超时（运行时间: {hours}小时{minutes}分钟，超过30分钟阈值）'
+                
+                logger.warning(f'部署任务超时: deployment_id={deployment.id}, 运行时间={timeout_duration}')
+                
+                deployment.status = 'timeout'
+                deployment.error_message = timeout_message
+                deployment.completed_at = current_time
+                deployment.log = (deployment.log or '') + f"\n[超时] {timeout_message}\n"
+                deployment.save()
+                
+                # 记录超时日志
+                create_log_entry(
+                    log_type='deployment',
+                    level='error',
+                    title=f'部署任务超时: {deployment.name}',
+                    content=f'部署任务 {deployment.name} 运行超过30分钟，已自动标记为超时',
+                    user=deployment.created_by,
+                    server=deployment.server,
+                    related_id=deployment.id,
+                    related_type='deployment'
+                )
+                continue
+            
+            # 如果没有超时，继续正常检查
             _check_deployment(deployment)
         except Exception as e:
             logger.error(f'检查部署任务 {deployment.id} 失败: {str(e)}', exc_info=True)
@@ -27,8 +78,10 @@ def check_running_deployments():
 
 def _check_deployment(deployment: Deployment):
     """检查单个部署任务"""
-    # 只处理Agent类型的部署任务
+    # 对于非Agent类型的部署任务，只检查超时（不检查完成状态）
     if deployment.deployment_type != 'agent':
+        # 非Agent类型的部署任务由其他机制处理，这里只做超时检查
+        # 超时检查已在 check_running_deployments 中完成
         return
     
     # 获取服务器和Agent
@@ -225,26 +278,33 @@ def _read_log_file_via_agent(agent: Agent, log_file_path: str, deployment: Deplo
     """通过Agent读取日志文件"""
     try:
         from apps.agents.command_queue import CommandQueue
-        # 使用cat命令读取日志文件
-        read_cmd = CommandQueue.add_command(
+        # 先检查文件是否存在，然后再读取
+        # 使用bash命令：先检查文件是否存在，如果存在则读取，否则返回空
+        check_and_read_cmd = CommandQueue.add_command(
             agent=agent,
-            command='cat',
-            args=[log_file_path],
+            command='bash',
+            args=['-c', f'if [ -f "{log_file_path}" ]; then cat "{log_file_path}"; else echo "[信息] 日志文件尚未创建: {log_file_path}"; fi'],
             timeout=10
         )
         
         # 等待命令执行（最多等待10秒，因为可能需要等待脚本写入日志）
         for i in range(10):
             time.sleep(1)
-            read_cmd.refresh_from_db()
-            if read_cmd.status in ['success', 'failed']:
-                if read_cmd.status == 'success' and read_cmd.result:
-                    logger.debug(f'成功读取日志文件: {log_file_path}, 长度: {len(read_cmd.result)}')
+            check_and_read_cmd.refresh_from_db()
+            if check_and_read_cmd.status in ['success', 'failed']:
+                if check_and_read_cmd.status == 'success' and check_and_read_cmd.result:
                     # 解码base64内容
                     from apps.logs.utils import format_log_content
-                    return format_log_content(read_cmd.result, decode_base64=True)
-                elif read_cmd.status == 'failed':
-                    logger.debug(f'读取日志文件失败: {read_cmd.error}')
+                    log_content = format_log_content(check_and_read_cmd.result, decode_base64=True)
+                    # 如果日志文件不存在，返回None（不记录到部署日志中）
+                    if '[信息] 日志文件尚未创建' in log_content:
+                        logger.debug(f'日志文件尚未创建: {log_file_path}')
+                        return None
+                    logger.debug(f'成功读取日志文件: {log_file_path}, 长度: {len(log_content)}')
+                    return log_content
+                elif check_and_read_cmd.status == 'failed':
+                    # 如果命令失败，可能是文件不存在，这是正常的
+                    logger.debug(f'读取日志文件失败（可能文件不存在）: {log_file_path}')
                     break
             # 如果命令还在运行，继续等待
         else:

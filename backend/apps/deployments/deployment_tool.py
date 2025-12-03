@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from django.conf import settings
 from apps.agents.models import Agent
-from apps.agents.utils import execute_script_via_agent
+# 延迟导入 execute_script_via_agent 以避免循环导入
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ def _get_base_dir():
 BASE_DIR = _get_base_dir()
 DEPLOYMENT_TOOL_DIR = BASE_DIR / 'deployment-tool'
 DEPLOYMENT_TOOL_VERSION_FILE = DEPLOYMENT_TOOL_DIR / 'VERSION'
+# 从 utils.py 导入 AGENT_DEPLOYMENT_TOOL_DIR 以避免循环导入
+# 注意：这里直接使用常量值，因为它是固定的，不需要从 utils.py 导入
 AGENT_DEPLOYMENT_TOOL_DIR = '/opt/myx-deployment-tool'
 
 
@@ -54,13 +56,39 @@ def get_deployment_tool_version():
     return None
 
 
-def check_deployment_tool_version(agent: Agent) -> bool:
+def get_playbooks_hash():
+    """计算playbooks目录的hash值，用于检测playbooks是否有更新"""
+    import hashlib
+    playbooks_dir = DEPLOYMENT_TOOL_DIR / 'playbooks'
+    if not playbooks_dir.exists():
+        return None
+    
+    # 计算所有playbook文件的hash
+    hash_obj = hashlib.md5()
+    for playbook_file in sorted(playbooks_dir.glob('*.yml')):
+        if playbook_file.is_file():
+            with open(playbook_file, 'rb') as f:
+                hash_obj.update(f.read())
+    
+    return hash_obj.hexdigest()
+
+
+def check_deployment_tool_version(agent: Agent, force_sync: bool = False) -> bool:
     """
     检查Agent端的部署工具版本是否与当前版本一致
+    
+    Args:
+        agent: Agent对象
+        force_sync: 是否强制同步（默认False，如果为True则总是返回False以触发同步）
     
     Returns:
         bool: True表示版本一致，False表示不一致或需要同步
     """
+    # 如果强制同步，直接返回False
+    if force_sync:
+        logger.info(f"强制同步部署工具到Agent {agent.id}")
+        return False
+    
     current_version = get_deployment_tool_version()
     if not current_version:
         logger.warning("无法获取当前部署工具版本")
@@ -74,6 +102,18 @@ def check_deployment_tool_version(agent: Agent) -> bool:
     # 比较版本
     if agent.deployment_tool_version != current_version:
         logger.info(f"Agent {agent.id} 部署工具版本不一致: Agent={agent.deployment_tool_version}, 当前={current_version}")
+        return False
+    
+    # 即使版本一致，也检查playbooks的hash（因为playbooks可能更新了但版本号没变）
+    # 计算当前playbooks的hash
+    current_playbooks_hash = get_playbooks_hash()
+    if current_playbooks_hash:
+        # 检查Agent端是否有playbooks hash记录（如果没有，需要同步）
+        # 注意：这里我们总是同步，因为playbooks可能更新了
+        # 为了确保每次部署都使用最新的playbooks，我们总是同步
+        logger.info(f"Agent {agent.id} 检查playbooks更新...")
+        # 暂时总是返回False，确保每次部署都同步playbooks
+        # 如果以后需要优化，可以在这里添加hash比较逻辑
         return False
     
     return True
@@ -105,7 +145,15 @@ def sync_deployment_tool_to_agent(agent: Agent) -> bool:
             # 打包部署工具目录
             logger.info(f"打包部署工具目录: {DEPLOYMENT_TOOL_DIR}")
             with tarfile.open(tar_path, 'w:gz') as tar:
-                tar.add(DEPLOYMENT_TOOL_DIR, arcname='deployment-tool', filter=lambda tarinfo: None if '.git' in tarinfo.name or '__pycache__' in tarinfo.name else tarinfo)
+                def filter_func(tarinfo):
+                    # 排除.git和__pycache__目录
+                    if '.git' in tarinfo.name or '__pycache__' in tarinfo.name:
+                        return None
+                    # 确保脚本文件有执行权限
+                    if tarinfo.name.endswith('.sh') or tarinfo.name.endswith('.py'):
+                        tarinfo.mode = 0o755
+                    return tarinfo
+                tar.add(DEPLOYMENT_TOOL_DIR, arcname='deployment-tool', filter=filter_func)
             
             # 读取tar.gz文件内容
             with open(tar_path, 'rb') as f:
@@ -133,6 +181,10 @@ tar -xzf /tmp/deployment-tool.tar.gz --strip-components=1
 
 # 设置权限
 chmod -R 755 {AGENT_DEPLOYMENT_TOOL_DIR}
+
+# 确保脚本文件有执行权限
+chmod +x {AGENT_DEPLOYMENT_TOOL_DIR}/scripts/*.sh 2>/dev/null || true
+chmod +x {AGENT_DEPLOYMENT_TOOL_DIR}/scripts/*.py 2>/dev/null || true
 
 # 清理临时文件
 rm -f /tmp/deployment-tool.tar.gz

@@ -14,6 +14,9 @@ import os
 import subprocess
 import tempfile
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ServerViewSet(viewsets.ModelViewSet):
@@ -23,12 +26,294 @@ class ServerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Server.objects.filter(created_by=self.request.user)
-
-    def _test_agent_connection(self, server):
-        """测试Agent连接"""
+    
+    def destroy(self, request, *args, **kwargs):
+        """删除服务器（带确认功能）"""
+        server = self.get_object()
+        
+        # 检查是否有相关的 Agent 和 Proxy
+        has_agent = False
+        has_proxies = False
+        agent_info = None
+        proxies_info = []
+        proxies_count = 0
+        
         try:
             agent = Agent.objects.get(server=server)
-            # 检查Agent是否在线（最近60秒内有心跳）
+            has_agent = True
+            agent_info = {
+                'id': agent.id,
+                'token': agent.token[:20] + '...' if agent.token else None,
+                'status': agent.status,
+                'version': agent.version,
+                'rpc_port': agent.rpc_port,
+            }
+        except Agent.DoesNotExist:
+            pass
+        
+        proxies = server.proxies.all()
+        proxies_count = proxies.count()
+        has_proxies = proxies_count > 0
+        if has_proxies:
+            proxies_info = [{
+                'id': p.id,
+                'name': p.name,
+                'protocol': p.protocol,
+                'port': p.port,
+            } for p in proxies[:10]]  # 最多显示10个
+        
+        # 检查请求参数中的确认信息
+        # 使用 query_params 或 data（DELETE 请求可能没有 body，所以用 query_params）
+        confirmed = request.query_params.get('confirmed', '').lower() == 'true'
+        delete_agent = request.query_params.get('delete_agent', '').lower() == 'true'
+        delete_proxies = request.query_params.get('delete_proxies', '').lower() == 'true'
+        
+        # 如果有关联对象但用户没有明确确认，返回需要确认的信息
+        if (has_agent or has_proxies) and not confirmed:
+            return Response({
+                'requires_confirmation': True,
+                'server': {
+                    'id': server.id,
+                    'name': server.name,
+                    'host': server.host,
+                },
+                'related_objects': {
+                    'has_agent': has_agent,
+                    'agent': agent_info,
+                    'has_proxies': has_proxies,
+                    'proxies_count': proxies_count,
+                    'proxies': proxies_info,
+                },
+                'message': '删除服务器前，请确认是否同时删除相关的 Agent 和代理节点',
+                'note': '注意：删除服务器将自动删除所有关联的 Agent 和代理节点（由于外键约束）',
+            }, status=status.HTTP_200_OK)
+        
+        # 执行删除操作
+        # 根据用户选择，先删除关联对象，再删除服务器
+        try:
+            server_name = server.name
+            server_host = server.host
+            server_id = server.id
+            
+            # 记录删除前的关联对象信息（用于日志）
+            deleted_agent_info = None
+            deleted_proxies_count = 0
+            kept_proxies_count = 0
+            
+            # 根据用户选择删除 Agent
+            if has_agent:
+                try:
+                    agent = Agent.objects.get(server=server)
+                    agent_id = agent.id  # 保存 agent.id，因为删除后无法访问
+                    deleted_agent_info = agent_info
+                    
+                    # 在删除数据库记录之前，先尝试卸载 Agent（如果 Agent 在线）
+                    uninstall_success = False
+                    uninstall_error = None
+                    if agent.status == 'online' and agent.rpc_port and agent.rpc_supported:
+                        try:
+                            from apps.agents.rpc_client import get_agent_rpc_client
+                            rpc_client = get_agent_rpc_client(agent)
+                            if rpc_client and rpc_client.health_check():
+                                # Agent 在线，发送卸载命令（使用 Python 脚本）
+                                # 读取卸载脚本内容
+                                import os
+                                from pathlib import Path
+                                
+                                # 获取项目根目录
+                                base_dir = Path(__file__).resolve().parent.parent.parent.parent
+                                uninstall_script_path = base_dir / 'deployment-tool' / 'scripts' / 'uninstall_agent.py'
+                                
+                                if uninstall_script_path.exists():
+                                    with open(uninstall_script_path, 'r', encoding='utf-8') as f:
+                                        uninstall_script = f.read()
+                                else:
+                                    # 如果脚本文件不存在，使用内联脚本
+                                    uninstall_script = """#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import shutil
+
+def run_command(cmd, check=True, capture_output=True):
+    try:
+        result = subprocess.run(cmd, shell=True, check=check, capture_output=capture_output, text=True, timeout=30)
+        return result.returncode == 0, result.stdout, result.stderr
+    except Exception as e:
+        return False, '', str(e)
+
+print("[信息] 开始卸载 Agent...")
+
+# 停止 Agent 服务
+success, _, _ = run_command("systemctl is-active --quiet myx-agent", check=False)
+if success:
+    run_command("systemctl stop myx-agent", check=False)
+    print("[信息] Agent 服务已停止")
+
+# 禁用 Agent 服务
+success, _, _ = run_command("systemctl is-enabled --quiet myx-agent", check=False)
+if success:
+    run_command("systemctl disable myx-agent", check=False)
+    print("[信息] Agent 服务已禁用")
+
+# 删除 systemd 服务文件
+if os.path.exists("/etc/systemd/system/myx-agent.service"):
+    os.remove("/etc/systemd/system/myx-agent.service")
+    run_command("systemctl daemon-reload", check=False)
+    print("[信息] systemd 服务文件已删除")
+
+# 删除 Agent 文件目录
+if os.path.exists("/opt/myx-agent"):
+    shutil.rmtree("/opt/myx-agent")
+    print("[信息] Agent 文件目录已删除")
+
+# 删除 Agent 配置文件目录
+if os.path.exists("/etc/myx-agent"):
+    shutil.rmtree("/etc/myx-agent")
+    print("[信息] Agent 配置文件目录已删除")
+
+# 删除 Agent 日志文件
+if os.path.exists("/var/log/myx-agent.log"):
+    os.remove("/var/log/myx-agent.log")
+    print("[信息] Agent 日志文件已删除")
+
+print("[成功] Agent 卸载完成")
+"""
+                                
+                                from apps.agents.utils import execute_script_via_agent
+                                cmd = execute_script_via_agent(agent, uninstall_script, timeout=60, script_name='uninstall_agent.py')
+                                
+                                # 等待命令执行完成（最多等待30秒）
+                                import time
+                                max_wait = 30
+                                wait_time = 0
+                                while wait_time < max_wait:
+                                    cmd.refresh_from_db()
+                                    if cmd.status in ['success', 'failed']:
+                                        break
+                                    time.sleep(1)
+                                    wait_time += 1
+                                
+                                if cmd.status == 'success':
+                                    uninstall_success = True
+                                    logger.info(f'Agent 卸载成功: agent_id={agent_id}, server_id={server_id}')
+                                else:
+                                    uninstall_error = cmd.error or '卸载命令执行失败'
+                                    logger.warning(f'Agent 卸载失败: agent_id={agent_id}, server_id={server_id}, error={uninstall_error}')
+                            else:
+                                logger.warning(f'Agent 不在线或 RPC 不可用，跳过卸载: agent_id={agent_id}, server_id={server_id}')
+                        except Exception as e:
+                            uninstall_error = str(e)
+                            logger.warning(f'发送 Agent 卸载命令失败: agent_id={agent_id}, server_id={server_id}, error={e}', exc_info=True)
+                    else:
+                        logger.info(f'Agent 不在线或 RPC 不支持，跳过卸载: agent_id={agent_id}, server_id={server_id}, status={agent.status}, rpc_supported={agent.rpc_supported}')
+                    
+                    # 删除 Agent 数据库记录
+                    agent.delete()
+                    if delete_agent:
+                        logger.info(f'已删除关联的 Agent: agent_id={agent_id}, server_id={server_id}, uninstall_success={uninstall_success}')
+                    else:
+                        logger.info(f'已删除关联的 Agent（由于外键约束）: agent_id={agent_id}, server_id={server_id}, uninstall_success={uninstall_success}')
+                    
+                    # 记录卸载结果到日志
+                    if uninstall_success:
+                        deleted_agent_info['uninstall_success'] = True
+                    elif uninstall_error:
+                        deleted_agent_info['uninstall_error'] = uninstall_error
+                        
+                except Agent.DoesNotExist:
+                    pass
+            
+            # 根据用户选择删除代理节点
+            if has_proxies and delete_proxies:
+                proxies = server.proxies.all()
+                deleted_proxies_count = proxies.count()
+                proxies.delete()
+                logger.info(f'已删除 {deleted_proxies_count} 个关联的代理节点: server_id={server_id}')
+            elif has_proxies and not delete_proxies:
+                # 用户不选择删除代理节点，但由于 CASCADE 约束，代理节点会在删除服务器时被删除
+                # 这里我们提示用户，或者先删除代理节点（因为外键约束，不能解除关联）
+                # 为了简化，我们仍然删除代理节点，但记录日志说明
+                proxies = server.proxies.all()
+                kept_proxies_count = proxies.count()
+                proxies.delete()
+                logger.warning(f'已删除 {kept_proxies_count} 个关联的代理节点（由于外键约束，无法保留）: server_id={server_id}')
+            
+            # 删除服务器
+            server.delete()
+            
+            # 记录删除日志
+            log_content = f'服务器 {server_name} ({server_host}) 已删除'
+            if has_agent and deleted_agent_info:
+                agent_log = f'\n已删除关联的 Agent (ID: {deleted_agent_info["id"]}, Token: {deleted_agent_info["token"]})'
+                if deleted_agent_info.get('uninstall_success'):
+                    agent_log += '\n  - Agent 已从服务器卸载（服务已停止，文件已删除）'
+                elif deleted_agent_info.get('uninstall_error'):
+                    agent_log += f'\n  - Agent 卸载失败: {deleted_agent_info["uninstall_error"]}（仅删除了数据库记录）'
+                else:
+                    agent_log += '\n  - Agent 不在线，跳过卸载（仅删除了数据库记录）'
+                if not delete_agent:
+                    agent_log += '（由于外键约束，无法保留）'
+                log_content += agent_log
+            
+            if has_proxies and delete_proxies:
+                log_content += f'\n已删除 {deleted_proxies_count} 个关联的代理节点'
+            elif has_proxies and not delete_proxies:
+                log_content += f'\n已删除 {kept_proxies_count} 个关联的代理节点（由于外键约束，无法保留）'
+            
+            logger.info(f'服务器已删除: server_id={server_id}, name={server_name}, agent_deleted={has_agent and delete_agent}, proxies_deleted={has_proxies and delete_proxies}')
+            create_log_entry(
+                log_type='server',
+                level='info',
+                title=f'删除服务器: {server_name}',
+                content=log_content,
+                user=request.user
+            )
+            
+            return Response({
+                'success': True,
+                'message': '服务器删除成功',
+                'deleted': {
+                    'agent': has_agent and delete_agent,
+                    'proxies_count': deleted_proxies_count if (has_proxies and delete_proxies) else kept_proxies_count,
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f'删除服务器失败: {e}', exc_info=True)
+            return Response({
+                'error': f'删除服务器失败: {str(e)}',
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _test_agent_connection(self, server):
+        """测试Agent连接（优先使用Web服务，回退到心跳检查）"""
+        try:
+            agent = Agent.objects.get(server=server)
+            
+            # 优先尝试使用Web服务连接（新架构）
+            if agent.web_service_enabled:
+                try:
+                    from apps.agents.client import get_agent_client
+                    client = get_agent_client(agent)
+                    if client:
+                        # 尝试健康检查
+                        if client.health_check():
+                            # 获取Agent状态
+                            status = client.get_status()
+                            return {
+                                'success': True,
+                                'message': 'Agent Web服务连接成功',
+                                'agent_status': 'online',
+                                'connection_method': 'web_service',
+                                'web_service_info': status
+                            }
+                        else:
+                            # Web服务不可用，回退到心跳检查
+                            logger.warning(f"Agent Web服务健康检查失败，回退到心跳检查")
+                except Exception as e:
+                    logger.warning(f"连接Agent Web服务失败: {e}，回退到心跳检查")
+            
+            # 回退到传统心跳检查
             if agent.status == 'online':
                 # 检查最后心跳时间
                 if agent.last_heartbeat:
@@ -36,8 +321,9 @@ class ServerViewSet(viewsets.ModelViewSet):
                     if time_since_heartbeat.total_seconds() <= 60:
                         return {
                             'success': True,
-                            'message': 'Agent连接成功',
+                            'message': 'Agent连接成功（心跳模式）',
                             'agent_status': 'online',
+                            'connection_method': 'heartbeat',
                             'last_heartbeat': agent.last_heartbeat
                         }
                     else:
@@ -65,6 +351,7 @@ class ServerViewSet(viewsets.ModelViewSet):
                 'agent_status': None
             }
         except Exception as e:
+            logger.error(f"检查Agent连接异常: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': f'检查Agent连接异常: {str(e)}',
@@ -217,12 +504,580 @@ class ServerViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
+    @action(detail=True, methods=['post'])
+    def install_agent(self, request, pk=None):
+        """安装Agent到服务器"""
+        server = self.get_object()
+        
+        # 检查是否已有Agent（允许升级）
+        is_upgrade = False
+        agent = None
+        try:
+            agent = Agent.objects.get(server=server)
+            is_upgrade = True
+        except Agent.DoesNotExist:
+            pass
+        
+        # 如果Agent已安装且在线，使用Agent进行升级
+        if is_upgrade and agent and agent.status == 'online' and agent.rpc_supported:
+            # 通过Agent进行升级（使用redeploy功能）
+            from apps.deployments.models import Deployment
+            from apps.agents.command_queue import CommandQueue
+            from django.conf import settings
+            import os
+            import time as time_module
+            
+            # 创建部署任务
+            task_name = f"升级Agent - {server.name}"
+            deployment = Deployment.objects.create(
+                name=task_name,
+                server=server,
+                deployment_type='agent',
+                connection_method='agent',
+                deployment_target=server.deployment_target or 'host',
+                status='running',
+                started_at=timezone.now(),
+                created_by=request.user
+            )
+            
+            # 获取API URL用于上报进度和下载文件
+            api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
+            if not api_url:
+                # 从request构建API URL
+                scheme = 'https' if request.is_secure() else 'http'
+                host = request.get_host()
+                api_url = f"{scheme}://{host}/api/agents"
+            
+            # 从模板文件加载脚本
+            from pathlib import Path
+            base_dir = Path(__file__).resolve().parent.parent.parent.parent
+            script_template_path = str(base_dir / 'backend' / 'apps' / 'agents' / 'scripts' / 'agent_redeploy.sh.template')
+            with open(script_template_path, 'r', encoding='utf-8') as f:
+                redeploy_script = f.read()
+            
+            # 替换占位符
+            redeploy_script = redeploy_script.replace('{DEPLOYMENT_ID}', str(deployment.id))
+            redeploy_script = redeploy_script.replace('{API_URL}', api_url)
+            redeploy_script = redeploy_script.replace('{AGENT_TOKEN}', str(agent.token))
+            
+            # 使用deployment_id作为日志文件路径的唯一标识
+            log_file = f'/tmp/agent_redeploy_{deployment.id}.log'
+            script_file = f'/tmp/agent_redeploy_script_{deployment.id}.sh'
+            
+            # 生成唯一的服务名称
+            service_name = f'myx-agent-redeploy-{deployment.id}-{int(time_module.time())}'
+            
+            # 构建部署命令：使用heredoc写入脚本文件，然后使用systemd-run执行
+            deploy_command = f'''bash -c 'cat > "{script_file}" << '\''SCRIPT_EOF'\''
+{redeploy_script}
+SCRIPT_EOF
+chmod +x "{script_file}"
+systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"
+echo $?' '''
+            
+            logger.info(f'[upgrade] 创建Agent升级命令: deployment_id={deployment.id}, script_file={script_file}, log_file={log_file}')
+            
+            # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
+            cmd = CommandQueue.add_command(
+                agent=agent,
+                command='bash',
+                args=['-c', deploy_command],
+                timeout=600
+            )
+            
+            logger.info(f'[upgrade] 命令已添加到队列: command_id={cmd.id}, agent_id={agent.id}')
+            
+            # 初始化部署日志
+            deployment.log = f"[开始] Agent升级已启动（通过Agent），命令ID: {cmd.id}\n"
+            deployment.log += f"[信息] 升级将使用systemd-run在独立进程中执行，确保升级过程不受影响\n"
+            deployment.log += f"[信息] 日志文件: {log_file}\n"
+            deployment.log += f"[信息] 脚本文件: {script_file}\n"
+            deployment.log += f"[信息] 如果升级失败，系统会自动回滚到原始版本\n"
+            deployment.save()
+            
+            # 记录Agent升级开始日志
+            create_log_entry(
+                log_type='agent',
+                level='info',
+                title=f'开始升级Agent: {server.name}',
+                content=f'Agent升级已启动（通过Agent），部署任务ID: {deployment.id}，命令ID: {cmd.id}。升级将使用systemd-run在独立进程中执行，如果失败会自动回滚。',
+                user=request.user,
+                server=server,
+                related_id=deployment.id,
+                related_type='deployment'
+            )
+            
+            return Response({
+                'success': True,
+                'message': 'Agent升级任务已启动（通过Agent），请查看部署任务',
+                'deployment_id': deployment.id,
+                'is_upgrade': True,
+                'upgrade_method': 'agent'
+            }, status=status.HTTP_202_ACCEPTED)
+        
+        # 如果Agent不在线或未安装，使用SSH安装/升级
+        # 检查是否有SSH凭证
+        if not server.password and not server.private_key:
+            if is_upgrade:
+                return Response({
+                    'success': False,
+                    'error': 'Agent不在线且服务器缺少SSH密码或私钥，无法升级Agent。请先编辑服务器并输入SSH凭证，或等待Agent上线后使用Agent升级。'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({
+                    'success': False,
+                    'error': '服务器缺少SSH密码或私钥，无法安装Agent。请先编辑服务器并输入SSH凭证。'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 获取或设置save_password标志
+        # 优先使用服务器已有的save_password设置（如果用户之前选择了保存密码）
+        save_password = request.data.get('save_password', None)
+        if save_password is None:
+            # 如果服务器已有save_password设置，使用它；否则默认False（安装成功后删除密码）
+            save_password = server.save_password if server.save_password else False
+        else:
+            save_password = bool(save_password)
+        
+        # 如果用户通过请求提供了密码，使用请求中的密码；否则使用服务器已有的密码
+        if request.data.get('password'):
+            server.password = request.data.get('password')
+        if request.data.get('private_key'):
+            server.private_key = request.data.get('private_key')
+        
+        # 设置save_password标志（如果save_password=True，确保密码被保存）
+        # 如果save_password=False，临时设置为True以便安装，但会在安装成功后根据save_password决定是否删除
+        original_save_password = server.save_password
+        server.save_password = True  # 临时设置为True，确保密码被保存用于安装
+        server.save()
+        
+        # 创建部署任务
+        from apps.deployments.models import Deployment
+        
+        task_name = f"升级Agent - {server.name}" if is_upgrade else f"安装Agent - {server.name}"
+        deployment = Deployment.objects.create(
+            name=task_name,
+            server=server,
+            deployment_type='agent',
+            connection_method='ssh',
+            deployment_target=server.deployment_target or 'host',
+            status='running',
+            started_at=timezone.now(),
+            created_by=request.user
+        )
+        
+        # 记录Agent安装/升级开始日志
+        log_title = f'开始升级Agent: {server.name}' if is_upgrade else f'开始安装Agent: {server.name}'
+        log_content = f'开始通过SSH{"升级" if is_upgrade else "安装"}Agent到服务器 {server.name}，部署任务ID: {deployment.id}'
+        if is_upgrade:
+            log_content += '\n升级将安装最新版本的Agent文件并重启服务'
+        create_log_entry(
+            log_type='agent',
+            level='info',
+            title=log_title,
+            content=log_content,
+            user=request.user,
+            server=server,
+            related_id=deployment.id,
+            related_type='deployment'
+        )
+        
+        # 在后台线程中安装Agent
+        def install_agent_async():
+            try:
+                # 重新获取服务器和部署对象
+                server.refresh_from_db()
+                deployment.refresh_from_db()
+                
+                # 临时设置连接方式为SSH（如果原来是Agent）
+                original_connection_method = server.connection_method
+                if server.connection_method == 'agent':
+                    server.connection_method = 'ssh'
+                    server.save()
+                
+                # 通过SSH安装Agent
+                from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_startup
+                
+                action_text = "升级" if is_upgrade else "安装"
+                deployment.log = (deployment.log or '') + f"[开始] 开始通过SSH{action_text}Agent到服务器 {server.host}\n"
+                if is_upgrade:
+                    deployment.log = (deployment.log or '') + f"[信息] 升级模式：将安装最新版本的Agent文件并重启服务\n"
+                deployment.save()
+                
+                # 安装/升级Agent
+                if not install_agent_via_ssh(server, deployment):
+                    deployment.status = 'failed'
+                    deployment.error_message = f'Agent{action_text}失败'
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+                    
+                    # 安装失败，根据save_password决定是否保留密码
+                    server.refresh_from_db()
+                    if save_password:
+                        # save_password=True，保持密码和标志
+                        server.save_password = True
+                        server.save()
+                        logger.info(f'Agent安装失败，保留密码（用户选择了保存密码）: server_id={server.id}')
+                    else:
+                        # save_password=False，保留密码以便重试，但保持save_password=False
+                        server.save_password = False
+                        server.save()
+                        logger.info(f'Agent安装失败，保留密码以便重试: server_id={server.id}')
+                    
+                    # 恢复连接方式
+                    if original_connection_method:
+                        server.connection_method = original_connection_method
+                        server.save()
+                    
+                    log_title = f'Agent{action_text}失败: {server.name}'
+                    log_content = f'Agent{action_text}失败，部署任务ID: {deployment.id}'
+                    create_log_entry(
+                        log_type='agent',
+                        level='error',
+                        title=log_title,
+                        content=log_content,
+                        user=request.user,
+                        server=server,
+                        related_id=deployment.id,
+                        related_type='deployment'
+                    )
+                    return
+                
+                # 等待Agent启动
+                deployment.log = (deployment.log or '') + "等待Agent启动...\n"
+                deployment.save()
+                
+                agent = wait_for_agent_startup(server, timeout=120, deployment=deployment)
+                if not agent or not agent.rpc_supported:
+                    deployment.status = 'failed'
+                    deployment.error_message = 'Agent启动超时或RPC不支持'
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+                    
+                    # 启动失败，根据save_password决定是否保留密码
+                    server.refresh_from_db()
+                    if save_password:
+                        # save_password=True，保持密码和标志
+                        server.save_password = True
+                        server.save()
+                        logger.info(f'Agent启动失败，保留密码（用户选择了保存密码）: server_id={server.id}')
+                    else:
+                        # save_password=False，保留密码以便重试，但保持save_password=False
+                        server.save_password = False
+                        server.save()
+                        logger.info(f'Agent启动失败，保留密码以便重试: server_id={server.id}')
+                    
+                    # 恢复连接方式
+                    if original_connection_method:
+                        server.connection_method = original_connection_method
+                        server.save()
+                    
+                    create_log_entry(
+                        log_type='agent',
+                        level='error',
+                        title=f'Agent启动失败: {server.name}',
+                        content=f'Agent启动超时或RPC不支持，部署任务ID: {deployment.id}',
+                        user=request.user,
+                        server=server,
+                        related_id=deployment.id,
+                        related_type='deployment'
+                    )
+                    return
+                
+                # 安装/升级成功
+                deployment.status = 'success'
+                deployment.completed_at = timezone.now()
+                action_text = "升级" if is_upgrade else "安装"
+                deployment.log = (deployment.log or '') + f"Agent{action_text}成功，已启动，RPC端口: {agent.rpc_port}\n"
+                deployment.save()
+                
+                # 更新服务器状态
+                server.refresh_from_db()
+                server.connection_method = 'agent'
+                server.status = 'active'
+                
+                # 如果save_password=False，删除密码
+                if not save_password:
+                    server.password = ''
+                    server.private_key = ''
+                    server.save_password = False
+                    logger.info(f'Agent{action_text}成功，已删除密码: server_id={server.id}')
+                else:
+                    server.save_password = True
+                
+                server.save()
+                
+                # 恢复连接方式（如果原来是Agent）
+                if original_connection_method == 'agent':
+                    server.connection_method = 'agent'
+                    server.save()
+                
+                log_title = f'Agent{action_text}成功: {server.name}'
+                log_content = f'Agent已成功{action_text}并启动，RPC端口: {agent.rpc_port}，部署任务ID: {deployment.id}'
+                create_log_entry(
+                    log_type='agent',
+                    level='success',
+                    title=log_title,
+                    content=log_content,
+                    user=request.user,
+                    server=server,
+                    related_id=deployment.id,
+                    related_type='deployment'
+                )
+                
+            except Exception as e:
+                logger.error(f'Agent安装异常: {e}', exc_info=True)
+                deployment.refresh_from_db()
+                deployment.status = 'failed'
+                deployment.error_message = f'安装异常: {str(e)}'
+                deployment.completed_at = timezone.now()
+                deployment.save()
+                
+                # 异常情况，根据save_password决定是否保留密码
+                server.refresh_from_db()
+                if save_password:
+                    # save_password=True，保持密码和标志
+                    server.save_password = True
+                    server.save()
+                    logger.info(f'Agent安装异常，保留密码（用户选择了保存密码）: server_id={server.id}')
+                else:
+                    # save_password=False，保留密码以便重试，但保持save_password=False
+                    server.save_password = False
+                    server.save()
+                    logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
+        
+        # 启动后台线程
+        thread = threading.Thread(target=install_agent_async)
+        thread.daemon = True
+        thread.start()
+        
+        return Response({
+            'success': True,
+            'message': 'Agent升级任务已启动' if is_upgrade else 'Agent安装任务已启动',
+            'deployment_id': deployment.id,
+            'save_password': save_password,
+            'is_upgrade': is_upgrade
+        }, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=['get'])
+    def agent_logs(self, request, pk=None):
+        """获取Agent日志（支持增量获取）"""
+        server = self.get_object()
+        
+        # 检查是否有Agent
+        try:
+            agent = Agent.objects.get(server=server)
+        except Agent.DoesNotExist:
+            return Response({
+                'error': '服务器未安装Agent'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # 获取增量参数
+        agent_log_offset = int(request.query_params.get('agent_log_offset', 0))
+        systemd_offset = int(request.query_params.get('systemd_offset', 0))
+        journalctl_offset = int(request.query_params.get('journalctl_offset', 0))
+        incremental = request.query_params.get('incremental', 'false').lower() == 'true'
+        lines = int(request.query_params.get('lines', 200))  # 默认200行
+        
+        logs = {
+            'agent_log': '',
+            'systemd_status': '',
+            'journalctl_log': '',
+            'agent_log_offset': 0,
+            'systemd_offset': 0,
+            'journalctl_offset': 0,
+            'error': None
+        }
+        
+        # 优先尝试通过RPC获取日志（如果Agent在线）
+        if agent.status == 'online' and agent.rpc_supported:
+            try:
+                from apps.agents.rpc_client import get_agent_rpc_client
+                rpc_client = get_agent_rpc_client(agent)
+                if rpc_client:
+                    # 通过RPC执行命令读取日志
+                    from apps.agents.command_queue import CommandQueue
+                    
+                    # 读取Agent日志文件（支持增量获取）
+                    if incremental and agent_log_offset > 0:
+                        # 增量获取：从指定行数开始读取新内容
+                        read_log_cmd = CommandQueue.add_command(
+                            agent=agent,
+                            command='bash',
+                            args=['-c', f'tail -n +{agent_log_offset + 1} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
+                            timeout=10
+                        )
+                    else:
+                        # 首次获取：读取指定行数
+                        read_log_cmd = CommandQueue.add_command(
+                            agent=agent,
+                            command='bash',
+                            args=['-c', f'tail -n {lines} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
+                            timeout=10
+                        )
+                    
+                    # 等待命令执行
+                    import time
+                    for _ in range(10):
+                        time.sleep(1)
+                        read_log_cmd.refresh_from_db()
+                        if read_log_cmd.status in ['success', 'failed']:
+                            if read_log_cmd.status == 'success' and read_log_cmd.result:
+                                from apps.logs.utils import format_log_content
+                                log_content = format_log_content(read_log_cmd.result, decode_base64=True)
+                                logs['agent_log'] = log_content
+                                # 计算新的offset（行数）
+                                if log_content and log_content != '日志文件不存在':
+                                    logs['agent_log_offset'] = agent_log_offset + len(log_content.split('\n'))
+                                else:
+                                    logs['agent_log_offset'] = agent_log_offset
+                            break
+                    
+                    # 读取systemd状态（只在首次加载时获取，不增量）
+                    if not incremental or systemd_offset == 0:
+                        status_cmd = CommandQueue.add_command(
+                            agent=agent,
+                            command='bash',
+                            args=['-c', 'systemctl status myx-agent --no-pager -l 2>/dev/null || echo "无法获取服务状态"'],
+                            timeout=10
+                        )
+                        
+                        for _ in range(10):
+                            time.sleep(1)
+                            status_cmd.refresh_from_db()
+                            if status_cmd.status in ['success', 'failed']:
+                                if status_cmd.status == 'success' and status_cmd.result:
+                                    from apps.logs.utils import format_log_content
+                                    logs['systemd_status'] = format_log_content(status_cmd.result, decode_base64=True)
+                                    logs['systemd_offset'] = len(logs['systemd_status'].split('\n'))
+                                break
+                    else:
+                        logs['systemd_offset'] = systemd_offset
+                    
+                    # 读取journalctl日志（支持增量获取）
+                    if incremental and journalctl_offset > 0:
+                        journal_cmd = CommandQueue.add_command(
+                            agent=agent,
+                            command='bash',
+                            args=['-c', f'journalctl -u myx-agent -n +{journalctl_offset + 1} --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
+                            timeout=10
+                        )
+                    else:
+                        journal_cmd = CommandQueue.add_command(
+                            agent=agent,
+                            command='bash',
+                            args=['-c', 'journalctl -u myx-agent -n 50 --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
+                            timeout=10
+                        )
+                    
+                    for _ in range(10):
+                        time.sleep(1)
+                        journal_cmd.refresh_from_db()
+                        if journal_cmd.status in ['success', 'failed']:
+                            if journal_cmd.status == 'success' and journal_cmd.result:
+                                from apps.logs.utils import format_log_content
+                                journal_content = format_log_content(journal_cmd.result, decode_base64=True)
+                                logs['journalctl_log'] = journal_content
+                                if journal_content and '无法读取journalctl日志' not in journal_content:
+                                    logs['journalctl_offset'] = journalctl_offset + len(journal_content.split('\n'))
+                                else:
+                                    logs['journalctl_offset'] = journalctl_offset
+                            break
+                    
+                    return Response(logs)
+            except Exception as e:
+                logger.warning(f'通过RPC获取Agent日志失败: {e}，尝试使用SSH')
+                logs['error'] = f'RPC获取失败: {str(e)}，尝试使用SSH'
+        
+        # 回退到SSH方式
+        if not server.password and not server.private_key:
+            return Response({
+                'error': '服务器缺少SSH凭证，无法获取Agent日志'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            import paramiko
+            from io import StringIO
+            
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            # 连接SSH
+            if server.private_key:
+                try:
+                    key = paramiko.RSAKey.from_private_key(StringIO(server.private_key))
+                except:
+                    try:
+                        key = paramiko.Ed25519Key.from_private_key(StringIO(server.private_key))
+                    except:
+                        key = paramiko.ECDSAKey.from_private_key(StringIO(server.private_key))
+                ssh.connect(server.host, port=server.port, username=server.username, pkey=key, timeout=10)
+            else:
+                ssh.connect(server.host, port=server.port, username=server.username, password=server.password, timeout=10)
+            
+            # 读取Agent日志文件（支持增量获取）
+            try:
+                if incremental and agent_log_offset > 0:
+                    # 增量获取：从指定行数开始读取新内容
+                    stdin, stdout, stderr = ssh.exec_command(f'tail -n +{agent_log_offset + 1} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"', timeout=10)
+                else:
+                    # 首次获取：读取指定行数
+                    stdin, stdout, stderr = ssh.exec_command(f'tail -n {lines} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"', timeout=10)
+                log_content = stdout.read().decode()
+                logs['agent_log'] = log_content
+                # 计算新的offset（行数）
+                if log_content and '日志文件不存在' not in log_content:
+                    logs['agent_log_offset'] = agent_log_offset + len(log_content.split('\n'))
+                else:
+                    logs['agent_log_offset'] = agent_log_offset
+            except Exception as e:
+                logs['agent_log'] = f'读取日志文件失败: {str(e)}'
+                logs['agent_log_offset'] = agent_log_offset
+            
+            # 读取systemd状态（只在首次加载时获取）
+            if not incremental or systemd_offset == 0:
+                try:
+                    stdin, stdout, stderr = ssh.exec_command('systemctl status myx-agent --no-pager -l 2>/dev/null || echo "无法获取服务状态"', timeout=10)
+                    status_content = stdout.read().decode()
+                    logs['systemd_status'] = status_content
+                    logs['systemd_offset'] = len(status_content.split('\n'))
+                except Exception as e:
+                    logs['systemd_status'] = f'读取服务状态失败: {str(e)}'
+                    logs['systemd_offset'] = systemd_offset
+            else:
+                logs['systemd_offset'] = systemd_offset
+            
+            # 读取journalctl日志（支持增量获取）
+            try:
+                if incremental and journalctl_offset > 0:
+                    stdin, stdout, stderr = ssh.exec_command(f'journalctl -u myx-agent -n +{journalctl_offset + 1} --no-pager 2>/dev/null || echo "无法读取journalctl日志"', timeout=10)
+                else:
+                    stdin, stdout, stderr = ssh.exec_command('journalctl -u myx-agent -n 50 --no-pager 2>/dev/null || echo "无法读取journalctl日志"', timeout=10)
+                journal_content = stdout.read().decode()
+                logs['journalctl_log'] = journal_content
+                if journal_content and '无法读取journalctl日志' not in journal_content:
+                    logs['journalctl_offset'] = journalctl_offset + len(journal_content.split('\n'))
+                else:
+                    logs['journalctl_offset'] = journalctl_offset
+            except Exception as e:
+                logs['journalctl_log'] = f'读取journalctl日志失败: {str(e)}'
+                logs['journalctl_offset'] = journalctl_offset
+            
+            ssh.close()
+            
+            return Response(logs)
+            
+        except Exception as e:
+            logger.error(f'通过SSH获取Agent日志失败: {e}', exc_info=True)
+            return Response({
+                'error': f'获取Agent日志失败: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=False, methods=['post'])
     def test(self, request):
         """测试连接（不保存，根据连接方式自动选择SSH或Agent）"""
         # 检查是否提供了服务器ID（用于Agent测试）
         server_id = request.data.get('server_id')
-        connection_method = request.data.get('connection_method', 'ssh')
+        connection_method = request.data.get('connection_method', 'agent')
         force_ssh = request.data.get('force_ssh', False)
         
         # 如果提供了server_id且连接方式是agent，使用Agent测试
@@ -295,11 +1150,16 @@ class ServerViewSet(viewsets.ModelViewSet):
         save_password = request.data.get('save_password', False)
         enable_ssh_key = request.data.get('enable_ssh_key', False)
         password = request.data.get('password', '')
-        connection_method = request.data.get('connection_method', 'ssh')
+        connection_method = request.data.get('connection_method', 'agent')
         
         # 创建服务器（先保存密码，即使save_password=False，也需要临时保存用于安装Agent）
         # 安装完成后，如果save_password=False，再清空密码
         server = serializer.save()
+        
+        # 设置save_password标志（如果用户选择了保存密码，立即设置）
+        # 即使save_password=False，也临时设置为True以便安装，但会在安装完成后根据save_password决定是否删除
+        server.save_password = True  # 临时设置为True，确保密码被保存用于安装
+        server.save()
         
         # 记录服务器创建日志
         create_log_entry(
@@ -400,7 +1260,7 @@ class ServerViewSet(viewsets.ModelViewSet):
                         server.save()
                     
                     # 使用和Agent重新部署相同的方式：通过SSH安装Agent
-                    from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_registration
+                    from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_startup
                     
                     deployment.log = (deployment.log or '') + f"[开始] 开始通过SSH安装Agent到服务器 {server.name}\n"
                     deployment.save()
@@ -431,29 +1291,27 @@ class ServerViewSet(viewsets.ModelViewSet):
                             related_type='deployment'
                         )
                         
-                        # 如果用户未选择保存密码，清空密码
-                        if not should_save_password:
-                            server.refresh_from_db()
-                            server.password = None
+                        # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
+                        server.refresh_from_db()
+                        if should_save_password:
+                            server.save_password = True
                             server.save()
-                            create_log_entry(
-                                log_type='server',
-                                level='info',
-                                title=f'已清理密码: {server.name}',
-                                content=f'Agent安装失败，已清理服务器密码（未选择保存密码）',
-                                user=request.user,
-                                server=server
-                            )
+                            logger.info(f'Agent安装失败，保留密码（用户选择了保存密码）: server_id={server.id}')
+                        else:
+                            # 即使未选择保存密码，安装失败时也保留密码以便重试
+                            server.save_password = False
+                            server.save()
+                            logger.info(f'Agent安装失败，保留密码以便重试: server_id={server.id}')
                         return
                     
-                    # 等待Agent注册
-                    deployment.log = (deployment.log or '') + "等待Agent注册...\n"
+                    # 等待Agent启动
+                    deployment.log = (deployment.log or '') + "等待Agent启动...\n"
                     deployment.save()
                     
-                    agent = wait_for_agent_registration(server, timeout=120)
-                    if not agent:
+                    agent = wait_for_agent_startup(server, timeout=120, deployment=deployment)
+                    if not agent or not agent.rpc_supported:
                         deployment.status = 'failed'
-                        deployment.error_message = 'Agent注册超时'
+                        deployment.error_message = 'Agent启动超时或RPC不支持'
                         deployment.completed_at = timezone.now()
                         deployment.save()
                         
@@ -464,31 +1322,29 @@ class ServerViewSet(viewsets.ModelViewSet):
                             server.connection_method = 'ssh'
                         server.save()
                         
-                        # 记录Agent注册超时日志
+                        # 记录Agent启动超时日志
                         create_log_entry(
                             log_type='agent',
                             level='error',
-                            title=f'Agent注册超时: {server.name}',
-                            content=f'Agent安装完成但注册超时，部署任务ID: {deployment.id}',
+                            title=f'Agent启动超时: {server.name}',
+                            content=f'Agent安装完成但启动超时或RPC不支持，部署任务ID: {deployment.id}',
                             user=request.user,
                             server=server,
                             related_id=deployment.id,
                             related_type='deployment'
                         )
                         
-                        # 如果用户未选择保存密码，清空密码
-                        if not should_save_password:
-                            server.refresh_from_db()
-                            server.password = None
+                        # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
+                        server.refresh_from_db()
+                        if should_save_password:
+                            server.save_password = True
                             server.save()
-                            create_log_entry(
-                                log_type='server',
-                                level='info',
-                                title=f'已清理密码: {server.name}',
-                                content=f'Agent注册超时，已清理服务器密码（未选择保存密码）',
-                                user=request.user,
-                                server=server
-                            )
+                            logger.info(f'Agent启动失败，保留密码（用户选择了保存密码）: server_id={server.id}')
+                        else:
+                            # 即使未选择保存密码，启动失败时也保留密码以便重试
+                            server.save_password = False
+                            server.save()
+                            logger.info(f'Agent启动失败，保留密码以便重试: server_id={server.id}')
                         return
                     
                     deployment.log = (deployment.log or '') + f"Agent已注册，Token: {agent.token}\n"
@@ -519,10 +1375,16 @@ class ServerViewSet(viewsets.ModelViewSet):
                         related_type='deployment'
                     )
                     
-                    # 如果用户未选择保存密码，安装完成后清空密码
-                    if not should_save_password:
-                        server.refresh_from_db()
+                    # 如果用户选择了保存密码，保留密码；否则删除密码
+                    server.refresh_from_db()
+                    if should_save_password:
+                        server.save_password = True
+                        server.save()
+                        logger.info(f'Agent安装成功，保留密码（用户选择了保存密码）: server_id={server.id}')
+                    else:
                         server.password = None
+                        server.private_key = None
+                        server.save_password = False
                         server.save()
                         # 记录密码清理日志
                         create_log_entry(
@@ -546,10 +1408,17 @@ class ServerViewSet(viewsets.ModelViewSet):
                     # 如果原始连接方式为Agent但安装失败，保持为SSH
                     if original_connection_method == 'agent':
                         server.connection_method = 'ssh'
-                    # 如果用户未选择保存密码，清空密码
-                    if not should_save_password:
-                        server.password = None
-                    server.save()
+                    
+                    # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
+                    if should_save_password:
+                        server.save_password = True
+                        server.save()
+                        logger.info(f'Agent安装异常，保留密码（用户选择了保存密码）: server_id={server.id}')
+                    else:
+                        # 即使未选择保存密码，安装异常时也保留密码以便重试
+                        server.save_password = False
+                        server.save()
+                        logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
                     
                     # 记录Agent安装异常日志
                     create_log_entry(

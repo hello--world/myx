@@ -26,11 +26,11 @@ class AgentsConfig(AppConfig):
         if not is_server or 'migrate' in sys.argv or 'test' in sys.argv:
             return
         
-        # 启动Agent状态检查调度器
+        # 启动Agent心跳调度器（服务器主动向Agent发送心跳）
         try:
             from .scheduler import start_scheduler
             start_scheduler()
-            logger.info('Agent状态检查调度器已自动启动')
+            logger.info('Agent心跳调度器已自动启动（服务器主动模式）')
         except Exception as e:
-            logger.error(f'启动Agent状态检查调度器失败: {str(e)}', exc_info=True)
+            logger.error(f'启动Agent心跳调度器失败: {str(e)}', exc_info=True)
 

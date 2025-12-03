@@ -91,6 +91,7 @@
       width="900px"
       @close="resetForm"
       :close-on-click-modal="false"
+      class="proxy-dialog"
     >
       <el-tabs v-model="activeTab" type="border-card">
         <!-- 基础配置 -->
@@ -99,107 +100,96 @@
             ref="formRef"
             :model="form"
             :rules="rules"
-            label-width="120px"
-            style="margin-top: 20px;"
+            label-width="80px"
+            class="proxy-form"
           >
-            <el-form-item label="节点名称" prop="name">
-              <el-input v-model="form.name" placeholder="请输入节点名称" style="width: 300px;" />
-            </el-form-item>
+            <!-- 基本信息 -->
+            <el-divider content-position="left" class="first-divider">基本信息</el-divider>
+            <div class="form-row-three-cols">
+              <el-form-item label="节点名" prop="name">
+                <el-input v-model="form.name" placeholder="节点名" />
+              </el-form-item>
+              <el-form-item label="服务器" prop="server">
+                <el-select v-model="form.server" placeholder="选择服务器" style="width: 100%;" @change="handleServerChange">
+                  <el-option
+                    v-for="server in servers"
+                    :key="server.id"
+                    :label="server.name"
+                    :value="server.id"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="订阅">
+                <el-switch v-model="form.enable" />
+              </el-form-item>
+            </div>
+            <div class="form-row-three-cols">
+              <el-form-item label="域名" prop="agent_connect_host">
+                <el-input
+                  v-model="form.agent_connect_host"
+                  placeholder="CDN或Nginx代理域名，隐藏真实服务器地址"
+                />
+              </el-form-item>
+              <el-form-item label="域名端口" prop="agent_connect_port">
+                <el-input-number
+                  v-model="form.agent_connect_port"
+                  :min="1"
+                  :max="65535"
+                  placeholder="端口"
+                  style="width: 100%;"
+                />
+              </el-form-item>
+              <el-form-item label="监听IP">
+                <el-input v-model="form.listen" placeholder="默认0.0.0.0" />
+              </el-form-item>
+            </div>
             <el-form-item label="备注">
-              <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注信息" style="width: 500px;" />
+              <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注信息" />
             </el-form-item>
-            <el-form-item label="服务器" prop="server">
-              <el-select v-model="form.server" placeholder="请选择服务器" style="width: 300px;" @change="handleServerChange">
-                <el-option
-                  v-for="server in servers"
-                  :key="server.id"
-                  :label="server.name"
-                  :value="server.id"
+
+            <!-- 协议配置 -->
+            <el-divider content-position="left">协议配置</el-divider>
+            <div class="form-row-two-cols">
+              <el-form-item label="协议" prop="protocol">
+                <el-select v-model="form.protocol" placeholder="选择协议" style="width: 100%;">
+                  <el-option label="VLESS" value="vless" />
+                  <el-option label="VMess" value="vmess" />
+                  <el-option label="Trojan" value="trojan" />
+                  <el-option label="Shadowsocks" value="shadowsocks" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="端口" prop="port">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <el-input-number
+                    v-model="form.port"
+                    :min="1"
+                    :max="65535"
+                    style="width: 100%;"
+                    @blur="checkPortAvailability"
+                  />
+                  <el-button type="primary" @click="getRandomPort" size="small">随机</el-button>
+                  <span v-if="form.port" style="color: #67c23a; font-size: 13px; font-weight: 500; white-space: nowrap;">已分配端口{{ form.port }}</span>
+                </div>
+                <div v-if="portCheckMessage && !portCheckAvailable" :style="{ color: '#f56c6c', fontSize: '13px', marginTop: '4px' }">
+                  {{ portCheckMessage }}
+                </div>
+              </el-form-item>
+            </div>
+            <div class="form-row-two-cols">
+              <el-form-item label="到期时间">
+                <el-date-picker
+                  v-model="form.expiryTime"
+                  type="datetime"
+                  placeholder="留空永不到期"
+                  format="YYYY-MM-DD HH:mm"
+                  value-format="x"
+                  style="width: 100%;"
                 />
-              </el-select>
-            </el-form-item>
-            <el-form-item 
-              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
-              label="Agent连接地址" 
-              prop="agent_connect_host"
-            >
-              <el-input 
-                v-model="form.agent_connect_host" 
-                placeholder="例如: agent.example.com 或 cloudflare域名（可选，留空使用服务器主机地址）" 
-                style="width: 300px;"
-              />
-              <div class="form-tip">Agent连接地址，用于通过Cloudflare等反向代理访问Agent（可选）</div>
-            </el-form-item>
-            <el-form-item 
-              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
-              label="Agent连接端口" 
-              prop="agent_connect_port"
-            >
-              <el-input-number 
-                v-model="form.agent_connect_port" 
-                :min="1" 
-                :max="65535" 
-                placeholder="留空使用默认端口"
-                style="width: 300px;"
-              />
-              <div class="form-tip">Agent连接端口（可选，留空使用默认端口）</div>
-            </el-form-item>
-            <el-form-item 
-              v-if="selectedServer && selectedServer.connection_method === 'agent'" 
-              label="心跳模式" 
-              prop="heartbeat_mode"
-            >
-              <el-select v-model="form.heartbeat_mode" placeholder="请选择心跳模式" style="width: 300px;">
-                <el-option label="推送模式（Agent主动推送）" value="push" />
-                <el-option label="拉取模式（中心平台主动拉取）" value="pull" />
-              </el-select>
-              <div class="form-tip">推送模式：Agent主动发送心跳；拉取模式：平台定时检查Agent状态（适合通过Cloudflare访问）</div>
-            </el-form-item>
-            <el-form-item label="启用订阅">
-              <el-switch v-model="form.enable" />
-              <div class="form-tip">控制节点是否出现在订阅中</div>
-            </el-form-item>
-            <el-form-item label="协议" prop="protocol">
-              <el-select v-model="form.protocol" placeholder="请选择协议" style="width: 200px;">
-                <el-option label="VLESS" value="vless" />
-                <el-option label="VMess" value="vmess" />
-                <el-option label="Trojan" value="trojan" />
-                <el-option label="Shadowsocks" value="shadowsocks" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="监听IP">
-              <el-input v-model="form.listen" placeholder="留空使用默认" style="width: 200px;" />
-              <el-text type="info" size="small" style="margin-left: 10px;">默认留空即可</el-text>
-            </el-form-item>
-            <el-form-item label="端口" prop="port">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <el-input-number 
-                  v-model="form.port" 
-                  :min="1" 
-                  :max="65535" 
-                  style="width: 200px;"
-                  @blur="checkPortAvailability"
-                />
-                <el-button size="small" type="primary" @click="getRandomPort">随机端口</el-button>
-              </div>
-              <div v-if="portCheckMessage" :style="{ color: portCheckAvailable ? '#67c23a' : '#f56c6c', marginTop: '5px', fontSize: '12px' }">
-                {{ portCheckMessage }}
-              </div>
-            </el-form-item>
-            <el-form-item label="总流量(GB)">
-              <el-input-number v-model="form.totalGB" :min="0" style="width: 200px;" />
-              <el-text type="info" size="small" style="margin-left: 10px;">0 表示不限制</el-text>
-            </el-form-item>
-            <el-form-item label="到期时间">
-              <el-date-picker
-                v-model="form.expiryTime"
-                type="datetime"
-                placeholder="留空则永不到期"
-                format="YYYY-MM-DD HH:mm"
-                value-format="x"
-                style="width: 300px;"
-              />
-            </el-form-item>
+              </el-form-item>
+              <el-form-item label="总流量GB">
+                <el-input-number v-model="form.totalGB" :min="0" style="width: 100%;" placeholder="0不限" />
+              </el-form-item>
+            </div>
           </el-form>
         </el-tab-pane>
 
@@ -612,8 +602,7 @@ const form = reactive({
   totalGB: 0,
   expiryTime: null,
   agent_connect_host: '',
-  agent_connect_port: null,
-  heartbeat_mode: 'push'  // 默认推送模式
+  agent_connect_port: null
 })
 
 const selectedServer = computed(() => {
@@ -631,34 +620,7 @@ const handleServerChange = () => {
       form.agent_connect_port = selectedServer.value.agent_connect_port
     }
   }
-  
-  // 如果填写了Agent连接地址，自动设置为拉取模式
-  if (form.agent_connect_host) {
-    form.heartbeat_mode = 'pull'
-  }
 }
-
-// 监听Agent连接地址变化，自动设置心跳模式
-watch(() => form.agent_connect_host, (newVal) => {
-  if (newVal && newVal.trim() !== '') {
-    // 如果填写了Agent连接地址，自动设置为拉取模式
-    form.heartbeat_mode = 'pull'
-  } else if (!form.agent_connect_port) {
-    // 如果清空了连接地址且没有端口，恢复为推送模式
-    form.heartbeat_mode = 'push'
-  }
-})
-
-// 监听Agent连接端口变化
-watch(() => form.agent_connect_port, (newVal) => {
-  if (newVal && form.agent_connect_host) {
-    // 如果填写了端口和地址，自动设置为拉取模式
-    form.heartbeat_mode = 'pull'
-  } else if (!form.agent_connect_host && !newVal) {
-    // 如果都清空了，恢复为推送模式
-    form.heartbeat_mode = 'push'
-  }
-})
 
 // 协议设置
 const protocolSettings = reactive({
@@ -844,8 +806,7 @@ const buildSettings = () => {
     }
     const clients = [{
       id: protocolSettings.vless.id,
-      flow: protocolSettings.vless.flow || '',
-      encryption: 'none'
+      flow: protocolSettings.vless.flow || ''
     }]
     return { clients, decryption: 'none' }
   } else if (protocol === 'vmess') {
@@ -980,10 +941,14 @@ const fetchServers = async () => {
 const handleAdd = async () => {
   dialogTitle.value = '添加节点'
   editingId.value = null
+  // 先重置表单，再打开对话框
   resetForm()
-  dialogVisible.value = true
-  // 自动获取随机端口
-  await getRandomPort()
+  // 使用 nextTick 确保表单重置完成后再打开对话框
+  setTimeout(async () => {
+    dialogVisible.value = true
+    // 自动获取随机端口
+    await getRandomPort()
+  }, 0)
 }
 
 const handleEdit = (row) => {
@@ -1072,17 +1037,48 @@ const handleEdit = (row) => {
 
 const handleDelete = async (row) => {
   try {
-    await ElMessageBox.confirm('确定要删除这个节点吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
+    await ElMessageBox.confirm(
+      `确定要删除节点 "${row.name}" 吗？\n\n` +
+      `删除操作是同步的，将会：\n` +
+      `• 从服务器上删除该节点的Xray配置\n` +
+      `• 重新部署剩余节点的配置（如果有）\n` +
+      `• 如果服务器上没有其他节点，将清空Xray配置\n\n` +
+      `此操作无法撤销，请谨慎操作。`,
+      '确认删除节点',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        dangerouslyUseHTMLString: false
+      }
+    )
+    
+    // 显示加载提示
+    const loadingMessage = ElMessage({
+      message: '正在删除节点并同步删除服务器配置...',
+      type: 'info',
+      duration: 0, // 不自动关闭
+      showClose: false
     })
-    await api.delete(`/proxies/${row.id}/`)
-    ElMessage.success('删除成功')
-    fetchProxies()
+    
+    try {
+      const response = await api.delete(`/proxies/${row.id}/`)
+      loadingMessage.close()
+      
+      if (response.data.message) {
+        ElMessage.success(response.data.message || '节点删除成功，已同步删除服务器配置')
+      } else {
+        ElMessage.success('节点删除成功')
+      }
+      await fetchProxies()
+    } catch (deleteError) {
+      loadingMessage.close()
+      throw deleteError
+    }
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error('删除失败')
+      console.error('删除节点失败:', error)
+      ElMessage.error(error.response?.data?.error || error.response?.data?.detail || '删除失败')
     }
   }
 }
@@ -1291,8 +1287,13 @@ const handleSubmit = async () => {
 }
 
 const resetForm = () => {
+  // 重置编辑ID
+  editingId.value = null
+  
   portCheckMessage.value = ''
   portCheckAvailable.value = true
+  
+  // 重置基础表单
   Object.assign(form, {
     name: '',
     server: null,
@@ -1308,34 +1309,40 @@ const resetForm = () => {
     heartbeat_mode: 'push'  // 默认推送模式
   })
   
-  // 重置协议设置
-  protocolSettings.vless = { id: '', flow: '' }
-  protocolSettings.vmess = { id: '', disableInsecure: false }
-  protocolSettings.trojan = { password: '' }
-  protocolSettings.shadowsocks = { method: 'aes-256-gcm', password: '', network: 'tcp,udp' }
+  // 重置协议设置（完全重置对象）
+  Object.assign(protocolSettings, {
+    vless: { id: '', flow: '' },
+    vmess: { id: '', disableInsecure: false },
+    trojan: { password: '' },
+    shadowsocks: { method: 'aes-256-gcm', password: '', network: 'tcp,udp' }
+  })
   
-  // 重置传输设置
-  streamSettings.network = 'tcp'
-  streamSettings.security = 'none'
-  streamSettings.useReality = false
-  streamSettings.ws = { path: '/', headers: [] }
-  streamSettings.grpc = { serviceName: '', authority: '', multiMode: false }
-  streamSettings.quic = { security: 'none', key: '', type: 'none' }
-  streamSettings.tls = { serverName: '', alpn: ['h2', 'http/1.1'] }
-  streamSettings.reality = {
-    show: false,
-    dest: 'www.microsoft.com:443',
-    serverNames: '',
-    privateKey: '',
-    publicKey: '',
-    shortIds: ''
-  }
+  // 重置传输设置（完全重置对象）
+  Object.assign(streamSettings, {
+    network: 'tcp',
+    security: 'none',
+    useReality: false,
+    ws: { path: '/', headers: [] },
+    grpc: { serviceName: '', authority: '', multiMode: false },
+    quic: { security: 'none', key: '', type: 'none' },
+    tls: { serverName: '', alpn: ['h2', 'http/1.1'] },
+    reality: {
+      show: false,
+      dest: 'www.microsoft.com:443',
+      serverNames: '',
+      privateKey: '',
+      publicKey: '',
+      shortIds: ''
+    }
+  })
   
-  // 重置嗅探设置
-  sniffingSettings.enabled = true
-  sniffingSettings.destOverride = ['http', 'tls', 'quic']
-  sniffingSettings.metadataOnly = false
-  sniffingSettings.routeOnly = false
+  // 重置嗅探设置（完全重置对象）
+  Object.assign(sniffingSettings, {
+    enabled: true,
+    destOverride: ['http', 'tls', 'quic'],
+    metadataOnly: false,
+    routeOnly: false
+  })
   
   activeTab.value = 'basic'
   formRef.value?.resetFields()
@@ -1684,6 +1691,81 @@ watch(logDialogVisible, (visible) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+/* 代理节点表单优化样式 */
+.proxy-form {
+  padding: 16px 20px;
+}
+
+.proxy-form .form-row-two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+
+.proxy-form .form-row-two-cols .el-form-item {
+  margin-bottom: 18px;
+}
+
+.proxy-form .form-row-three-cols {
+  display: grid;
+  grid-template-columns: 1.8fr 1.5fr 1fr;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.proxy-form .form-row-three-cols .el-form-item {
+  margin-bottom: 18px;
+}
+
+/* 表单项样式 */
+.proxy-form :deep(.el-form-item__label) {
+  font-size: 14px;
+  padding-right: 8px;
+}
+
+.proxy-form :deep(.el-form-item__content) {
+  font-size: 14px;
+}
+
+.proxy-form :deep(.el-input__inner),
+.proxy-form :deep(.el-textarea__inner) {
+  font-size: 14px;
+}
+
+.proxy-form .form-tip {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Divider样式 */
+.proxy-form :deep(.el-divider) {
+  margin: 22px 0 16px 0;
+}
+
+.proxy-form :deep(.el-divider.first-divider) {
+  margin-top: 0;
+}
+
+.proxy-form :deep(.el-divider__text) {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  background: #fff;
+  padding: 0 12px;
+}
+
+/* 对话框样式 */
+.proxy-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+
+.proxy-dialog :deep(.el-tabs__content) {
+  padding: 0;
 }
 </style>
 

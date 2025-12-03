@@ -5,23 +5,75 @@ from .models import Proxy
 from apps.logs.utils import create_log_entry
 from apps.servers.models import Server
 from apps.agents.models import Agent
-from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_registration
+from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_startup
 from apps.deployments.agent_deployer import deploy_via_agent
 from apps.deployments.models import Deployment
 
 
-def check_service_installed(agent: Agent, service_name: str) -> bool:
+# 服务安装状态缓存（避免频繁检测）
+# 格式: {(agent_id, service_name): (is_installed, timestamp)}
+_service_install_cache = {}
+_cache_ttl = 60  # 缓存60秒
+
+
+def clear_service_cache(agent_id: int = None, service_name: str = None):
+    """清除服务检测缓存
+
+    Args:
+        agent_id: Agent ID，如果为None则清除所有Agent的缓存
+        service_name: 服务名称，如果为None则清除所有服务的缓存
+    """
+    global _service_install_cache
+
+    if agent_id is None and service_name is None:
+        # 清除所有缓存
+        _service_install_cache.clear()
+        print("已清除所有服务检测缓存")
+    elif agent_id is not None and service_name is not None:
+        # 清除指定Agent和服务的缓存
+        cache_key = (agent_id, service_name)
+        if cache_key in _service_install_cache:
+            del _service_install_cache[cache_key]
+            print(f"已清除 Agent {agent_id} 的 {service_name} 缓存")
+    elif agent_id is not None:
+        # 清除指定Agent的所有服务缓存
+        keys_to_remove = [key for key in _service_install_cache.keys() if key[0] == agent_id]
+        for key in keys_to_remove:
+            del _service_install_cache[key]
+        print(f"已清除 Agent {agent_id} 的所有服务缓存")
+    elif service_name is not None:
+        # 清除所有Agent的指定服务缓存
+        keys_to_remove = [key for key in _service_install_cache.keys() if key[1] == service_name]
+        for key in keys_to_remove:
+            del _service_install_cache[key]
+        print(f"已清除所有 Agent 的 {service_name} 缓存")
+
+
+def check_service_installed(agent: Agent, service_name: str, force_check: bool = False, deployment_target: str = 'host') -> bool:
     """检查服务是否已安装
-    
+
     Args:
         agent: Agent对象
         service_name: 服务名称 ('xray' 或 'caddy')
-        
+        force_check: 是否强制检查（忽略缓存）
+        deployment_target: 部署目标 ('host' 或 'docker')，默认为 'host'
+
     Returns:
         bool: 是否已安装
     """
+    import time as time_module
     from apps.agents.command_queue import CommandQueue
-    from apps.agents.utils import execute_script_via_agent
+    from apps.agents.utils import AGENT_DEPLOYMENT_TOOL_DIR
+    
+    cache_key = (agent.id, service_name)
+    current_time = time_module.time()
+    
+    # 如果不是强制检查，且缓存有效，直接返回缓存结果
+    if not force_check and cache_key in _service_install_cache:
+        is_installed, cached_time = _service_install_cache[cache_key]
+        if current_time - cached_time < _cache_ttl:
+            print(f"使用缓存: {service_name} 在 Agent {agent.id} 上{'已安装' if is_installed else '未安装'}（缓存时间: {int(current_time - cached_time)}秒前）")
+            return is_installed
     
     # 检查 Agent 是否在线
     agent.refresh_from_db()
@@ -29,56 +81,250 @@ def check_service_installed(agent: Agent, service_name: str) -> bool:
         print(f"Agent {agent.id} 不在线，状态: {agent.status}")
         return False
     
-    check_script = f"""#!/bin/bash
-set +e  # 不因错误退出
-# 检查命令是否存在
-if command -v {service_name} &> /dev/null; then
-    echo "INSTALLED"
-    # 尝试获取版本信息（可能失败，但不影响判断）
-    {service_name} version 2>&1 | head -n 1 || echo "已安装"
-    exit 0
-else
-    echo "NOT_INSTALLED"
-    exit 1
-fi
-"""
+    # 使用内置的check_service.py脚本
+    script_path = f"{AGENT_DEPLOYMENT_TOOL_DIR}/scripts/check_service.py"
+
+    # 提前导入 format_log_content，避免在不同分支中重复导入
+    from apps.logs.utils import format_log_content
+
     try:
-        cmd = execute_script_via_agent(agent, check_script, timeout=10, script_name='check_service.sh')
-        
-        # 等待命令执行完成，增加超时时间
-        max_wait = 30  # 增加到30秒
+        # 直接执行内置脚本，传递deployment_target参数
+        cmd = CommandQueue.add_command(
+            agent=agent,
+            command='python3',
+            args=[script_path, service_name, deployment_target],
+            timeout=15  # 减少到15秒，检测脚本应该很快
+        )
+
+        # 调试：立即验证命令是否成功创建
+        print(f"[调试] 创建检测命令 - ID: {cmd.id}, Agent: {agent.id}, 状态: {cmd.status}, 服务: {service_name}")
+        cmd.refresh_from_db()
+        print(f"[调试] 命令创建后立即刷新 - 状态: {cmd.status}, 创建时间: {cmd.created_at}")
+
+        # 验证命令是否在队列中
+        from apps.agents.models import AgentCommand
+        pending_count = AgentCommand.objects.filter(agent=agent, status='pending').count()
+        print(f"[调试] Agent {agent.id} 当前待处理命令数: {pending_count}")
+
+        # 等待命令执行完成
+        # 优化后的等待时间：
+        # - 如果Agent刚发送心跳，会在下次心跳时立即轮询（最多30-300秒，但部署时会加速到1-3秒）
+        # - 如果Agent刚轮询完，会在下次轮询时获取（部署时1-3秒，正常时5-60秒）
+        # - 命令执行时间：15秒
+        # 为了兼容正常情况，保留较长的等待时间，但部署时通常会在几秒内完成
+        max_wait = 90  # 保留足够时间，但部署时通常几秒内完成
         wait_time = 0
+        last_status = cmd.status
         while wait_time < max_wait:
             cmd.refresh_from_db()
+            agent.refresh_from_db()
+
+            # 每10秒输出一次等待状态
+            if wait_time > 0 and wait_time % 10 == 0:
+                # 检查Agent状态和最后心跳
+                time_since_heartbeat = (timezone.now() - agent.last_heartbeat).total_seconds() if agent.last_heartbeat else None
+                heartbeat_info = f", 最后心跳: {int(time_since_heartbeat)}秒前" if time_since_heartbeat else ", 无心跳记录"
+                print(f"[调试] 等待 {wait_time}秒 - 命令ID: {cmd.id}, 状态: {cmd.status}, Agent状态: {agent.status}{heartbeat_info}")
+
+            # 状态变化时输出
+            if cmd.status != last_status:
+                print(f"[调试] 命令状态变化: {last_status} -> {cmd.status}")
+                last_status = cmd.status
+
+            # 如果命令还在pending状态，检查Agent是否在线
+            if cmd.status == 'pending':
+                if agent.status != 'online':
+                    print(f"[警告] Agent不在线，状态: {agent.status}，命令可能无法执行")
+                # 检查最后心跳时间，如果超过2分钟没有心跳，可能Agent有问题
+                if agent.last_heartbeat:
+                    time_since_heartbeat = (timezone.now() - agent.last_heartbeat).total_seconds()
+                    if time_since_heartbeat > 120:
+                        print(f"[警告] Agent最后心跳时间过长: {int(time_since_heartbeat)}秒前，可能连接有问题")
+
             if cmd.status in ['success', 'failed']:
                 break
-            time.sleep(1)
-            wait_time += 1
-        
+            time_module.sleep(0.5)  # 缩短轮询间隔
+            wait_time += 0.5
+
         if wait_time >= max_wait:
-            print(f"检查 {service_name} 超时，命令状态: {cmd.status}")
+            cmd.refresh_from_db()
+            agent.refresh_from_db()
+            time_since_heartbeat = (timezone.now() - agent.last_heartbeat).total_seconds() if agent.last_heartbeat else None
+            heartbeat_info = f", Agent最后心跳: {int(time_since_heartbeat)}秒前" if time_since_heartbeat else ", Agent无心跳记录"
+            print(f"检查 {service_name} 超时，命令状态: {cmd.status}, 命令ID: {cmd.id}, 已等待: {wait_time}秒{heartbeat_info}")
             # 超时时也检查命令结果（可能命令已执行但未及时更新状态）
-            if cmd.result and 'INSTALLED' in cmd.result:
-                return True
-            return False
-        
-        # 检查命令执行结果
-        if cmd.status == 'success':
-            if cmd.result and 'INSTALLED' in cmd.result:
-                print(f"检查 {service_name}: 已安装")
-                return True
+            if cmd.result:
+                # 解码base64内容
+                decoded_result = format_log_content(cmd.result, decode_base64=True)
+                if 'INSTALLED' in decoded_result:
+                    print(f"检查 {service_name}: 已安装（超时但检测到INSTALLED）")
+                    # 更新缓存
+                    _service_install_cache[cache_key] = (True, current_time)
+                    return True
+
+            # 如果超时且没有结果，使用降级检测
+            print(f"检测超时且无结果，使用降级方式检测 {service_name}")
+
+            # 降级检测
+            if service_name == 'xray':
+                check_paths = '/usr/local/bin/xray /usr/bin/xray'
+            elif service_name == 'caddy':
+                check_paths = '/usr/bin/caddy /usr/local/bin/caddy /opt/caddy/caddy'
             else:
-                print(f"检查 {service_name}: 未安装 (结果: {cmd.result})")
-                return False
-        elif cmd.status == 'failed':
-            # 即使命令失败，也检查结果中是否有INSTALLED
-            if cmd.result and 'INSTALLED' in cmd.result:
-                print(f"检查 {service_name}: 已安装 (命令失败但检测到INSTALLED)")
-                return True
-            print(f"检查 {service_name}: 未安装 (命令失败: {cmd.error})")
+                check_paths = f'/usr/local/bin/{service_name} /usr/bin/{service_name}'
+
+            fallback_cmd = CommandQueue.add_command(
+                agent=agent,
+                command='bash',
+                args=['-c', f'for p in {check_paths}; do if [ -x "$p" ]; then echo "INSTALLED:$p"; exit 0; fi; done; echo "NOT_INSTALLED"'],
+                timeout=10
+            )
+
+            print(f"[调试] 创建降级命令 - ID: {fallback_cmd.id}, 状态: {fallback_cmd.status}")
+
+            # 等待降级命令（增加等待时间，因为队列可能繁忙）
+            # 降级检测也需要等待Agent轮询，所以也需要足够的时间
+            fallback_wait = 0
+            max_fallback_wait = 85  # 与主检测相同的等待时间
+            while fallback_wait < max_fallback_wait:
+                time_module.sleep(0.5)
+                fallback_wait += 0.5
+                fallback_cmd.refresh_from_db()
+                agent.refresh_from_db()
+
+                # 每10秒输出一次
+                if fallback_wait > 0 and fallback_wait % 10 == 0:
+                    time_since_heartbeat = (timezone.now() - agent.last_heartbeat).total_seconds() if agent.last_heartbeat else None
+                    heartbeat_info = f", Agent最后心跳: {int(time_since_heartbeat)}秒前" if time_since_heartbeat else ", Agent无心跳记录"
+                    print(f"[调试] 降级命令等待 {fallback_wait}秒 - 状态: {fallback_cmd.status}{heartbeat_info}")
+
+                if fallback_cmd.status in ['success', 'failed']:
+                    break
+
+            if fallback_cmd.status == 'success' and fallback_cmd.result:
+                fallback_result = format_log_content(fallback_cmd.result, decode_base64=True)
+                print(f"[调试] 超时后降级检测结果: {repr(fallback_result)}")
+                if 'INSTALLED:' in fallback_result:
+                    detected_path = fallback_result.split('INSTALLED:')[1].strip().split('\n')[0]
+                    print(f"检查 {service_name}: 已安装（超时后降级检测，路径: {detected_path}）")
+                    _service_install_cache[cache_key] = (True, current_time)
+                    return True
+
+            print(f"检查 {service_name}: 超时且降级检测也失败，假设未安装")
             return False
         
-        return False
+        # 检查命令执行结果（需要先解码base64）
+        decoded_result = format_log_content(cmd.result or '', decode_base64=True)
+        decoded_error = format_log_content(cmd.error or '', decode_base64=True)
+
+        # 调试：打印原始结果
+        print(f"[调试] {service_name} 检测命令状态: {cmd.status}")
+        print(f"[调试] {service_name} 原始结果: {repr(cmd.result[:200] if cmd.result else None)}")
+        print(f"[调试] {service_name} 解码结果: {repr(decoded_result[:200] if decoded_result else None)}")
+
+        is_installed = False
+        if cmd.status == 'success':
+            if decoded_result and 'INSTALLED' in decoded_result:
+                print(f"检查 {service_name}: 已安装 - {decoded_result.strip()}")
+                is_installed = True
+            else:
+                print(f"检查 {service_name}: 未安装")
+                print(f"命令输出: {decoded_result[:200] if decoded_result else 'None'}")
+                # 即使返回未安装，也尝试降级检测
+                print(f"检测脚本返回未安装，使用降级方式再次检测 {service_name}")
+
+                # 降级检测
+                if service_name == 'xray':
+                    check_paths = '/usr/local/bin/xray /usr/bin/xray'
+                elif service_name == 'caddy':
+                    check_paths = '/usr/bin/caddy /usr/local/bin/caddy /opt/caddy/caddy'
+                else:
+                    check_paths = f'/usr/local/bin/{service_name} /usr/bin/{service_name}'
+
+                fallback_cmd = CommandQueue.add_command(
+                    agent=agent,
+                    command='bash',
+                    args=['-c', f'for p in {check_paths}; do if [ -x "$p" ]; then echo "INSTALLED:$p"; exit 0; fi; done; echo "NOT_INSTALLED"'],
+                    timeout=10
+                )
+                # 等待降级命令执行（需要足够时间等待Agent轮询）
+                fallback_wait = 0
+                max_fallback_wait = 85
+                while fallback_wait < max_fallback_wait:
+                    time_module.sleep(0.5)
+                    fallback_wait += 0.5
+                    fallback_cmd.refresh_from_db()
+                    if fallback_cmd.status in ['success', 'failed']:
+                        break
+
+                if fallback_cmd.status == 'success' and fallback_cmd.result:
+                    fallback_result = format_log_content(fallback_cmd.result, decode_base64=True)
+                    print(f"[调试] 降级检测结果: {repr(fallback_result)}")
+                    if 'INSTALLED:' in fallback_result:
+                        detected_path = fallback_result.split('INSTALLED:')[1].strip().split('\n')[0]
+                        print(f"检查 {service_name}: 已安装（降级检测，路径: {detected_path}）")
+                        is_installed = True
+                    else:
+                        print(f"检查 {service_name}: 降级检测也返回未安装")
+                        is_installed = False
+                else:
+                    print(f"检查 {service_name}: 降级检测失败（等待{fallback_wait}秒后状态: {fallback_cmd.status}）")
+                    is_installed = False
+        elif cmd.status == 'failed':
+            # 打印错误信息以便调试
+            print(f"检查 {service_name}: 命令执行失败")
+            print(f"错误信息: {decoded_error[:500] if decoded_error else 'None'}")
+            print(f"命令输出: {decoded_result[:500] if decoded_result else 'None'}")
+
+            # 即使命令失败，也先检查结果中是否有INSTALLED
+            if decoded_result and 'INSTALLED' in decoded_result:
+                print(f"检查 {service_name}: 已安装 (命令失败但检测到INSTALLED)")
+                is_installed = True
+            else:
+                # 使用降级检测方式（无论什么原因失败都尝试降级检测）
+                print(f"检测脚本失败或返回未安装，使用降级方式检测 {service_name}")
+
+                # 降级方式1：检查二进制文件是否存在
+                if service_name == 'xray':
+                    check_paths = '/usr/local/bin/xray /usr/bin/xray'
+                elif service_name == 'caddy':
+                    check_paths = '/usr/bin/caddy /usr/local/bin/caddy /opt/caddy/caddy'
+                else:
+                    check_paths = f'/usr/local/bin/{service_name} /usr/bin/{service_name}'
+
+                fallback_cmd = CommandQueue.add_command(
+                    agent=agent,
+                    command='bash',
+                    args=['-c', f'for p in {check_paths}; do if [ -x "$p" ]; then echo "INSTALLED:$p"; exit 0; fi; done; echo "NOT_INSTALLED"'],
+                    timeout=10
+                )
+                # 等待降级命令执行（需要足够时间等待Agent轮询）
+                fallback_wait = 0
+                max_fallback_wait = 85
+                while fallback_wait < max_fallback_wait:
+                    time_module.sleep(0.5)
+                    fallback_wait += 0.5
+                    fallback_cmd.refresh_from_db()
+                    if fallback_cmd.status in ['success', 'failed']:
+                        break
+
+                if fallback_cmd.status == 'success' and fallback_cmd.result:
+                    fallback_result = format_log_content(fallback_cmd.result, decode_base64=True)
+                    if 'INSTALLED:' in fallback_result:
+                        # 提取检测到的路径
+                        detected_path = fallback_result.split('INSTALLED:')[1].strip() if 'INSTALLED:' in fallback_result else 'unknown'
+                        print(f"检查 {service_name}: 已安装（降级检测，路径: {detected_path}）")
+                        is_installed = True
+                    else:
+                        print(f"检查 {service_name}: 未安装（降级检测）")
+                        is_installed = False
+                else:
+                    print(f"降级检测也失败（等待{fallback_wait}秒后状态: {fallback_cmd.status}），假设未安装")
+                    is_installed = False
+
+        # 更新缓存
+        _service_install_cache[cache_key] = (is_installed, current_time)
+        return is_installed
     except Exception as e:
         print(f"检查 {service_name} 异常: {str(e)}")
         import traceback
@@ -161,15 +407,16 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                         server.save()
                     return False, "\n".join(error_log)
                 
-                # 等待Agent注册，实时更新进度
-                _log("等待Agent注册...")
-                agent = wait_for_agent_registration(server, timeout=60)
-                if not agent:
+                # 等待Agent启动，实时更新进度
+                _log("等待Agent启动...")
+                from apps.deployments.tasks import wait_for_agent_startup
+                agent = wait_for_agent_startup(server, timeout=60, deployment=deployment)
+                if not agent or not agent.rpc_supported:
                     deployment.status = 'failed'
-                    deployment.error_message = 'Agent注册超时'
+                    deployment.error_message = 'Agent启动超时或RPC不支持'
                     deployment.completed_at = timezone.now()
                     deployment.save()
-                    _log("Agent注册超时（60秒）")
+                    _log("Agent启动超时或RPC不支持（60秒）")
                     if deployment.log:
                         _log(f"部署日志:\n{deployment.log}")
                     # 如果原始连接方式为Agent但注册失败，保持为SSH
@@ -215,8 +462,10 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
         
         # 检查并安装Xray（支持重复安装）
         _log("检查Xray是否已安装...")
-        xray_installed = check_service_installed(agent, 'xray')
-        _log(f"Xray检查结果: {'已安装' if xray_installed else '未安装'}")
+        # 强制重新检测，避免使用过期的缓存
+        deployment_target = server.deployment_target or 'host'
+        xray_installed = check_service_installed(agent, 'xray', force_check=True, deployment_target=deployment_target)
+        _log(f"Xray检查结果: {'已安装' if xray_installed else '未安装'} (部署目标: {deployment_target})")
         if not xray_installed:
             _log("Xray未安装，开始部署...")
             xray_deployment = Deployment.objects.create(
@@ -257,13 +506,21 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                     _log(f"错误信息: {xray_deployment.error_message}")
                 return False, "\n".join(error_log)
             _log("Xray部署成功")
+            
+            # 部署成功后，立即更新缓存标记为已安装
+            import time as time_module
+            cache_key = (agent.id, 'xray')
+            _service_install_cache[cache_key] = (True, time_module.time())
+            _log("已更新Xray安装状态缓存")
         else:
             _log("Xray已安装，跳过部署")
         
         # 检查并安装Caddy（支持重复安装）
         _log("检查Caddy是否已安装...")
-        caddy_installed = check_service_installed(agent, 'caddy')
-        _log(f"Caddy检查结果: {'已安装' if caddy_installed else '未安装'}")
+        # 强制重新检测，避免使用过期的缓存
+        # Caddy仅支持宿主机部署
+        caddy_installed = check_service_installed(agent, 'caddy', force_check=True, deployment_target='host')
+        _log(f"Caddy检查结果: {'已安装' if caddy_installed else '未安装'} (部署目标: host)")
         if not caddy_installed:
             _log("Caddy未安装，开始部署...")
             caddy_deployment = Deployment.objects.create(
@@ -304,6 +561,12 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                     _log(f"错误信息: {caddy_deployment.error_message}")
                 return False, "\n".join(error_log)
             _log("Caddy部署成功")
+            
+            # 部署成功后，立即更新缓存标记为已安装
+            import time as time_module
+            cache_key = (agent.id, 'caddy')
+            _service_install_cache[cache_key] = (True, time_module.time())
+            _log("已更新Caddy安装状态缓存")
         else:
             _log("Caddy已安装，跳过部署")
         
@@ -331,7 +594,8 @@ def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
     Returns:
         bool: 是否成功
     """
-    from apps.deployments.agent_deployer import deploy_xray_config_via_agent
+    # 导入时使用别名，避免与当前函数名冲突
+    from apps.deployments.agent_deployer import deploy_xray_config_via_agent as _deploy_config
     from utils.xray_config import generate_xray_config_json_for_proxies
     
     try:
@@ -347,11 +611,17 @@ def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
         config_json = generate_xray_config_json_for_proxies(list(server_proxies))
         
         # 通过Agent部署配置（会替换整个Xray配置文件，但包含所有代理）
-        return deploy_xray_config_via_agent(proxy.server, config_json)
+        success, message = _deploy_config(proxy.server, config_json)
+        if not success:
+            proxy.deployment_log = (proxy.deployment_log or '') + f"❌ 部署配置失败: {message}\n"
+            proxy.deployment_status = 'failed'
+            proxy.save()
+        return success
         
     except Exception as e:
         import traceback
-        proxy.deployment_log = (proxy.deployment_log or '') + f"❌ 部署配置失败: {str(e)}\n{traceback.format_exc()}\n"
+        error_msg = f"❌ 部署配置失败: {str(e)}\n{traceback.format_exc()}\n"
+        proxy.deployment_log = (proxy.deployment_log or '') + error_msg
         proxy.deployment_status = 'failed'
         proxy.save()
         return False
@@ -379,10 +649,12 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
             
             try:
                 # 获取心跳模式（从Agent或默认值）
+                # 在函数内部重新导入Agent，避免作用域问题
+                from apps.agents.models import Agent as AgentModel
                 try:
-                    agent = Agent.objects.get(server=server)
+                    agent = AgentModel.objects.get(server=server)
                     heartbeat_mode = agent.heartbeat_mode
-                except Agent.DoesNotExist:
+                except AgentModel.DoesNotExist:
                     heartbeat_mode = 'push'  # 默认推送模式
                 
                 # 实时更新日志的回调函数
@@ -443,9 +715,10 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
             proxy.deployment_log = (proxy.deployment_log or '') + "步骤2: 部署Xray配置...\n"
             proxy.save()
             
-            if not deploy_xray_config_via_agent(proxy):
+            success = deploy_xray_config_via_agent(proxy)
+            if not success:
                 proxy.deployment_status = 'failed'
-                proxy.deployment_log = (proxy.deployment_log or '') + "❌ Xray配置部署失败\n"
+                # 错误信息已经在 deploy_xray_config_via_agent 中添加到 deployment_log 了
                 proxy.save()
                 # 记录Xray配置部署失败日志
                 create_log_entry(

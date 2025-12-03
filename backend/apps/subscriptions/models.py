@@ -6,13 +6,13 @@ from django.conf import settings
 class Subscription(models.Model):
     """订阅模型"""
     FORMAT_CHOICES = [
-        ('v2ray', 'V2Ray'),
+        ('base64', 'Base64'),
         ('clash', 'Clash'),
     ]
 
     name = models.CharField(max_length=100, verbose_name='订阅名称')
     token = models.UUIDField(default=uuid.uuid4, unique=True, verbose_name='订阅Token')
-    format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='v2ray', verbose_name='订阅格式')
+    format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='base64', verbose_name='订阅格式')
     enabled = models.BooleanField(default=True, verbose_name='启用')
     proxy_ids = models.JSONField(default=list, verbose_name='选中的节点ID列表')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')

@@ -113,6 +113,133 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
+    def update_certificate(self, request, pk=None):
+        """更新Agent的SSL证书"""
+        agent = self.get_object()
+        
+        # 检查是否提供新证书
+        regenerate = request.data.get('regenerate', False)
+        verify_ssl = request.data.get('verify_ssl', agent.verify_ssl)
+        
+        try:
+            if regenerate:
+                # 重新生成证书
+                from apps.deployments.tasks import generate_ssl_certificate
+                cert_bytes, key_bytes = generate_ssl_certificate(agent.server.host, agent.token)
+                agent.certificate_content = cert_bytes.decode('utf-8')
+                agent.private_key_content = key_bytes.decode('utf-8')
+                agent.verify_ssl = verify_ssl
+                agent.save()
+                
+                # 如果Agent在线，上传新证书到Agent服务器
+                if agent.status == 'online' and agent.rpc_port:
+                    try:
+                        from apps.agents.rpc_client import get_agent_rpc_client
+                        from apps.agents.utils import execute_script_via_agent
+                        
+                        # 创建上传证书的脚本（使用base64编码避免特殊字符问题）
+                        import base64
+                        cert_b64 = base64.b64encode(agent.certificate_content.encode('utf-8')).decode('ascii')
+                        key_b64 = base64.b64encode(agent.private_key_content.encode('utf-8')).decode('ascii')
+                        
+                        upload_script = f"""#!/usr/bin/env python3
+import os
+import sys
+import base64
+
+# 创建SSL目录
+os.makedirs('/etc/myx-agent/ssl', exist_ok=True)
+
+# 解码并写入证书
+cert_b64 = '{cert_b64}'
+cert_content = base64.b64decode(cert_b64).decode('utf-8')
+with open('/etc/myx-agent/ssl/agent.crt', 'w') as f:
+    f.write(cert_content)
+os.chmod('/etc/myx-agent/ssl/agent.crt', 0o644)
+
+# 解码并写入私钥
+key_b64 = '{key_b64}'
+key_content = base64.b64decode(key_b64).decode('utf-8')
+with open('/etc/myx-agent/ssl/agent.key', 'w') as f:
+    f.write(key_content)
+os.chmod('/etc/myx-agent/ssl/agent.key', 0o600)
+
+print("[成功] SSL证书已更新")
+sys.exit(0)
+"""
+                        
+                        # 通过RPC执行脚本
+                        cmd = execute_script_via_agent(agent, upload_script, timeout=30, script_name='update_certificate.py')
+                        
+                        # 等待命令完成
+                        import time
+                        max_wait = 30
+                        wait_time = 0
+                        while wait_time < max_wait:
+                            cmd.refresh_from_db()
+                            if cmd.status in ['success', 'failed']:
+                                break
+                            time.sleep(1)
+                            wait_time += 1
+                        
+                        if cmd.status == 'success':
+                            logger.info(f'Agent证书已更新并上传: agent_id={agent.id}')
+                            # 重启Agent服务以使用新证书
+                            from apps.agents.command_queue import CommandQueue
+                            CommandQueue.add_command(agent, 'systemctl', ['restart', 'myx-agent'], timeout=30)
+                        else:
+                            logger.warning(f'Agent证书更新失败: agent_id={agent.id}, error={cmd.error}')
+                    except Exception as e:
+                        logger.error(f'上传证书到Agent失败: {e}', exc_info=True)
+                
+                # 记录日志
+                create_log_entry(
+                    log_type='agent',
+                    level='info',
+                    title=f'更新Agent SSL证书: {agent.server.name}',
+                    content=f'SSL证书已重新生成并{'已上传到Agent服务器' if agent.status == 'online' else '等待Agent上线后上传'}',
+                    user=request.user,
+                    server=agent.server,
+                    related_id=agent.id,
+                    related_type='agent'
+                )
+                
+                serializer = self.get_serializer(agent)
+                return Response({
+                    'success': True,
+                    'message': '证书已重新生成',
+                    'agent': serializer.data
+                })
+            else:
+                # 只更新verify_ssl选项
+                agent.verify_ssl = verify_ssl
+                agent.save()
+                
+                # 记录日志
+                create_log_entry(
+                    log_type='agent',
+                    level='info',
+                    title=f'更新Agent SSL验证选项: {agent.server.name}',
+                    content=f'SSL验证选项已更新为: {verify_ssl}',
+                    user=request.user,
+                    server=agent.server,
+                    related_id=agent.id,
+                    related_type='agent'
+                )
+                
+                serializer = self.get_serializer(agent)
+                return Response({
+                    'success': True,
+                    'message': 'SSL验证选项已更新',
+                    'agent': serializer.data
+                })
+        except Exception as e:
+            logger.error(f'更新Agent证书失败: {e}', exc_info=True)
+            return Response({
+                'error': f'更新证书失败: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
     def redeploy(self, request, pk=None):
         """重新部署Agent"""
         agent = self.get_object()
@@ -233,15 +360,15 @@ echo $?' '''
         def _deploy():
             try:
                 install_agent_via_ssh(server, deployment)
-                # 等待Agent注册
-                from apps.deployments.tasks import wait_for_agent_registration
-                agent_registered = wait_for_agent_registration(server, timeout=60)
-                if agent_registered:
+                # 等待Agent启动
+                from apps.deployments.tasks import wait_for_agent_startup
+                agent = wait_for_agent_startup(server, timeout=60, deployment=deployment)
+                if agent and agent.rpc_supported:
                     deployment.status = 'success'
                     deployment.completed_at = timezone.now()
                 else:
                     deployment.status = 'failed'
-                    deployment.error_message = 'Agent注册超时'
+                    deployment.error_message = 'Agent启动超时或RPC不支持'
                     deployment.completed_at = timezone.now()
             except Exception as e:
                 deployment.status = 'failed'
@@ -430,6 +557,25 @@ def agent_register(request):
     except Agent.DoesNotExist:
         pass
     
+    # 生成随机RPC端口（如果不存在）
+    import random
+    import socket
+    def generate_rpc_port():
+        excluded_ports = {22, 80, 443, 8000, 8443, 3306, 5432, 6379, 8080, 9000}
+        for _ in range(100):
+            port = random.randint(8000, 65535)
+            if port in excluded_ports:
+                continue
+            # 检查端口是否已被使用
+            try:
+                existing = Agent.objects.filter(rpc_port=port).exists()
+                if existing:
+                    continue
+            except:
+                pass
+            return port
+        return None
+    
     agent, created = Agent.objects.get_or_create(
         server=server,
         defaults={
@@ -438,7 +584,10 @@ def agent_register(request):
             'status': 'online',
             'version': serializer.validated_data.get('version', ''),
             'last_heartbeat': timezone.now(),
-            'heartbeat_mode': heartbeat_mode
+            'heartbeat_mode': heartbeat_mode,
+            'web_service_enabled': True,  # 默认启用Web服务
+            'web_service_port': 8443,  # 默认端口
+            'rpc_port': generate_rpc_port()  # 生成随机RPC端口
         }
     )
     
@@ -457,6 +606,9 @@ def agent_register(request):
         agent.last_heartbeat = timezone.now()
         if serializer.validated_data.get('version'):
             agent.version = serializer.validated_data['version']
+        # 如果RPC端口未设置，生成一个（但不会更改已存在的端口）
+        if not agent.rpc_port:
+            agent.rpc_port = generate_rpc_port()
         # 保持现有心跳模式，不覆盖
         agent.save()
         
@@ -524,14 +676,26 @@ def agent_heartbeat(request):
             agent.status = serializer.validated_data['status']
         if serializer.validated_data.get('version'):
             agent.version = serializer.validated_data['version']
+    
+    # 处理RPC端口（从请求数据中获取，如果提供）
+    rpc_port = request.data.get('rpc_port')
+    if rpc_port and not agent.rpc_port:
+        # 只有在端口未设置时才设置（不可更改已存在的端口）
+        agent.rpc_port = rpc_port
+        logger.info(f"Agent {agent.id} 设置RPC端口: {rpc_port}")
 
     agent.last_heartbeat = timezone.now()
     agent.status = 'online'
     agent.save()
 
-    # 返回配置信息（让 Agent 可以动态调整间隔）
+    # 检查是否有待执行的命令
+    from .command_queue import CommandQueue
+    from .models import AgentCommand
+    pending_count = AgentCommand.objects.filter(agent=agent, status='pending').count()
+    
+    # 返回配置信息
     from django.conf import settings
-    return Response({
+    response_data = {
         'status': 'ok',
         'heartbeat_mode': agent.heartbeat_mode,  # 返回心跳模式
         'config': {
@@ -540,7 +704,17 @@ def agent_heartbeat(request):
             'poll_min_interval': getattr(settings, 'AGENT_POLL_MIN_INTERVAL', 5),
             'poll_max_interval': getattr(settings, 'AGENT_POLL_MAX_INTERVAL', 60),
         }
-    })
+    }
+    
+    # 如果有待执行的命令，告诉Agent立即轮询（不返回命令，让Agent通过轮询获取）
+    if pending_count > 0:
+        logger.info(f'[agent_heartbeat] Agent {agent.id} 心跳时发现 {pending_count} 条待执行命令，通知立即轮询')
+        response_data['urgent_poll'] = True  # 标志：需要立即轮询
+        # 部署时加速轮询：临时缩短轮询间隔
+        response_data['config']['poll_min_interval'] = 1  # 部署时最短1秒
+        response_data['config']['poll_max_interval'] = 3   # 部署时最长3秒
+    
+    return Response(response_data)
 
 
 @api_view(['POST'])
@@ -605,7 +779,13 @@ def agent_poll_commands(request):
     # 从命令队列获取待执行的命令
     from .command_queue import CommandQueue
     commands = CommandQueue.get_pending_commands(agent)
-    
+
+    # 调试：记录获取到的命令
+    logger.info(f'[agent_poll_commands] Agent {agent.id} 获取到 {len(commands)} 条待执行命令')
+    if commands:
+        command_ids = [cmd['id'] for cmd in commands]
+        logger.info(f'[agent_poll_commands] 命令ID列表: {command_ids}')
+
     # 返回命令和配置信息
     from django.conf import settings
     return Response({
@@ -751,7 +931,7 @@ def agent_report_progress(request, deployment_id):
 @permission_classes([AllowAny])  # Agent需要访问，所以允许匿名
 def agent_file_download(request, filename):
     """提供Agent文件下载"""
-    # 只允许下载特定文件
+    # 只允许下载特定文件（main.py已包含Web服务功能，不再需要单独的web_server.py）
     allowed_files = ['main.py', 'requirements.txt']
     if filename not in allowed_files:
         return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)

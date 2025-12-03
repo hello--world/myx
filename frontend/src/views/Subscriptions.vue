@@ -12,7 +12,7 @@
         <el-table-column prop="name" label="订阅名称" />
         <el-table-column prop="format" label="格式" width="100">
           <template #default="{ row }">
-            <el-tag>{{ row.format === 'v2ray' ? 'V2Ray' : 'Clash' }}</el-tag>
+            <el-tag>{{ row.format === 'base64' ? 'Base64' : 'Clash' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="subscription_url" label="订阅链接">
@@ -61,7 +61,7 @@
         </el-form-item>
         <el-form-item label="订阅格式" prop="format">
           <el-select v-model="form.format" placeholder="请选择订阅格式">
-            <el-option label="V2Ray" value="v2ray" />
+            <el-option label="Base64" value="base64" />
             <el-option label="Clash" value="clash" />
           </el-select>
         </el-form-item>
@@ -109,7 +109,7 @@ const isEdit = ref(false)
 
 const form = reactive({
   name: '',
-  format: 'v2ray',
+  format: 'base64',
   proxy_ids: []
 })
 
@@ -231,7 +231,7 @@ const handleSubmit = async () => {
 const resetForm = () => {
   Object.assign(form, {
     name: '',
-    format: 'v2ray',
+    format: 'base64',
     proxy_ids: []
   })
   isEdit.value = false

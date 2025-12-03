@@ -13,6 +13,15 @@ class AgentSerializer(serializers.ModelSerializer):
     deployment_target = serializers.CharField(source='server.deployment_target', read_only=True)
     server_status = serializers.CharField(source='server.status', read_only=True)
 
+    # 证书相关字段（不返回证书内容，因为这是敏感信息）
+    certificate_path = serializers.CharField(read_only=True)
+    private_key_path = serializers.CharField(read_only=True)
+    has_certificate = serializers.SerializerMethodField()
+    verify_ssl = serializers.BooleanField()
+    rpc_port = serializers.IntegerField(read_only=True)
+    rpc_path = serializers.CharField(read_only=True)
+    rpc_supported = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Agent
         fields = [
@@ -20,9 +29,15 @@ class AgentSerializer(serializers.ModelSerializer):
             'agent_connect_host', 'agent_connect_port',
             'connection_method', 'deployment_target', 'server_status',
             'token', 'status', 'version', 'heartbeat_mode', 'last_heartbeat', 'last_check',
+            'certificate_path', 'private_key_path', 'has_certificate', 'verify_ssl',
+            'rpc_port', 'rpc_path', 'rpc_supported',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'token', 'status', 'version', 'last_heartbeat', 'last_check', 'created_at', 'updated_at']
+    
+    def get_has_certificate(self, obj):
+        """检查是否有证书"""
+        return bool(obj.certificate_content and obj.private_key_content)
 
 
 class AgentRegisterSerializer(serializers.Serializer):

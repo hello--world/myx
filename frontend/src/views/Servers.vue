@@ -38,118 +38,217 @@
             {{ formatDateTime(row.last_check) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" min-width="220">
+        <el-table-column label="操作" min-width="280" fixed="right">
           <template #default="{ row }">
             <div class="action-buttons">
-              <el-button 
-                size="small" 
-                :type="testSuccessMap[row.id] ? 'success' : 'warning'"
-                @click="handleTest(row)" 
-                :loading="testingServerId === row.id"
-                :disabled="testingServerId === row.id"
-              >
-                {{ testSuccessMap[row.id] ? '连接成功' : '测试连接' }}
-              </el-button>
-              <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
-              <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+              <div class="action-row">
+                <el-button 
+                  size="small" 
+                  :type="testSuccessMap[row.id] ? 'success' : 'warning'"
+                  @click="handleTest(row)" 
+                  :loading="testingServerId === row.id"
+                  :disabled="testingServerId === row.id"
+                >
+                  {{ testSuccessMap[row.id] ? '连接成功' : '测试连接' }}
+                </el-button>
+                <el-button 
+                  size="small" 
+                  type="success" 
+                  @click="handleInstallAgent(row)"
+                  :loading="installingAgentId === row.id"
+                  :disabled="installingAgentId === row.id"
+                >
+                  {{ row.has_agent ? '升级Agent' : '安装Agent' }}
+                </el-button>
+              </div>
+              <div class="action-row">
+                <el-button 
+                  size="small" 
+                  type="info" 
+                  @click="handleViewAgentLogs(row)"
+                  :disabled="!row.has_agent"
+                >
+                  查看日志
+                </el-button>
+                <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
+                <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
+              </div>
             </div>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
+    <!-- 删除确认对话框 -->
+    <el-dialog
+      v-model="deleteDialogVisible"
+      title="删除服务器确认"
+      width="600px"
+    >
+      <div v-if="deleteServerInfo">
+        <div style="margin-bottom: 20px;">
+          确定要删除服务器 <strong>"{{ deleteServerInfo.name }}"</strong> ({{ deleteServerInfo.host }}) 吗？
+        </div>
+        
+        <div v-if="deleteRelatedInfo?.has_agent" style="margin-bottom: 15px;">
+          <div style="font-weight: bold; margin-bottom: 8px;">⚠️ 该服务器关联了 Agent：</div>
+          <div style="margin-left: 20px; margin-bottom: 10px;">
+            <div>Agent ID: {{ deleteRelatedInfo.agent.id }}</div>
+            <div>Token: {{ deleteRelatedInfo.agent.token }}</div>
+            <div>状态: {{ deleteRelatedInfo.agent.status }}</div>
+            <div v-if="deleteRelatedInfo.agent.version">版本: {{ deleteRelatedInfo.agent.version }}</div>
+            <div v-if="deleteRelatedInfo.agent.rpc_port">RPC端口: {{ deleteRelatedInfo.agent.rpc_port }}</div>
+          </div>
+        </div>
+        
+        <div v-if="deleteRelatedInfo?.has_proxies" style="margin-bottom: 15px;">
+          <div style="font-weight: bold; margin-bottom: 8px;">⚠️ 该服务器关联了 {{ deleteRelatedInfo.proxies_count }} 个代理节点：</div>
+          <div style="margin-left: 20px; max-height: 150px; overflow-y: auto; margin-bottom: 10px;">
+            <div v-for="(proxy, index) in deleteRelatedInfo.proxies" :key="index">
+              {{ index + 1 }}. {{ proxy.name }} ({{ proxy.protocol }}, 端口: {{ proxy.port }})
+            </div>
+            <div v-if="deleteRelatedInfo.proxies_count > deleteRelatedInfo.proxies.length">
+              ... 还有 {{ deleteRelatedInfo.proxies_count - deleteRelatedInfo.proxies.length }} 个代理节点
+            </div>
+          </div>
+        </div>
+        
+        <div style="margin-top: 20px; padding: 15px; background-color: #f5f7fa; border-radius: 4px;">
+          <div style="font-weight: bold; margin-bottom: 12px; color: #303133;">选择删除选项：</div>
+          <el-checkbox v-model="deleteAgentChecked" v-if="deleteRelatedInfo?.has_agent" style="display: block; margin-bottom: 10px;">
+            同时删除关联的 Agent
+          </el-checkbox>
+          <el-checkbox v-model="deleteProxiesChecked" v-if="deleteRelatedInfo?.has_proxies" style="display: block; margin-bottom: 10px;">
+            同时删除关联的代理节点 ({{ deleteRelatedInfo.proxies_count }} 个)
+          </el-checkbox>
+          <div style="margin-top: 12px; color: #909399; font-size: 12px; line-height: 1.5;">
+            注意：由于外键约束，如果不选择删除关联对象，它们也会在删除服务器时被自动删除。
+          </div>
+        </div>
+      </div>
+      
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="deleteDialogVisible = false">取消</el-button>
+          <el-button type="danger" @click="confirmDelete" :loading="deleting">确定删除</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="600px"
+      width="800px"
       @close="resetForm"
+      class="server-dialog"
     >
       <el-form
         ref="formRef"
         :model="form"
         :rules="rules"
-        label-width="100px"
+        label-width="90px"
+        class="server-form"
       >
-        <el-form-item label="服务器名称" prop="name">
-          <el-input v-model="form.name" placeholder="请输入服务器名称" />
-        </el-form-item>
-        <el-form-item label="主机地址" prop="host">
-          <el-input v-model="form.host" placeholder="请输入主机IP或域名" />
-        </el-form-item>
-        <el-form-item label="SSH端口" prop="port">
-          <el-input-number v-model="form.port" :min="1" :max="65535" />
-        </el-form-item>
-        <el-form-item label="SSH用户名" prop="username">
-          <el-input v-model="form.username" placeholder="请输入SSH用户名" />
-        </el-form-item>
-        <el-form-item label="SSH密码" prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            placeholder="请输入SSH密码（或使用私钥）"
-            show-password
-          />
-        </el-form-item>
-        <el-form-item label="SSH私钥" prop="private_key">
+        <!-- 基础信息 -->
+        <el-divider content-position="left" class="first-divider">基础信息</el-divider>
+        <div class="form-row-two-cols">
+          <el-form-item label="服务器名" prop="name">
+            <el-input v-model="form.name" placeholder="服务器名" />
+          </el-form-item>
+          <el-form-item label="SSH端口" prop="port">
+            <el-input-number v-model="form.port" :min="1" :max="65535" style="width: 100%;" />
+          </el-form-item>
+        </div>
+        <div class="form-row-two-cols">
+          <el-form-item label="主机地址" prop="host">
+            <el-input v-model="form.host" placeholder="IP或域名" />
+          </el-form-item>
+          <el-form-item label="用户名" prop="username">
+            <el-input v-model="form.username" placeholder="SSH用户名" />
+          </el-form-item>
+        </div>
+
+        <!-- SSH认证 -->
+        <el-divider content-position="left">SSH认证</el-divider>
+        <div class="form-row-two-cols">
+          <el-form-item label="密码" prop="password">
+            <el-input
+              v-model="form.password"
+              type="password"
+              placeholder="SSH密码（或使用私钥）"
+              show-password
+            />
+          </el-form-item>
+          <el-form-item label="保存密码">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <el-switch
+                v-model="form.save_password"
+              />
+              <span style="font-size: 13px; color: #909399;">开启后加密保存</span>
+            </div>
+          </el-form-item>
+        </div>
+        <el-form-item label="私钥" prop="private_key">
           <el-input
             v-model="form.private_key"
             type="textarea"
-            :rows="4"
-            placeholder="请输入SSH私钥内容（可选）"
+            :rows="2"
+            placeholder="SSH私钥内容（可选）"
           />
         </el-form-item>
-        <el-form-item label="保存密码">
-          <el-switch
-            v-model="form.save_password"
-            active-text="开启"
-            inactive-text="关闭"
-          />
-          <div class="form-tip">开启后，密码将加密保存到数据库</div>
+        <el-form-item label="SSH Key">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <el-switch
+              v-model="form.enable_ssh_key"
+            />
+            <span style="font-size: 13px; color: #909399;">自动生成并添加到服务器</span>
+          </div>
         </el-form-item>
-        <el-form-item label="启用SSH Key登录">
-          <el-switch
-            v-model="form.enable_ssh_key"
-            active-text="开启"
-            inactive-text="关闭"
-          />
-          <div class="form-tip">开启后，系统将自动生成SSH key并添加到服务器</div>
-        </el-form-item>
-        <el-form-item label="连接方式" prop="connection_method">
-          <el-select v-model="form.connection_method" placeholder="请选择连接方式" style="width: 100%">
-            <el-option label="SSH" value="ssh" />
-            <el-option label="Agent" value="agent" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="部署目标" prop="deployment_target">
-          <el-select v-model="form.deployment_target" placeholder="请选择部署目标" style="width: 100%">
-            <el-option label="宿主机" value="host" />
-            <el-option label="Docker" value="docker" />
-          </el-select>
-        </el-form-item>
-        <el-form-item 
-          v-if="form.connection_method === 'agent'" 
-          label="Agent连接地址" 
-          prop="agent_connect_host"
-        >
-          <el-input 
-            v-model="form.agent_connect_host" 
-            placeholder="例如: agent.example.com 或 cloudflare域名（可选，留空使用主机地址）" 
-          />
-          <div class="form-tip">Agent连接地址，用于通过Cloudflare等反向代理访问Agent（可选）</div>
-        </el-form-item>
-        <el-form-item 
-          v-if="form.connection_method === 'agent'" 
-          label="Agent连接端口" 
-          prop="agent_connect_port"
-        >
-          <el-input-number 
-            v-model="form.agent_connect_port" 
-            :min="1" 
-            :max="65535" 
-            placeholder="留空使用默认端口"
-          />
-          <div class="form-tip">Agent连接端口（可选，留空使用默认端口）</div>
-        </el-form-item>
+
+        <!-- 连接配置 -->
+        <el-divider content-position="left">连接配置</el-divider>
+        <div class="form-row-two-cols">
+          <el-form-item label="连接方式" prop="connection_method">
+            <el-select v-model="form.connection_method" placeholder="连接方式" style="width: 100%">
+              <el-option label="SSH" value="ssh" />
+              <el-option label="Agent" value="agent" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="部署目标" prop="deployment_target">
+            <el-select v-model="form.deployment_target" placeholder="部署目标" style="width: 100%">
+              <el-option label="宿主机" value="host" />
+              <el-option label="Docker" value="docker" />
+            </el-select>
+          </el-form-item>
+        </div>
+
+        <!-- Agent高级选项（直接显示在连接配置下） -->
+        <div v-if="form.connection_method === 'agent'" class="form-row-two-cols">
+          <el-form-item label="连接地址" prop="agent_connect_host">
+            <el-input
+              v-model="form.agent_connect_host"
+              placeholder="agent.example.com（可选）"
+            />
+          </el-form-item>
+          <el-form-item label="连接端口" prop="agent_connect_port">
+            <el-input-number
+              v-model="form.agent_connect_port"
+              :min="1"
+              :max="65535"
+              placeholder="默认"
+              style="width: 100%;"
+            />
+          </el-form-item>
+        </div>
+
+        <!-- 重要提示 -->
+        <el-alert
+          v-if="form.save_password"
+          title="建议开启密码保存以确保Agent部署成功。未开启则部署完成后自动删除。"
+          type="warning"
+          :closable="false"
+          style="margin-top: 12px;"
+        />
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -181,13 +280,104 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- Agent日志对话框 -->
+    <el-dialog
+      v-model="agentLogDialogVisible"
+      title="Agent日志"
+      width="80%"
+      @close="stopAgentLogRefresh"
+    >
+      <div style="position: relative;">
+        <!-- 大的loading遮罩（仅在手动刷新时显示） -->
+        <div v-if="loadingAgentLogs && !autoRefreshLogs && isFirstLoad" class="log-loading-overlay">
+          <el-icon class="is-loading" style="font-size: 64px; color: #409EFF;">
+            <Loading />
+          </el-icon>
+          <div style="margin-top: 20px; font-size: 18px; color: #409EFF; font-weight: 500;">正在加载日志...</div>
+        </div>
+        
+        <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <el-switch
+              v-model="autoRefreshLogs"
+              active-text="自动刷新"
+              inactive-text="手动刷新"
+              @change="handleAutoRefreshChange"
+            />
+            <el-select
+              v-model="logSortOrder"
+              size="small"
+              style="width: 120px"
+              @change="handleSortOrderChange"
+            >
+              <el-option label="最新在前" value="desc" />
+              <el-option label="最久在前" value="asc" />
+            </el-select>
+            <el-select
+              v-model="logLines"
+              size="small"
+              style="width: 120px"
+              @change="handleLogLinesChange"
+            >
+              <el-option label="50行" :value="50" />
+              <el-option label="100行" :value="100" />
+              <el-option label="200行" :value="200" />
+              <el-option label="500行" :value="500" />
+              <el-option label="1000行" :value="1000" />
+            </el-select>
+            <el-button
+              size="small"
+              type="primary"
+              @click="copyLogs"
+              :icon="CopyDocument"
+            >
+              复制日志
+            </el-button>
+          </div>
+          <span v-if="autoRefreshLogs" style="color: #909399; font-size: 12px;">
+            <el-icon v-if="loadingAgentLogs" class="is-loading" style="margin-right: 5px;"><Loading /></el-icon>
+            每3秒自动刷新
+          </span>
+        </div>
+        
+        <el-tabs v-model="activeLogTab">
+          <el-tab-pane label="Agent日志" name="agent">
+            <el-scrollbar height="500px" ref="agentLogScrollbar">
+              <pre style="margin: 0; padding: 10px; background: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', monospace; white-space: pre-wrap; word-wrap: break-word;">{{ sortedAgentLog || '暂无日志' }}</pre>
+            </el-scrollbar>
+          </el-tab-pane>
+          <el-tab-pane label="Systemd状态" name="systemd">
+            <el-scrollbar height="500px" ref="systemdLogScrollbar">
+              <pre style="margin: 0; padding: 10px; background: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', monospace; white-space: pre-wrap; word-wrap: break-word;">{{ agentLogs.systemd_status || '暂无状态信息' }}</pre>
+            </el-scrollbar>
+          </el-tab-pane>
+          <el-tab-pane label="Journalctl日志" name="journalctl">
+            <el-scrollbar height="500px" ref="journalctlLogScrollbar">
+              <pre style="margin: 0; padding: 10px; background: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', monospace; white-space: pre-wrap; word-wrap: break-word;">{{ sortedJournalctlLog || '暂无日志' }}</pre>
+            </el-scrollbar>
+          </el-tab-pane>
+        </el-tabs>
+        
+        <div v-if="agentLogs.error" style="margin-top: 10px; color: #f56c6c;">
+          <el-alert :title="agentLogs.error" type="error" :closable="false" />
+        </div>
+      </div>
+      
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="refreshAgentLogs(true)" :loading="loadingAgentLogs">刷新</el-button>
+          <el-button type="primary" @click="agentLogDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Connection, Check } from '@element-plus/icons-vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, h } from 'vue'
+import { ElMessage, ElMessageBox, ElCheckbox } from 'element-plus'
+import { Connection, Check, CopyDocument } from '@element-plus/icons-vue'
 import api from '@/api'
 
 const loading = ref(false)
@@ -201,18 +391,44 @@ const saving = ref(false) // 保存loading状态
 const testingServerId = ref(null) // 正在测试的服务器ID（用于表格中的测试按钮）
 const testSuccessMap = ref({}) // 记录每个服务器的测试成功状态 {serverId: true/false}
 const dialogTestSuccess = ref(false) // 表单中测试连接是否成功
+const deleteDialogVisible = ref(false) // 删除确认对话框显示状态
+const deleteServerInfo = ref(null) // 要删除的服务器信息
+const deleteRelatedInfo = ref(null) // 关联对象信息
+const deleteAgentChecked = ref(false) // 是否删除 Agent
+const deleteProxiesChecked = ref(false) // 是否删除代理节点
+const deleting = ref(false) // 删除中状态
+const installingAgentId = ref(null) // 正在安装Agent的服务器ID
+const agentLogDialogVisible = ref(false) // Agent日志对话框显示状态
+const agentLogs = ref({
+  agent_log: '',
+  systemd_status: '',
+  journalctl_log: '',
+  agent_log_offset: 0,
+  systemd_offset: 0,
+  journalctl_offset: 0,
+  error: null
+}) // Agent日志内容
+const currentServerId = ref(null) // 当前查看日志的服务器ID
+const loadingAgentLogs = ref(false) // 加载Agent日志中
+const agentLogRefreshInterval = ref(null) // Agent日志刷新定时器
+const autoRefreshLogs = ref(false) // 是否自动刷新日志（默认关闭）
+const isFirstLoad = ref(true) // 是否是首次加载
+const logSortOrder = ref('desc') // 日志排序顺序：'desc'=最新在前，'asc'=最久在前
+const logLines = ref(200) // 日志显示行数，默认200行
 
 const form = reactive({
   name: '',
   host: '',
   port: 22,
   username: '',
-  save_password: false,
+  save_password: true,  // 默认勾选保存密码
   enable_ssh_key: false,
   password: '',
   private_key: '',
   connection_method: 'agent',  // 默认使用Agent连接方式
-  deployment_target: 'host'
+  deployment_target: 'host',
+  agent_connect_host: '',
+  agent_connect_port: null
 })
 
 const rules = {
@@ -298,8 +514,12 @@ const formatDateTime = (dateTime) => {
 const handleAdd = () => {
   dialogTitle.value = '添加服务器'
   editingId.value = null
+  // 先重置表单，再打开对话框
   resetForm()
+  // 使用 nextTick 确保表单重置完成后再打开对话框
+  setTimeout(() => {
   dialogVisible.value = true
+  }, 0)
 }
 
 const handleEdit = (row) => {
@@ -323,20 +543,413 @@ const handleEdit = (row) => {
   dialogVisible.value = true
 }
 
+const handleInstallAgent = async (row) => {
+  if (installingAgentId.value === row.id) return // 防止重复点击
+  
+  // 检查是否有SSH凭证（使用has_password和has_private_key字段，因为password和private_key是write_only）
+  if (!row.has_password && !row.has_private_key) {
+    ElMessageBox.confirm(
+      '该服务器缺少SSH密码或私钥，无法安装Agent。是否现在编辑服务器并输入SSH凭证？',
+      '缺少SSH凭证',
+      {
+        confirmButtonText: '去编辑',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    ).then(() => {
+      handleEdit(row)
+    }).catch(() => {})
+    return
+  }
+  
+  // 确认安装/升级
+  const isUpgrade = row.has_agent
+  try {
+    if (isUpgrade) {
+      await ElMessageBox.confirm(
+        `确定要升级服务器 "${row.name}" 上的Agent到最新版本吗？\n\n` +
+        `升级将：\n` +
+        `• 备份现有Agent文件\n` +
+        `• 从服务器下载最新版本的Agent文件\n` +
+        `• 重新安装依赖\n` +
+        `• 重启Agent服务\n\n` +
+        `注意：\n` +
+        `• 如果Agent在线，将通过Agent进行升级（无需SSH）\n` +
+        `• 如果Agent不在线，需要使用SSH进行升级\n` +
+        `• 如果升级失败，系统会自动回滚到原始版本`,
+        '确认升级Agent',
+        {
+          confirmButtonText: '确定升级',
+          cancelButtonText: '取消',
+          type: 'info'
+        }
+      )
+    } else {
+    await ElMessageBox.confirm(
+      `确定要在服务器 "${row.name}" 上安装Agent吗？\n\n` +
+      `注意：如果安装失败，系统会保留SSH密码以便重试。\n` +
+      `如果安装成功且未选择"保存密码"，系统会自动删除SSH密码。`,
+      '确认安装Agent',
+      {
+        confirmButtonText: '确定安装',
+        cancelButtonText: '取消',
+        type: 'info'
+      }
+    )
+    }
+  } catch {
+    return // 用户取消
+  }
+  
+  installingAgentId.value = row.id
+  try {
+    const response = await api.post(`/servers/${row.id}/install_agent/`, {
+      save_password: row.save_password || false
+    })
+    
+    if (response.data.success) {
+      ElMessage.success({
+        message: isUpgrade ? 'Agent升级任务已启动，请稍后查看部署日志' : 'Agent安装任务已启动，请稍后查看部署日志',
+        duration: 5000
+      })
+      // 刷新服务器列表
+      await fetchServers()
+    } else {
+      ElMessage.error(response.data.error || (isUpgrade ? '启动Agent升级失败' : '启动Agent安装失败'))
+    }
+  } catch (error) {
+    console.error('安装Agent失败:', error)
+    const errorMsg = error.response?.data?.error || error.response?.data?.message || error.message
+    ElMessage.error('安装Agent失败: ' + errorMsg)
+  } finally {
+    installingAgentId.value = null
+  }
+}
+
+const handleViewAgentLogs = async (row) => {
+  currentServerId.value = row.id
+  agentLogDialogVisible.value = true
+  activeLogTab.value = 'agent'
+  autoRefreshLogs.value = false // 默认关闭自动刷新
+  isFirstLoad.value = true
+  // 重置offset
+  agentLogs.value.agent_log_offset = 0
+  agentLogs.value.systemd_offset = 0
+  agentLogs.value.journalctl_offset = 0
+  agentLogs.value.agent_log = ''
+  agentLogs.value.systemd_status = ''
+  agentLogs.value.journalctl_log = ''
+  await refreshAgentLogs()
+}
+
+const refreshAgentLogs = async (isManualRefresh = false) => {
+  if (!currentServerId.value) return
+  
+  // 如果关闭了自动刷新且不是手动刷新，则不执行任何操作（保持现有日志不变）
+  if (!autoRefreshLogs.value && !isManualRefresh && !isFirstLoad.value) {
+    return
+  }
+  
+  loadingAgentLogs.value = true
+  try {
+    // 构建查询参数（支持增量获取）
+    const params = new URLSearchParams()
+    if (!isFirstLoad.value && autoRefreshLogs.value && !isManualRefresh) {
+      params.append('incremental', 'true')
+      params.append('agent_log_offset', agentLogs.value.agent_log_offset || 0)
+      params.append('systemd_offset', agentLogs.value.systemd_offset || 0)
+      params.append('journalctl_offset', agentLogs.value.journalctl_offset || 0)
+    }
+    
+    const url = `/servers/${currentServerId.value}/agent_logs/${params.toString() ? '?' + params.toString() : ''}`
+    const response = await api.get(url)
+    
+    // 流式追加：只追加新内容，不替换整个日志
+    if (!isFirstLoad.value && autoRefreshLogs.value && !isManualRefresh) {
+      // 增量模式：追加新内容（仅在自动刷新开启时）
+      if (response.data.agent_log) {
+        const newContent = response.data.agent_log
+        if (newContent && newContent !== '日志文件不存在' && newContent.trim()) {
+          // 根据排序顺序决定追加位置
+          if (logSortOrder.value === 'desc') {
+            // 最新在前：新内容追加到开头
+            agentLogs.value.agent_log = newContent + agentLogs.value.agent_log
+          } else {
+            // 最久在前：新内容追加到末尾
+            agentLogs.value.agent_log += newContent
+          }
+          agentLogs.value.agent_log_offset = response.data.agent_log_offset || agentLogs.value.agent_log_offset
+        }
+      }
+      
+      // journalctl日志也支持增量追加
+      if (response.data.journalctl_log) {
+        const newJournalContent = response.data.journalctl_log
+        if (newJournalContent && newJournalContent !== '无法读取journalctl日志' && newJournalContent.trim()) {
+          // 根据排序顺序决定追加位置
+          if (logSortOrder.value === 'desc') {
+            // 最新在前：新内容追加到开头
+            agentLogs.value.journalctl_log = newJournalContent + agentLogs.value.journalctl_log
+          } else {
+            // 最久在前：新内容追加到末尾
+            agentLogs.value.journalctl_log += newJournalContent
+          }
+          agentLogs.value.journalctl_offset = response.data.journalctl_offset || agentLogs.value.journalctl_offset
+        }
+      }
+      
+      // systemd状态通常不需要增量，只在首次加载时获取
+    } else {
+      // 首次加载或手动刷新：替换整个日志
+      agentLogs.value.agent_log = response.data.agent_log || ''
+      agentLogs.value.systemd_status = response.data.systemd_status || ''
+      agentLogs.value.journalctl_log = response.data.journalctl_log || ''
+      agentLogs.value.agent_log_offset = response.data.agent_log_offset || 0
+      agentLogs.value.systemd_offset = response.data.systemd_offset || 0
+      agentLogs.value.journalctl_offset = response.data.journalctl_offset || 0
+      agentLogs.value.error = response.data.error || null
+      isFirstLoad.value = false
+    }
+    
+    // 自动滚动到相应位置（仅在自动刷新时）
+    if (autoRefreshLogs.value) {
+      await nextTick()
+      if (activeLogTab.value === 'agent') {
+        if (logSortOrder.value === 'desc') {
+          // 最新在前：滚动到顶部
+          scrollLogToTop('agent')
+        } else {
+          // 最久在前：滚动到底部
+          scrollLogToBottom('agent')
+        }
+      } else if (activeLogTab.value === 'journalctl') {
+        if (logSortOrder.value === 'desc') {
+          // 最新在前：滚动到顶部
+          scrollLogToTop('journalctl')
+        } else {
+          // 最久在前：滚动到底部
+          scrollLogToBottom('journalctl')
+        }
+      }
+    }
+  } catch (error) {
+    console.error('获取Agent日志失败:', error)
+    const errorMsg = error.response?.data?.error || error.response?.data?.message || error.message
+    agentLogs.value.error = `获取日志失败: ${errorMsg}`
+  } finally {
+    loadingAgentLogs.value = false
+  }
+}
+
+const scrollLogToBottom = (tab) => {
+  let scrollbarRef = null
+  if (tab === 'agent') {
+    scrollbarRef = agentLogScrollbar.value
+  } else if (tab === 'systemd') {
+    scrollbarRef = systemdLogScrollbar.value
+  } else if (tab === 'journalctl') {
+    scrollbarRef = journalctlLogScrollbar.value
+  }
+  
+  if (scrollbarRef) {
+    const scrollContainer = scrollbarRef.$el?.querySelector('.el-scrollbar__wrap')
+    if (scrollContainer) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight
+    }
+  }
+}
+
+const scrollLogToTop = (tab) => {
+  let scrollbarRef = null
+  if (tab === 'agent') {
+    scrollbarRef = agentLogScrollbar.value
+  } else if (tab === 'journalctl') {
+    scrollbarRef = journalctlLogScrollbar.value
+  }
+  
+  if (scrollbarRef) {
+    const scrollContainer = scrollbarRef.$el?.querySelector('.el-scrollbar__wrap')
+    if (scrollContainer) {
+      scrollContainer.scrollTop = 0
+    }
+  }
+}
+
+const handleAutoRefreshChange = (value) => {
+  if (value) {
+    startAgentLogRefresh()
+  } else {
+    stopAgentLogRefresh()
+  }
+}
+
+const startAgentLogRefresh = () => {
+  stopAgentLogRefresh()
+  // 每3秒刷新一次日志（流式刷新，频率可以更高）
+  agentLogRefreshInterval.value = setInterval(() => {
+    if (agentLogDialogVisible.value && currentServerId.value && autoRefreshLogs.value) {
+      refreshAgentLogs()
+    } else {
+      stopAgentLogRefresh()
+    }
+  }, 3000) // 3秒刷新一次，流式追加
+}
+
+const stopAgentLogRefresh = () => {
+  if (agentLogRefreshInterval.value) {
+    clearInterval(agentLogRefreshInterval.value)
+    agentLogRefreshInterval.value = null
+  }
+}
+
+const activeLogTab = ref('agent') // 当前激活的日志标签页
+const agentLogScrollbar = ref(null) // Agent日志滚动条引用
+const systemdLogScrollbar = ref(null) // Systemd日志滚动条引用
+const journalctlLogScrollbar = ref(null) // Journalctl日志滚动条引用
+
+// 计算排序后的日志
+const sortedAgentLog = computed(() => {
+  if (!agentLogs.value.agent_log) return '暂无日志'
+  const lines = agentLogs.value.agent_log.split('\n')
+  if (logSortOrder.value === 'desc') {
+    // 最新在前：倒序（使用展开运算符创建新数组，避免修改原数组）
+    return [...lines].reverse().join('\n')
+  } else {
+    // 最久在前：正序
+    return lines.join('\n')
+  }
+})
+
+const sortedJournalctlLog = computed(() => {
+  if (!agentLogs.value.journalctl_log) return '暂无日志'
+  const lines = agentLogs.value.journalctl_log.split('\n')
+  if (logSortOrder.value === 'desc') {
+    // 最新在前：倒序（使用展开运算符创建新数组，避免修改原数组）
+    return [...lines].reverse().join('\n')
+  } else {
+    // 最久在前：正序
+    return lines.join('\n')
+  }
+})
+
+const handleSortOrderChange = () => {
+  // 排序改变时，滚动到相应位置
+  nextTick(() => {
+    if (activeLogTab.value === 'agent') {
+      if (logSortOrder.value === 'desc') {
+        scrollLogToTop('agent')
+      } else {
+        scrollLogToBottom('agent')
+      }
+    } else if (activeLogTab.value === 'journalctl') {
+      if (logSortOrder.value === 'desc') {
+        scrollLogToTop('journalctl')
+      } else {
+        scrollLogToBottom('journalctl')
+      }
+    }
+  })
+}
+
+const handleLogLinesChange = () => {
+  // 行数改变时，重新加载日志（重置为首次加载）
+  isFirstLoad.value = true
+  agentLogs.value.agent_log_offset = 0
+  agentLogs.value.systemd_offset = 0
+  agentLogs.value.journalctl_offset = 0
+  refreshAgentLogs(true) // 手动刷新
+}
+
+const copyLogs = async () => {
+  // 根据当前标签页获取要复制的日志内容
+  let logContent = ''
+  if (activeLogTab.value === 'agent') {
+    logContent = sortedAgentLog.value || '暂无日志'
+  } else if (activeLogTab.value === 'systemd') {
+    logContent = agentLogs.value.systemd_status || '暂无状态信息'
+  } else if (activeLogTab.value === 'journalctl') {
+    logContent = sortedJournalctlLog.value || '暂无日志'
+  }
+  
+  if (!logContent || logContent === '暂无日志' || logContent === '暂无状态信息') {
+    ElMessage.warning('没有可复制的内容')
+    return
+  }
+  
+  try {
+    // 使用 Clipboard API 复制
+    await navigator.clipboard.writeText(logContent)
+    ElMessage.success('日志已复制到剪贴板')
+  } catch (err) {
+    // 降级方案：使用传统方法
+    const textArea = document.createElement('textarea')
+    textArea.value = logContent
+    textArea.style.position = 'fixed'
+    textArea.style.left = '-999999px'
+    document.body.appendChild(textArea)
+    textArea.select()
+    try {
+      document.execCommand('copy')
+      ElMessage.success('日志已复制到剪贴板')
+    } catch (e) {
+      ElMessage.error('复制失败，请手动选择复制')
+    } finally {
+      document.body.removeChild(textArea)
+    }
+  }
+}
+
 const handleDelete = async (row) => {
   try {
-    await ElMessageBox.confirm('确定要删除这个服务器吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
-    await api.delete(`/servers/${row.id}/`)
-    ElMessage.success('删除成功')
-    fetchServers()
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('删除失败')
+    // 先调用删除接口获取关联信息
+    const response = await api.delete(`/servers/${row.id}/`)
+    
+    // 如果返回需要确认的信息
+    if (response.data?.requires_confirmation) {
+      // 显示自定义删除确认对话框
+      deleteServerInfo.value = row
+      deleteRelatedInfo.value = response.data.related_objects
+      deleteAgentChecked.value = response.data.related_objects.has_agent
+      deleteProxiesChecked.value = response.data.related_objects.has_proxies
+      deleteDialogVisible.value = true
+    } else if (response.data?.success) {
+      // 没有关联对象，直接删除成功
+      ElMessage.success('删除成功')
+      await fetchServers()
+    } else {
+      // 删除失败
+      ElMessage.error(response.data?.error || '删除失败')
     }
+  } catch (error) {
+    console.error('删除服务器失败:', error)
+    const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message
+    ElMessage.error('删除失败: ' + errorMessage)
+  }
+}
+
+const confirmDelete = async () => {
+  if (!deleteServerInfo.value) return
+  
+  deleting.value = true
+  try {
+    const deleteResponse = await api.delete(
+      `/servers/${deleteServerInfo.value.id}/?confirmed=true&delete_agent=${deleteAgentChecked.value}&delete_proxies=${deleteProxiesChecked.value}`
+    )
+    if (deleteResponse.data?.success) {
+      ElMessage.success('删除成功')
+      deleteDialogVisible.value = false
+      deleteServerInfo.value = null
+      deleteRelatedInfo.value = null
+      await fetchServers()
+    } else {
+      ElMessage.error(deleteResponse.data?.error || '删除失败')
+    }
+  } catch (error) {
+    console.error('删除服务器失败:', error)
+    const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message
+    ElMessage.error('删除失败: ' + errorMessage)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -426,6 +1039,10 @@ const handleSubmit = async () => {
 }
 
 const resetForm = () => {
+  // 重置编辑ID
+  editingId.value = null
+
+  // 重置表单数据
   Object.assign(form, {
     name: '',
     host: '',
@@ -433,12 +1050,18 @@ const resetForm = () => {
     username: '',
     password: '',
     private_key: '',
-    save_password: false,
+    save_password: true,  // 默认勾选保存密码
     enable_ssh_key: false,
     connection_method: 'agent',  // 默认使用Agent连接方式
-    deployment_target: 'host'
+    deployment_target: 'host',
+    agent_connect_host: '',
+    agent_connect_port: null
   })
+
+  // 重置表单验证状态
   formRef.value?.resetFields()
+
+  // 重置其他状态
   testingConnection.value = false
   saving.value = false
   dialogTestSuccess.value = false // 重置测试成功状态
@@ -446,6 +1069,11 @@ const resetForm = () => {
 
 onMounted(() => {
   fetchServers()
+})
+
+// 组件卸载时清理定时器
+onUnmounted(() => {
+  stopAgentLogRefresh()
 })
 </script>
 
@@ -472,7 +1100,84 @@ onMounted(() => {
 
 .action-buttons {
   display: flex;
+  flex-direction: column;
   gap: 6px;
+}
+
+.action-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+/* 服务器表单优化样式 */
+.server-form {
+  max-height: 70vh;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.form-row-two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 0;
+}
+
+.form-row-two-cols .el-form-item {
+  margin-bottom: 12px;
+}
+
+/* 优化对话框样式 */
+.server-dialog :deep(.el-dialog__body) {
+  padding: 16px 20px;
+  max-height: 75vh;
+}
+
+/* 表单项样式 */
+.server-form :deep(.el-form-item__label) {
+  font-size: 14px;
+  padding-right: 8px;
+}
+
+.server-form :deep(.el-form-item__content) {
+  font-size: 14px;
+}
+
+.server-form :deep(.el-input__inner),
+.server-form :deep(.el-textarea__inner) {
+  font-size: 14px;
+}
+
+.server-form :deep(.el-switch__label) {
+  font-size: 13px;
+}
+
+/* Divider样式 */
+.server-form :deep(.el-divider) {
+  margin: 18px 0 14px 0;
+}
+
+.server-form :deep(.el-divider.first-divider) {
+  margin-top: 8px;
+}
+
+.server-form :deep(.el-divider__text) {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  background: #fff;
+  padding: 0 12px;
+}
+
+/* Alert样式 */
+.server-form :deep(.el-alert) {
+  padding: 8px 12px;
+}
+
+.server-form :deep(.el-alert__title) {
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 /* 减少表头单元格的padding，让表头更紧凑 */
@@ -492,6 +1197,33 @@ onMounted(() => {
 :deep(.el-table td .cell) {
   padding-left: 8px;
   padding-right: 8px;
+}
+
+/* 日志加载遮罩层 */
+.log-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  border-radius: 4px;
+}
+
+/* 响应式优化 */
+@media (max-width: 1024px) {
+  .form-row-two-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .server-dialog {
+    width: 90% !important;
+  }
 }
 </style>
 

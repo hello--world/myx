@@ -1,4 +1,10 @@
 requests>=2.31.0
 urllib3>=2.0.0
+flask>=3.0.0
+cryptography>=41.0.0
+pyopenssl>=23.3.0
+jsonrpc>=1.0.0
+ansible-runner>=2.3.0
+websockets>=12.0
 
 

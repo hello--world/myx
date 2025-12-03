@@ -1,123 +1,137 @@
 ---
-- name: Deploy Caddy
+- name: Deploy Caddy (Official Installation)
   hosts: local
   become: yes
   vars:
     caddy_version: "latest"
   tasks:
-    - name: Update system packages
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
-      ignore_errors: yes
+    - name: Check if Caddy is already installed
+      command: which caddy
+      register: caddy_check
+      changed_when: false
+      failed_when: false
 
-    - name: Update system packages (RedHat)
-      yum:
-        name: "*"
-        state: latest
-      when: ansible_os_family == "RedHat"
-      ignore_errors: yes
+    - name: Check if Caddy systemd service exists
+      command: systemctl list-unit-files | grep -q "^caddy.service" || echo "not_found"
+      register: caddy_service_check
+      changed_when: false
+      failed_when: false
 
-    - name: Install required packages
-      package:
-        name:
-          - curl
-          - wget
-        state: present
+    - name: Install Caddy via official package (Debian/Ubuntu)
+      block:
+        - name: Install required packages for Debian
+          apt:
+            name:
+              - debian-keyring
+              - debian-archive-keyring
+              - apt-transport-https
+              - curl
+            state: present
 
-    - name: Download Caddy
-      get_url:
-        url: "https://caddyserver.com/api/download?os={{ ansible_system | lower }}&arch={{ ansible_architecture }}&id=standard"
-        dest: /tmp/caddy.tar.gz
-        mode: '0644'
+        - name: Add Caddy GPG key
+          shell: |
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+          args:
+            creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 
-    - name: Extract Caddy
-      unarchive:
-        src: /tmp/caddy.tar.gz
-        dest: /tmp
-        remote_src: yes
+        - name: Add Caddy repository
+          shell: |
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+            chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+          args:
+            creates: /etc/apt/sources.list.d/caddy-stable.list
 
-    - name: Install Caddy binary
-      copy:
-        src: /tmp/caddy
-        dest: /usr/local/bin/caddy
-        mode: '0755'
-        remote_src: yes
+        - name: Update apt cache
+          apt:
+            update_cache: yes
 
-    - name: Create Caddy user
-      user:
-        name: caddy
-        system: yes
-        shell: /usr/sbin/nologin
-        home: /var/lib/caddy
-        create_home: yes
+        - name: Install Caddy
+          apt:
+            name: caddy
+            state: present
+      when: 
+        - ansible_os_family == "Debian"
+        - caddy_check.rc != 0 or caddy_service_check.stdout == "not_found"
 
-    - name: Create Caddy directories
+    - name: Install Caddy via official package (Fedora/RedHat/CentOS)
+      block:
+        - name: Install dnf plugins
+          package:
+            name:
+              - dnf-plugins-core
+            state: present
+
+        - name: Enable Caddy COPR repository
+          shell: dnf copr enable -y @caddy/caddy
+          args:
+            creates: /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:@caddy:caddy.repo
+
+        - name: Install Caddy
+          dnf:
+            name: caddy
+            state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - caddy_check.rc != 0 or caddy_service_check.stdout == "not_found"
+
+    - name: Ensure Caddy directories exist
       file:
         path: "{{ item }}"
         state: directory
-        owner: caddy
-        group: caddy
+        mode: '0755'
       loop:
         - /etc/caddy
         - /var/lib/caddy
-        - /var/www/html
+      ignore_errors: yes
 
-    - name: Create Caddy systemd service
-      copy:
-        content: |
-          [Unit]
-          Description=Caddy
-          Documentation=https://caddyserver.com/docs/
-          After=network.target network-online.target
-          Requires=network-online.target
+    - name: Check Caddy binary location
+      command: which caddy
+      register: caddy_bin_path
+      changed_when: false
+      failed_when: false
 
-          [Service]
-          Type=notify
-          User=caddy
-          Group=caddy
-          ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
-          ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
-          TimeoutStopSec=5s
-          LimitNOFILE=1048576
-          LimitNPROC=512
-          PrivateTmp=true
-          ProtectSystem=full
-          AmbientCapabilities=CAP_NET_BIND_SERVICE
+    - name: Set Caddy binary path
+      set_fact:
+        caddy_bin: "{{ caddy_bin_path.stdout | default('/usr/bin/caddy') }}"
 
-          [Install]
-          WantedBy=multi-user.target
-        dest: /etc/systemd/system/caddy.service
-        mode: '0644'
+    - name: Verify Caddy installation
+      block:
+        - name: Check Caddy binary exists
+          stat:
+            path: "{{ caddy_bin }}"
+          register: caddy_binary_stat
 
-    - name: Create default Caddyfile
-      copy:
-        content: |
-          :80 {
-              respond "Caddy is running"
-          }
-        dest: /etc/caddy/Caddyfile
-        mode: '0644'
-        owner: caddy
-        group: caddy
+        - name: Check Caddy systemd service exists
+          command: systemctl list-unit-files | grep -q "^caddy.service" || echo "not_found"
+          register: caddy_service_check
+          changed_when: false
+          failed_when: false
 
-    - name: Reload systemd
-      systemd:
-        daemon_reload: yes
+        - name: Check Caddy version
+          command: "{{ caddy_bin }} version"
+          register: caddy_version_result
+          changed_when: false
+          failed_when: false
 
-    - name: Start and enable Caddy service
+        - name: Set installation success fact
+          set_fact:
+            caddy_installed: "{{ caddy_binary_stat.stat.exists | default(false) and caddy_service_check.rc == 0 and caddy_version_result.rc == 0 }}"
+
+      always:
+        - name: Fail if Caddy not properly installed
+          fail:
+            msg: "Caddy installation verification failed. Binary exists: {{ caddy_binary_stat.stat.exists | default(false) }}, Service exists: {{ caddy_service_check.rc == 0 }}, Version check: {{ caddy_version_result.rc == 0 }}"
+          when: not caddy_installed | default(false)
+
+    - name: Ensure Caddy service is started and enabled
       systemd:
         name: caddy
         state: started
         enabled: yes
+      ignore_errors: yes
 
-    - name: Verify Caddy installation
-      command: /usr/local/bin/caddy version
-      register: caddy_version
-      changed_when: false
-
-    - name: Display Caddy version
+    - name: Display Caddy installation status
       debug:
-        msg: "Caddy installed successfully: {{ caddy_version.stdout }}"
+        msg: "Caddy installation completed. Binary: {{ caddy_bin }}, Version: {{ caddy_version_result.stdout | default('unknown') }}"
 

@@ -37,7 +37,7 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
             # 如果没有指定节点，默认包含所有节点（向后兼容）
             proxies = all_proxies
 
-        if subscription.format == 'v2ray':
+        if subscription.format == 'base64':
             content = generate_v2ray_subscription(proxies, request)
             content_type = 'text/plain; charset=utf-8'
         else:  # clash

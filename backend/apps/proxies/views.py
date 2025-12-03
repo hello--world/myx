@@ -13,6 +13,7 @@ import time
 import re
 import os
 import base64
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -744,3 +745,109 @@ echo "证书删除成功"
                 'error': cmd.error or '证书删除失败',
                 'result': cmd.result or ''
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def destroy(self, request, *args, **kwargs):
+        """删除代理节点并同步删除已部署的配置（同步操作，会提示用户）"""
+        proxy = self.get_object()
+        
+        # 检查权限
+        if proxy.created_by != request.user:
+            return Response({
+                'error': '无权删除此代理',
+                'detail': '此代理不属于当前用户'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        server = proxy.server
+        proxy_name = proxy.name
+        proxy_port = proxy.port
+        
+        # 检查服务器是否有 Agent 且在线
+        from apps.agents.models import Agent
+        agent = None
+        try:
+            agent = Agent.objects.get(server=server)
+            if agent.status != 'online':
+                agent = None  # Agent 不在线，无法删除配置
+        except Agent.DoesNotExist:
+            pass  # 没有 Agent，无法删除配置
+        
+        # 如果 Agent 在线，先删除已部署的配置（重新部署剩余代理的配置）
+        if agent:
+            try:
+                from apps.deployments.agent_deployer import deploy_xray_config_via_agent as _deploy_config
+                from utils.xray_config import generate_xray_config_json_for_proxies
+                
+                # 获取删除后剩余的启用的代理（排除当前要删除的代理）
+                remaining_proxies = Proxy.objects.filter(
+                    server=server,
+                    status='active',
+                    enable=True
+                ).exclude(id=proxy.id).order_by('id')
+                
+                # 生成新的 Xray 配置（不包含要删除的代理）
+                if remaining_proxies.exists():
+                    config_json = generate_xray_config_json_for_proxies(list(remaining_proxies))
+                    # 同步部署新配置（删除当前代理的配置）
+                    success, message = _deploy_config(server, config_json)
+                    if not success:
+                        logger.warning(f'删除代理节点时重新部署配置失败: proxy_id={proxy.id}, error={message}')
+                        # 即使重新部署失败，也继续删除代理节点
+                else:
+                    # 没有剩余代理，删除整个 Xray 配置
+                    # 生成一个空的配置（只包含基础结构）
+                    empty_config = {
+                        "log": {
+                            "loglevel": "warning"
+                        },
+                        "inbounds": [],
+                        "outbounds": [
+                            {
+                                "protocol": "freedom",
+                                "tag": "direct"
+                            }
+                        ],
+                        "routing": {
+                            "domainStrategy": "AsIs",
+                            "rules": []
+                        }
+                    }
+                    success, message = _deploy_config(server, json.dumps(empty_config, indent=2))
+                    if not success:
+                        logger.warning(f'删除代理节点时清空配置失败: proxy_id={proxy.id}, error={message}')
+                
+                # 记录删除配置日志
+                create_log_entry(
+                    log_type='proxy',
+                    level='info',
+                    title=f'删除代理节点配置: {proxy_name}',
+                    content=f'已从服务器 {server.name} 删除代理节点 {proxy_name} (端口: {proxy_port}) 的配置',
+                    user=request.user,
+                    server=server,
+                    related_id=proxy.id,
+                    related_type='proxy'
+                )
+            except Exception as e:
+                logger.error(f'删除代理节点时处理配置失败: proxy_id={proxy.id}, error={str(e)}', exc_info=True)
+                # 即使处理配置失败，也继续删除代理节点
+        
+        # 删除代理节点
+        proxy.delete()
+        
+        # 记录删除日志
+        create_log_entry(
+            log_type='proxy',
+            level='info',
+            title=f'删除代理节点: {proxy_name}',
+            content=f'代理节点 {proxy_name} (端口: {proxy_port}) 已删除',
+            user=request.user,
+            server=server,
+            related_type='proxy'
+        )
+        
+        return Response({
+            'message': '代理节点已删除，已同步删除服务器上的配置',
+            'deleted_proxy': {
+                'name': proxy_name,
+                'port': proxy_port
+            }
+        }, status=status.HTTP_200_OK)

@@ -24,6 +24,11 @@ const routes = [
         component: () => import('@/views/Servers.vue')
       },
       {
+        path: 'caddyfiles',
+        name: 'Caddyfiles',
+        component: () => import('@/views/Caddyfiles.vue')
+      },
+      {
         path: 'proxies',
         name: 'Proxies',
         component: () => import('@/views/Proxies.vue')

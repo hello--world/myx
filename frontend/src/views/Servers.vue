@@ -959,13 +959,33 @@ const handleTest = async (row) => {
   testingServerId.value = row.id
   testSuccessMap.value[row.id] = false // 重置状态
   try {
-    await api.post(`/servers/${row.id}/test_connection/`)
+    const response = await api.post(`/servers/${row.id}/test_connection/`)
     testSuccessMap.value[row.id] = true // 标记为成功
-    ElMessage.success('连接测试成功')
+    
+    // 检查是否有Web服务警告
+    const data = response.data
+    if (data.web_service_warning) {
+      // 显示警告信息（使用warning类型）
+      ElMessage({
+        message: data.message || '连接测试成功',
+        type: 'warning',
+        duration: 5000,
+        showClose: true
+      })
+      // 同时显示详细的Web服务警告
+      ElMessage({
+        message: `Web服务健康检查失败：${data.web_service_warning}\n已回退到心跳检查模式`,
+        type: 'warning',
+        duration: 8000,
+        showClose: true
+      })
+    } else {
+      ElMessage.success(data.message || '连接测试成功')
+    }
     fetchServers()
   } catch (error) {
     testSuccessMap.value[row.id] = false // 标记为失败
-    const errorMsg = error.response?.data?.message || '连接测试失败'
+    const errorMsg = error.response?.data?.error || error.response?.data?.message || '连接测试失败'
     ElMessage.error(errorMsg)
   } finally {
     testingServerId.value = null

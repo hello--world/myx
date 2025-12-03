@@ -39,26 +39,47 @@ class AgentWebClient:
             'Content-Type': 'application/json'
         })
     
-    def health_check(self) -> bool:
-        """健康检查"""
+    def health_check(self):
+        """
+        健康检查
+        
+        Returns:
+            True: 健康检查成功
+            str: 错误信息（如果失败）
+        """
         try:
             response = self.session.get(
                 f"{self.base_url}/health",
                 timeout=5
             )
             response.raise_for_status()
-            return response.json().get('status') == 'ok'
+            result = response.json()
+            if result.get('status') == 'ok':
+                return True
+            else:
+                return f"健康检查返回异常状态: {result.get('status', 'unknown')}"
         except requests.exceptions.SSLError as e:
             # SSL错误可能是证书问题或服务未启动
-            logger.debug(f"Agent Web服务SSL错误（可能服务未启动或证书问题）: {e}")
-            return False
+            error_msg = f"SSL证书错误（可能服务未启动或证书配置问题）: {str(e)}"
+            logger.debug(f"Agent Web服务SSL错误: {error_msg}")
+            return error_msg
         except requests.exceptions.ConnectionError as e:
             # 连接错误，服务可能未启动
-            logger.debug(f"Agent Web服务连接错误（可能服务未启动）: {e}")
-            return False
+            error_msg = f"无法连接到Agent Web服务（可能服务未启动或地址/端口配置错误）: {str(e)}"
+            logger.debug(f"Agent Web服务连接错误: {error_msg}")
+            return error_msg
+        except requests.exceptions.Timeout as e:
+            error_msg = f"连接超时（可能服务未启动或网络问题）: {str(e)}"
+            logger.debug(f"Agent Web服务连接超时: {error_msg}")
+            return error_msg
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP错误: {e.response.status_code} - {str(e)}"
+            logger.debug(f"Agent Web服务HTTP错误: {error_msg}")
+            return error_msg
         except Exception as e:
-            logger.debug(f"Agent健康检查失败: {e}")
-            return False
+            error_msg = f"健康检查失败: {str(e)}"
+            logger.debug(f"Agent健康检查失败: {error_msg}")
+            return error_msg
     
     def get_status(self) -> Optional[Dict[str, Any]]:
         """获取Agent状态"""
@@ -123,13 +144,20 @@ def get_agent_client(agent) -> Optional[AgentWebClient]:
     Returns:
         AgentWebClient实例，如果Agent未启用Web服务则返回None
     """
-    if not agent.web_service_enabled:
+    # 优先使用RPC端口（新架构，端口是随机的）
+    # 如果Agent有RPC端口，优先使用RPC端口（不管rpc_supported状态，因为可能还没检查过）
+    if agent.rpc_port:
+        agent_port = agent.rpc_port
+    elif agent.web_service_enabled and agent.web_service_port:
+        # 回退到Web服务端口（旧架构，固定8443）
+        agent_port = agent.web_service_port
+    else:
+        # 如果都没有配置，返回None
         return None
     
     # 获取Agent连接地址
     server = agent.server
     agent_host = server.agent_connect_host or server.host
-    agent_port = agent.web_service_port or 8443
     
     return AgentWebClient(
         agent_host=agent_host,

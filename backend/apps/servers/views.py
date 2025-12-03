@@ -290,14 +290,47 @@ print("[成功] Agent 卸载完成")
         try:
             agent = Agent.objects.get(server=server)
             
-            # 优先尝试使用Web服务连接（新架构）
-            if agent.web_service_enabled:
+            # 优先尝试使用RPC连接（新架构，支持随机路径）
+            # 如果Agent有RPC端口，优先使用RPC客户端；否则使用Web服务客户端
+            web_service_error = None
+            if agent.rpc_port:
+                try:
+                    from apps.agents.rpc_client import get_agent_rpc_client
+                    rpc_client = get_agent_rpc_client(agent)
+                    if rpc_client:
+                        # 尝试健康检查（RPC客户端支持随机路径）
+                        if rpc_client.check_support():
+                            # 获取Agent状态
+                            status_result = rpc_client.get_status()
+                            if status_result:
+                                # status_result 已经是结果字典，不是包装在 {'result': ...} 中
+                                return {
+                                    'success': True,
+                                    'message': 'Agent RPC服务连接成功',
+                                    'agent_status': 'online',
+                                    'connection_method': 'rpc',
+                                    'rpc_info': status_result
+                                }
+                            else:
+                                web_service_error = 'RPC服务连接成功但获取状态失败'
+                        else:
+                            web_service_error = 'RPC服务不支持或健康检查失败'
+                    else:
+                        logger.warning(f"无法创建Agent RPC客户端，尝试Web服务客户端")
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.warning(f"连接Agent RPC服务失败: {error_msg}，尝试Web服务客户端", exc_info=True)
+                    web_service_error = f'RPC服务连接异常: {error_msg}'
+            
+            # 如果RPC不可用，尝试Web服务（旧架构）
+            if not web_service_error and agent.web_service_enabled:
                 try:
                     from apps.agents.client import get_agent_client
                     client = get_agent_client(agent)
                     if client:
                         # 尝试健康检查
-                        if client.health_check():
+                        health_result = client.health_check()
+                        if health_result is True:
                             # 获取Agent状态
                             status = client.get_status()
                             return {
@@ -308,41 +341,71 @@ print("[成功] Agent 卸载完成")
                                 'web_service_info': status
                             }
                         else:
-                            # Web服务不可用，回退到心跳检查
-                            logger.warning(f"Agent Web服务健康检查失败，回退到心跳检查")
+                            # Web服务不可用，记录详细错误信息
+                            error_detail = health_result if isinstance(health_result, str) else 'Web服务健康检查失败'
+                            logger.warning(f"Agent Web服务健康检查失败: {error_detail}，回退到心跳检查")
+                            web_service_error = error_detail
+                    else:
+                        logger.warning(f"无法创建Agent Web服务客户端，回退到心跳检查")
+                        if not web_service_error:
+                            web_service_error = 'Web服务未启用或配置不正确'
                 except Exception as e:
-                    logger.warning(f"连接Agent Web服务失败: {e}，回退到心跳检查")
+                    error_msg = str(e)
+                    logger.warning(f"连接Agent Web服务失败: {error_msg}，回退到心跳检查", exc_info=True)
+                    if not web_service_error:
+                        web_service_error = f'Web服务连接异常: {error_msg}'
             
             # 回退到传统心跳检查
+            # 构建消息，包含Web服务失败的原因（如果有）
+            web_service_warning = None
+            if 'web_service_error' in locals() and web_service_error:
+                web_service_warning = web_service_error
+            
             if agent.status == 'online':
                 # 检查最后心跳时间
                 if agent.last_heartbeat:
                     time_since_heartbeat = timezone.now() - agent.last_heartbeat
                     if time_since_heartbeat.total_seconds() <= 60:
+                        message = 'Agent连接成功（心跳模式）'
+                        if web_service_warning:
+                            message += f'\n注意：Web服务健康检查失败（{web_service_warning}），已回退到心跳检查'
                         return {
                             'success': True,
-                            'message': 'Agent连接成功（心跳模式）',
+                            'message': message,
                             'agent_status': 'online',
                             'connection_method': 'heartbeat',
-                            'last_heartbeat': agent.last_heartbeat
+                            'last_heartbeat': agent.last_heartbeat,
+                            'web_service_warning': web_service_warning
                         }
                     else:
+                        error_msg = f'Agent长时间未心跳（{int(time_since_heartbeat.total_seconds())}秒）'
+                        if web_service_warning:
+                            error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
                         return {
                             'success': False,
-                            'error': f'Agent长时间未心跳（{int(time_since_heartbeat.total_seconds())}秒）',
-                            'agent_status': 'offline'
+                            'error': error_msg,
+                            'agent_status': 'offline',
+                            'web_service_warning': web_service_warning
                         }
                 else:
+                    error_msg = 'Agent从未发送心跳'
+                    if web_service_warning:
+                        error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
                     return {
                         'success': False,
-                        'error': 'Agent从未发送心跳',
-                        'agent_status': 'offline'
+                        'error': error_msg,
+                        'agent_status': 'offline',
+                        'web_service_warning': web_service_warning
                     }
             else:
+                error_msg = f'Agent状态为: {agent.status}'
+                if web_service_warning:
+                    error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
                 return {
                     'success': False,
-                    'error': f'Agent状态为: {agent.status}',
-                    'agent_status': agent.status
+                    'error': error_msg,
+                    'agent_status': agent.status,
+                    'web_service_warning': web_service_warning
                 }
         except Agent.DoesNotExist:
             return {

@@ -38,6 +38,10 @@
             <el-icon><Monitor /></el-icon>
             <span>服务器管理</span>
           </el-menu-item>
+          <el-menu-item index="/caddyfiles">
+            <el-icon><Document /></el-icon>
+            <span>Caddyfile</span>
+          </el-menu-item>
           <el-menu-item index="/proxies">
             <el-icon><Connection /></el-icon>
             <span>代理节点</span>
@@ -54,13 +58,13 @@
             <el-icon><Monitor /></el-icon>
             <span>Agent管理</span>
           </el-menu-item>
-          <el-menu-item index="/settings">
-            <el-icon><Setting /></el-icon>
-            <span>系统设置</span>
-          </el-menu-item>
           <el-menu-item index="/logs">
             <el-icon><Document /></el-icon>
             <span>日志中心</span>
+          </el-menu-item>
+          <el-menu-item index="/settings">
+            <el-icon><Setting /></el-icon>
+            <span>系统设置</span>
           </el-menu-item>
         </el-menu>
       </el-aside>

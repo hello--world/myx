@@ -248,3 +248,138 @@ def generate_xray_config_json_for_proxies(proxies: list) -> str:
     """为多个代理生成完整的Xray配置JSON字符串"""
     config = generate_xray_full_config(proxies)
     return json.dumps(config, indent=2, ensure_ascii=False)
+
+
+def generate_xray_client_config(proxy: Proxy, server_host: str = '127.0.0.1') -> dict:
+    """生成Xray客户端配置（用于测试代理节点）
+    
+    Args:
+        proxy: 代理节点对象
+        server_host: 服务器地址（默认127.0.0.1，用于本地测试）
+    
+    Returns:
+        dict: Xray客户端配置（包含outbound和routing）
+    """
+    # 获取代理配置（inbound格式）
+    settings_dict = proxy.get_settings_dict()
+    stream_settings_dict = proxy.get_stream_settings_dict()
+    
+    # 根据协议类型，将inbound配置转换为outbound配置
+    outbound_settings = {}
+    
+    if proxy.protocol == 'vless':
+        # VLESS: inbound有clients，outbound需要vnext
+        # 注意：VLESS客户端配置中，users必须包含encryption字段
+        clients = settings_dict.get('clients', [])
+        if clients:
+            # 为每个client添加encryption字段（客户端需要，服务端不需要）
+            users = []
+            for client in clients:
+                user = client.copy()
+                # 确保每个user都有encryption字段
+                if 'encryption' not in user:
+                    user['encryption'] = 'none'
+                users.append(user)
+            
+            outbound_settings = {
+                "vnext": [
+                    {
+                        "address": server_host,
+                        "port": proxy.port,
+                        "users": users
+                    }
+                ]
+            }
+    elif proxy.protocol == 'vmess':
+        # VMess: inbound有clients，outbound需要vnext
+        clients = settings_dict.get('clients', [])
+        if clients:
+            outbound_settings = {
+                "vnext": [
+                    {
+                        "address": server_host,
+                        "port": proxy.port,
+                        "users": clients
+                    }
+                ]
+            }
+    elif proxy.protocol == 'trojan':
+        # Trojan: inbound有clients（每个client有password），outbound需要servers
+        clients = settings_dict.get('clients', [])
+        if clients and len(clients) > 0:
+            password = clients[0].get('password', '')
+            outbound_settings = {
+                "servers": [
+                    {
+                        "address": server_host,
+                        "port": proxy.port,
+                        "password": password
+                    }
+                ]
+            }
+    elif proxy.protocol == 'shadowsocks':
+        # Shadowsocks: inbound有method, password, network，outbound需要servers
+        method = settings_dict.get('method', 'aes-256-gcm')
+        password = settings_dict.get('password', '')
+        outbound_settings = {
+            "servers": [
+                {
+                    "address": server_host,
+                    "port": proxy.port,
+                    "method": method,
+                    "password": password
+                }
+            ]
+        }
+    
+    # 构建outbound配置
+    outbound = {
+        "protocol": proxy.protocol,
+        "settings": outbound_settings,
+        "streamSettings": stream_settings_dict.copy(),
+        "tag": "proxy-outbound"
+    }
+    
+    # 构建完整的客户端配置
+    client_config = {
+        "log": {
+            "loglevel": "warning"
+        },
+        "inbounds": [
+            {
+                "port": 10808,  # 本地SOCKS代理端口
+                "protocol": "socks",
+                "settings": {
+                    "auth": "noauth",
+                    "udp": True
+                },
+                "tag": "socks-in"
+            },
+            {
+                "port": 10809,  # 本地HTTP代理端口
+                "protocol": "http",
+                "settings": {},
+                "tag": "http-in"
+            }
+        ],
+        "outbounds": [
+            outbound,
+            {
+                "protocol": "freedom",
+                "settings": {},
+                "tag": "direct"
+            }
+        ],
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "rules": [
+                {
+                    "type": "field",
+                    "inboundTag": ["socks-in", "http-in"],
+                    "outboundTag": "proxy-outbound"
+                }
+            ]
+        }
+    }
+    
+    return client_config

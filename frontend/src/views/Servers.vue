@@ -154,7 +154,7 @@
         <div class="form-row-two-cols">
           <el-form-item label="SSH端口" prop="port">
             <el-input-number v-model="form.port" :min="1" :max="65535" style="width: 100%;" />
-          </el-form-item>
+        </el-form-item>
           <el-form-item label="服务器名" prop="name">
             <el-input 
               v-model="form.name" 
@@ -167,38 +167,38 @@
           </el-form-item>
         </div>
         <div class="form-row-two-cols">
-          <el-form-item label="主机地址" prop="host">
+        <el-form-item label="主机地址" prop="host">
             <el-input 
               v-model="form.host" 
               placeholder="IP或域名" 
               @blur="handleHostBlur"
             />
-          </el-form-item>
+        </el-form-item>
           <el-form-item label="用户名" prop="username">
             <el-input v-model="form.username" placeholder="SSH用户名" />
-          </el-form-item>
+        </el-form-item>
         </div>
 
         <!-- SSH认证 -->
         <el-divider content-position="left">SSH认证</el-divider>
         <div class="form-row-two-cols">
           <el-form-item label="密码" prop="password">
-            <el-input
-              v-model="form.password"
-              type="password"
+          <el-input
+            v-model="form.password"
+            type="password"
               placeholder="SSH密码（或使用私钥）"
-              show-password
-            />
-          </el-form-item>
-          <el-form-item label="保存密码">
+            show-password
+          />
+        </el-form-item>
+        <el-form-item label="保存密码">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <el-switch
-                v-model="form.save_password"
-              />
+          <el-switch
+            v-model="form.save_password"
+          />
               <span style="font-size: 13px; color: #909399;">开启后加密保存</span>
             </div>
           </el-form-item>
-        </div>
+          </div>
         <el-form-item label="私钥" prop="private_key">
           <el-input
             v-model="form.private_key"
@@ -209,9 +209,9 @@
         </el-form-item>
         <el-form-item label="SSH Key">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <el-switch
-              v-model="form.enable_ssh_key"
-            />
+          <el-switch
+            v-model="form.enable_ssh_key"
+          />
             <span style="font-size: 13px; color: #909399;">自动生成并添加到服务器</span>
           </div>
         </el-form-item>
@@ -219,38 +219,38 @@
         <!-- 连接配置 -->
         <el-divider content-position="left">连接配置</el-divider>
         <div class="form-row-two-cols">
-          <el-form-item label="连接方式" prop="connection_method">
+        <el-form-item label="连接方式" prop="connection_method">
             <el-select v-model="form.connection_method" placeholder="连接方式" style="width: 100%">
-              <el-option label="SSH" value="ssh" />
-              <el-option label="Agent" value="agent" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="部署目标" prop="deployment_target">
+            <el-option label="SSH" value="ssh" />
+            <el-option label="Agent" value="agent" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="部署目标" prop="deployment_target">
             <el-select v-model="form.deployment_target" placeholder="部署目标" style="width: 100%">
-              <el-option label="宿主机" value="host" />
-              <el-option label="Docker" value="docker" />
-            </el-select>
-          </el-form-item>
+            <el-option label="宿主机" value="host" />
+            <el-option label="Docker" value="docker" />
+          </el-select>
+        </el-form-item>
         </div>
 
         <!-- Agent高级选项（直接显示在连接配置下） -->
         <div v-if="form.connection_method === 'agent'" class="form-row-two-cols">
           <el-form-item label="连接地址" prop="agent_connect_host">
-            <el-input
-              v-model="form.agent_connect_host"
+          <el-input 
+            v-model="form.agent_connect_host" 
               placeholder="agent.example.com（可选）"
               @change="handleAgentConnectHostChange"
-            />
-          </el-form-item>
+          />
+        </el-form-item>
           <el-form-item label="连接端口" prop="agent_connect_port">
-            <el-input-number
-              v-model="form.agent_connect_port"
-              :min="1"
-              :max="65535"
+          <el-input-number 
+            v-model="form.agent_connect_port" 
+            :min="1" 
+            :max="65535" 
               placeholder="默认"
               style="width: 100%;"
-            />
-          </el-form-item>
+          />
+        </el-form-item>
         </div>
 
         <!-- 重要提示 -->

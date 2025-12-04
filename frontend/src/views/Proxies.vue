@@ -78,6 +78,15 @@
             >
               Caddy管理
             </el-button>
+            <el-button 
+              size="small" 
+              type="warning" 
+              @click="handleTestProxy(row)"
+              v-if="row.deployment_status === 'success'"
+              :loading="testing[row.id]"
+            >
+              测试
+            </el-button>
             <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
@@ -108,40 +117,40 @@
             <div class="form-row-three-cols">
               <el-form-item label="节点名" prop="name">
                 <el-input v-model="form.name" placeholder="节点名" />
-              </el-form-item>
-              <el-form-item label="服务器" prop="server">
+            </el-form-item>
+            <el-form-item label="服务器" prop="server">
                 <el-select v-model="form.server" placeholder="选择服务器" style="width: 100%;" @change="handleServerChange">
-                  <el-option
-                    v-for="server in servers"
-                    :key="server.id"
-                    :label="server.name"
-                    :value="server.id"
-                  />
-                </el-select>
-              </el-form-item>
+                <el-option
+                  v-for="server in servers"
+                  :key="server.id"
+                  :label="server.name"
+                  :value="server.id"
+                />
+              </el-select>
+            </el-form-item>
               <el-form-item label="订阅">
                 <el-switch v-model="form.enable" />
               </el-form-item>
             </div>
             <div class="form-row-three-cols">
               <el-form-item label="域名" prop="agent_connect_host">
-                <el-input
-                  v-model="form.agent_connect_host"
+              <el-input 
+                v-model="form.agent_connect_host" 
                   placeholder="CDN或Nginx代理域名，隐藏真实服务器地址"
-                />
-              </el-form-item>
+              />
+            </el-form-item>
               <el-form-item label="域名端口" prop="agent_connect_port">
-                <el-input-number
-                  v-model="form.agent_connect_port"
-                  :min="1"
-                  :max="65535"
+              <el-input-number 
+                v-model="form.agent_connect_port" 
+                :min="1" 
+                :max="65535" 
                   placeholder="端口"
                   style="width: 100%;"
-                />
-              </el-form-item>
+              />
+            </el-form-item>
               <el-form-item label="监听IP">
                 <el-input v-model="form.listen" placeholder="默认0.0.0.0" />
-              </el-form-item>
+            </el-form-item>
             </div>
             <el-form-item label="备注">
               <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注信息" />
@@ -150,42 +159,42 @@
             <!-- 协议配置 -->
             <el-divider content-position="left">协议配置</el-divider>
             <div class="form-row-two-cols">
-              <el-form-item label="协议" prop="protocol">
+            <el-form-item label="协议" prop="protocol">
                 <el-select v-model="form.protocol" placeholder="选择协议" style="width: 100%;">
-                  <el-option label="VLESS" value="vless" />
-                  <el-option label="VMess" value="vmess" />
-                  <el-option label="Trojan" value="trojan" />
-                  <el-option label="Shadowsocks" value="shadowsocks" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="端口" prop="port">
+                <el-option label="VLESS" value="vless" />
+                <el-option label="VMess" value="vmess" />
+                <el-option label="Trojan" value="trojan" />
+                <el-option label="Shadowsocks" value="shadowsocks" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="端口" prop="port">
                 <div style="display: flex; align-items: center; gap: 6px;">
-                  <el-input-number
-                    v-model="form.port"
-                    :min="1"
-                    :max="65535"
+                <el-input-number 
+                  v-model="form.port" 
+                  :min="1" 
+                  :max="65535" 
                     style="width: 100%;"
-                    @blur="checkPortAvailability"
-                  />
+                  @blur="checkPortAvailability"
+                />
                   <el-button type="primary" @click="getRandomPort" size="small">随机</el-button>
                   <span v-if="form.port" style="color: #67c23a; font-size: 13px; font-weight: 500; white-space: nowrap;">已分配端口{{ form.port }}</span>
-                </div>
+              </div>
                 <div v-if="portCheckMessage && !portCheckAvailable" :style="{ color: '#f56c6c', fontSize: '13px', marginTop: '4px' }">
-                  {{ portCheckMessage }}
-                </div>
-              </el-form-item>
+                {{ portCheckMessage }}
+              </div>
+            </el-form-item>
             </div>
             <div class="form-row-two-cols">
-              <el-form-item label="到期时间">
-                <el-date-picker
-                  v-model="form.expiryTime"
-                  type="datetime"
+            <el-form-item label="到期时间">
+              <el-date-picker
+                v-model="form.expiryTime"
+                type="datetime"
                   placeholder="留空永不到期"
-                  format="YYYY-MM-DD HH:mm"
-                  value-format="x"
+                format="YYYY-MM-DD HH:mm"
+                value-format="x"
                   style="width: 100%;"
-                />
-              </el-form-item>
+              />
+            </el-form-item>
               <el-form-item label="总流量GB">
                 <el-input-number v-model="form.totalGB" :min="0" style="width: 100%;" placeholder="0不限" />
               </el-form-item>
@@ -564,6 +573,7 @@ const currentProxyId = ref(null)  // 当前查看日志的代理ID
 const activeTab = ref('basic')
 const redeploying = ref({})  // 记录正在重新部署的节点ID
 const stopping = ref({})  // 记录正在停止部署的节点ID
+const testing = ref({})  // 记录正在测试的节点ID
 let refreshInterval = null  // 自动刷新定时器
 let logRefreshInterval = null  // 日志自动刷新定时器
 
@@ -945,9 +955,9 @@ const handleAdd = async () => {
   resetForm()
   // 使用 nextTick 确保表单重置完成后再打开对话框
   setTimeout(async () => {
-    dialogVisible.value = true
-    // 自动获取随机端口
-    await getRandomPort()
+  dialogVisible.value = true
+  // 自动获取随机端口
+  await getRandomPort()
   }, 0)
 }
 
@@ -1047,7 +1057,7 @@ const handleDelete = async (row) => {
       '确认删除节点',
       {
         confirmButtonText: '确定删除',
-        cancelButtonText: '取消',
+      cancelButtonText: '取消',
         type: 'warning',
         dangerouslyUseHTMLString: false
       }
@@ -1195,6 +1205,35 @@ const handleRedeploy = async (row) => {
   }
 }
 
+const handleTestProxy = async (row) => {
+  if (testing.value[row.id]) return // 防止重复点击
+  
+  try {
+    testing.value[row.id] = true
+    ElMessage.info('正在测试代理节点连接...')
+    
+    const response = await api.post(`/proxies/${row.id}/test_proxy/`)
+    
+    if (response.data.success) {
+      ElMessage.success(response.data.message || '代理节点测试成功')
+      // 可以显示详细结果
+      if (response.data.result) {
+        console.log('测试结果:', response.data.result)
+      }
+    } else {
+      ElMessage.error(response.data.error || '代理节点测试失败')
+      if (response.data.result) {
+        console.error('测试失败详情:', response.data.result)
+      }
+    }
+  } catch (error) {
+    console.error('测试代理节点失败:', error)
+    ElMessage.error(error.response?.data?.error || error.message || '测试失败')
+  } finally {
+    testing.value[row.id] = false
+  }
+}
+
 // 启动自动刷新（当有部署中的节点时）
 const startAutoRefresh = () => {
   // 如果已经有定时器在运行，不重复启动
@@ -1327,13 +1366,13 @@ const resetForm = () => {
     quic: { security: 'none', key: '', type: 'none' },
     tls: { serverName: '', alpn: ['h2', 'http/1.1'] },
     reality: {
-      show: false,
-      dest: 'www.microsoft.com:443',
-      serverNames: '',
-      privateKey: '',
-      publicKey: '',
-      shortIds: ''
-    }
+    show: false,
+    dest: 'www.microsoft.com:443',
+    serverNames: '',
+    privateKey: '',
+    publicKey: '',
+    shortIds: ''
+  }
   })
   
   // 重置嗅探设置（完全重置对象）

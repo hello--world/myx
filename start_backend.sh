@@ -35,6 +35,10 @@ if ! uv run python manage.py shell -c "from apps.accounts.models import User; ex
     uv run python create_default_user.py
 fi
 
+# 初始化默认子域名词库
+echo "初始化默认子域名词库..."
+uv run python manage.py init_subdomain_words
+
 # 加载 .env 文件（如果存在）
 if [ -f .env ]; then
     echo "加载 .env 文件..."

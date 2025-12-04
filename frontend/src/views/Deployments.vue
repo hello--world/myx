@@ -465,8 +465,8 @@ const fetchLogs = async (deploymentId) => {
     // 同时获取任务状态，如果已完成则停止刷新
     const deployment = deployments.value.find(d => d.id === deploymentId)
           if (deployment && (deployment.status === 'success' || deployment.status === 'failed' || deployment.status === 'timeout' || deployment.status === 'cancelled')) {
-            stopLogRefresh()
-          }
+      stopLogRefresh()
+    }
   } catch (error) {
     console.error('获取日志失败:', error)
   }

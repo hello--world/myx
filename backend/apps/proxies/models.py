@@ -107,3 +107,22 @@ class Certificate(models.Model):
     def __str__(self):
         return f"{self.domain or '未命名证书'} ({self.server.name})"
 
+
+class CaddyfileHistory(models.Model):
+    """Caddyfile历史版本模型"""
+    proxy = models.ForeignKey('Proxy', on_delete=models.CASCADE, related_name='caddyfile_histories', verbose_name='代理节点')
+    content = models.TextField(verbose_name='Caddyfile内容')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    created_by = models.ForeignKey(django_settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='创建者')
+
+    class Meta:
+        verbose_name = 'Caddyfile历史版本'
+        verbose_name_plural = 'Caddyfile历史版本'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+        ]
+
+    def __str__(self):
+        return f"Caddyfile历史版本 - {self.proxy.server.name} - {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+

@@ -15,6 +15,7 @@ import os
 import base64
 import json
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,227 @@ class ProxyViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
+    def test_proxy(self, request, pk=None):
+        """测试代理节点连接（使用xray客户端自测）"""
+        logger.info(f'[test_proxy] 收到测试请求: proxy_id={pk}, user={request.user.username}')
+        
+        try:
+            proxy = self.get_object()
+            logger.info(f'[test_proxy] 找到代理: id={proxy.id}, name={proxy.name}, server={proxy.server.name}')
+        except NotFound:
+            logger.error(f'[test_proxy] 代理不存在: proxy_id={pk}, user={request.user.username}')
+            return Response({
+                'error': '代理不存在',
+                'detail': f'代理 ID {pk} 不存在或无权访问'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f'[test_proxy] 获取代理失败: proxy_id={pk}, error={str(e)}', exc_info=True)
+            return Response({
+                'error': '获取代理失败',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        server = proxy.server
+        logger.info(f'[test_proxy] 代理服务器: id={server.id}, name={server.name}, host={server.host}')
+        
+        # 检查是否有 Agent
+        from apps.agents.models import Agent
+        try:
+            agent = Agent.objects.get(server=server)
+            logger.info(f'[test_proxy] 找到Agent: id={agent.id}, status={agent.status}, rpc_port={agent.rpc_port}')
+            if agent.status != 'online':
+                logger.warning(f'[test_proxy] Agent不在线: agent_id={agent.id}, status={agent.status}')
+                return Response({'error': 'Agent不在线'}, status=status.HTTP_400_BAD_REQUEST)
+        except Agent.DoesNotExist:
+            logger.error(f'[test_proxy] 服务器未安装Agent: server_id={server.id}, server_name={server.name}')
+            return Response({'error': '服务器未安装Agent'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f'[test_proxy] 获取Agent失败: server_id={server.id}, error={str(e)}', exc_info=True)
+            return Response({
+                'error': '获取Agent失败',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # 检查代理是否已部署
+        logger.info(f'[test_proxy] 检查部署状态: deployment_status={proxy.deployment_status}')
+        if proxy.deployment_status != 'success':
+            logger.warning(f'[test_proxy] 代理未部署成功: proxy_id={proxy.id}, deployment_status={proxy.deployment_status}')
+            return Response({
+                'error': '代理节点尚未部署成功，无法测试',
+                'deployment_status': proxy.deployment_status
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # 生成客户端测试配置
+            # Agent节点自测：客户端连接到本地127.0.0.1，因为代理节点和测试客户端都在同一台服务器上
+            logger.info(f'[test_proxy] 开始生成客户端配置: protocol={proxy.protocol}, port={proxy.port}')
+            from utils.xray_config import generate_xray_client_config
+            
+            server_host = '127.0.0.1'  # 本地测试，使用127.0.0.1
+            client_config = generate_xray_client_config(proxy, server_host)
+            logger.info(f'[test_proxy] 客户端配置生成成功')
+            
+            # 将配置转换为JSON字符串
+            test_config_json = json.dumps(client_config, indent=2)
+            logger.info(f'[test_proxy] 配置JSON长度: {len(test_config_json)} 字符')
+            
+            # 读取Python测试脚本（从服务器本地读取，不依赖Agent上的文件）
+            # 脚本会通过execute_script_via_agent上传到Agent执行
+            # 使用与deployment_tool.py相同的路径计算逻辑
+            from apps.deployments.deployment_tool import DEPLOYMENT_TOOL_DIR
+            
+            script_path = DEPLOYMENT_TOOL_DIR / 'scripts' / 'test_proxy.py'
+            logger.info(f'[test_proxy] 脚本路径: {script_path}')
+            
+            if not script_path.exists():
+                logger.error(f'[test_proxy] 测试脚本文件不存在: {script_path}')
+                return Response({
+                    'error': '测试脚本文件不存在',
+                    'detail': f'找不到脚本文件: {script_path}'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            logger.info(f'[test_proxy] 读取测试脚本: {script_path}')
+            with open(script_path, 'r', encoding='utf-8') as f:
+                python_script = f.read()
+            logger.info(f'[test_proxy] 脚本读取成功，长度: {len(python_script)} 字符')
+            
+            # 修改脚本，将配置JSON嵌入到脚本中（而不是通过命令行参数）
+            # 替换脚本中的配置读取逻辑
+            logger.info(f'[test_proxy] 开始嵌入配置到脚本中...')
+            try:
+                python_script = python_script.replace(
+                    'if len(sys.argv) < 2:',
+                    'if False:  # 配置已嵌入，跳过参数检查'
+                )
+                python_script = python_script.replace(
+                    'config_json = sys.argv[1]',
+                    f'config_json = """{test_config_json}"""'
+                )
+                logger.info(f'[test_proxy] 配置嵌入成功，脚本长度: {len(python_script)} 字符')
+            except Exception as e:
+                logger.error(f'[test_proxy] 嵌入配置失败: error={str(e)}', exc_info=True)
+                return Response({
+                    'error': '嵌入配置到脚本失败',
+                    'detail': str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # 通过Agent执行Python脚本
+            logger.info(f'[test_proxy] 开始通过Agent执行脚本: agent_id={agent.id}')
+            try:
+                cmd = execute_script_via_agent(agent, python_script, timeout=30, script_name='test_proxy.py')
+                logger.info(f'[test_proxy] 命令已提交: command_id={cmd.id}, agent_id={agent.id}')
+            except Exception as e:
+                logger.error(f'[test_proxy] 提交命令失败: agent_id={agent.id}, error={str(e)}', exc_info=True)
+                return Response({
+                    'error': '提交测试命令失败',
+                    'detail': str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # 等待命令执行完成
+            logger.info(f'[test_proxy] 开始等待代理测试完成: proxy_id={proxy.id}, command_id={cmd.id}')
+            max_wait = 30
+            wait_time = 0
+            while wait_time < max_wait:
+                try:
+                    cmd.refresh_from_db()
+                    if cmd.status in ['success', 'failed']:
+                        logger.info(f'[test_proxy] 代理测试完成: proxy_id={proxy.id}, command_id={cmd.id}, status={cmd.status}, wait_time={wait_time}秒')
+                        break
+                    time.sleep(1)
+                    wait_time += 1
+                    
+                    # 每5秒记录一次等待状态
+                    if wait_time % 5 == 0:
+                        logger.info(f'[test_proxy] 等待代理测试完成: proxy_id={proxy.id}, command_id={cmd.id}, 已等待{wait_time}秒, 当前状态={cmd.status}')
+                except Exception as e:
+                    logger.error(f'[test_proxy] 等待过程中出错: command_id={cmd.id}, error={str(e)}', exc_info=True)
+                    return Response({
+                        'error': '等待测试完成时出错',
+                        'detail': str(e)
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            if wait_time >= max_wait:
+                logger.warning(f'[test_proxy] 代理测试超时: proxy_id={proxy.id}, command_id={cmd.id}, 等待时间超过{max_wait}秒')
+                return Response({
+                    'error': f'测试超时（超过{max_wait}秒）',
+                    'result': cmd.result or '',
+                    'success': False
+                }, status=status.HTTP_408_REQUEST_TIMEOUT)
+            
+            if cmd.status == 'success':
+                logger.info(f'[test_proxy] 代理测试成功: proxy_id={proxy.id}, command_id={cmd.id}')
+                result_output = cmd.result or ''
+                logger.info(f'[test_proxy] 测试结果输出长度: {len(result_output)} 字符')
+                if result_output:
+                    if len(result_output) > 1000:
+                        logger.info(f'[test_proxy] 测试结果输出（前1000字符）:\n{result_output[:1000]}...')
+                        logger.info(f'[test_proxy] 测试结果输出（后500字符）:\n...{result_output[-500:]}')
+                    else:
+                        logger.info(f'[test_proxy] 测试结果完整输出:\n{result_output}')
+                else:
+                    logger.warning(f'[test_proxy] 测试成功但结果为空: proxy_id={proxy.id}, command_id={cmd.id}')
+                return Response({
+                    'message': '代理节点测试成功',
+                    'result': result_output,
+                    'success': True
+                })
+            else:
+                # 获取完整的执行结果
+                result_output = cmd.result or ''
+                error_output = cmd.error or ''
+                
+                logger.error(f'[test_proxy] 代理测试失败: proxy_id={proxy.id}, command_id={cmd.id}')
+                logger.error(f'[test_proxy] 命令状态: {cmd.status}')
+                logger.error(f'[test_proxy] error字段: {error_output if error_output else "(空)"}')
+                logger.error(f'[test_proxy] result字段长度: {len(result_output)} 字符')
+                
+                # 如果error为空，尝试从result中提取错误信息
+                if not error_output and result_output:
+                    # 检查result中是否包含错误信息
+                    if '错误' in result_output or '失败' in result_output or 'error' in result_output.lower():
+                        error_output = result_output
+                        logger.info(f'[test_proxy] 从result中提取错误信息')
+                
+                # 记录完整的输出（用于调试）
+                if result_output:
+                    if len(result_output) > 1000:
+                        logger.error(f'[test_proxy] 测试结果输出（前1000字符）:\n{result_output[:1000]}...')
+                        logger.error(f'[test_proxy] 测试结果输出（后500字符）:\n...{result_output[-500:]}')
+                    else:
+                        logger.error(f'[test_proxy] 测试结果完整输出:\n{result_output}')
+                
+                if error_output:
+                    if len(error_output) > 1000:
+                        logger.error(f'[test_proxy] 错误信息（前1000字符）:\n{error_output[:1000]}...')
+                    else:
+                        logger.error(f'[test_proxy] 错误信息完整输出:\n{error_output}')
+                
+                # 构建错误消息
+                if error_output:
+                    error_msg = error_output
+                elif result_output:
+                    # 如果只有result，使用result作为错误信息
+                    error_msg = result_output[:500] + ('...' if len(result_output) > 500 else '')
+                else:
+                    error_msg = '代理节点测试失败（无详细错误信息）'
+                
+                logger.error(f'[test_proxy] 最终错误消息: {error_msg[:200]}...' if len(error_msg) > 200 else f'[test_proxy] 最终错误消息: {error_msg}')
+                
+                return Response({
+                    'error': error_msg,
+                    'result': result_output,
+                    'error_detail': error_output,
+                    'success': False
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        except Exception as e:
+            logger.error(f'[test_proxy] 测试过程发生异常: proxy_id={proxy.id}, error={str(e)}', exc_info=True)
+            return Response({
+                'error': '测试过程发生异常',
+                'detail': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'])
     def redeploy(self, request, pk=None):
         """重新部署代理"""
         logger.info(f'[redeploy] 收到重新部署请求: proxy_id={pk}, user={request.user.username}')
@@ -249,10 +471,13 @@ class ProxyViewSet(viewsets.ModelViewSet):
         from apps.agents.command_queue import CommandQueue
         import base64
         
-        # 创建读取命令
+        # 创建读取命令（同时获取文件修改时间）
         read_script = """#!/bin/bash
 if [ -f /etc/caddy/Caddyfile ]; then
+    echo "===CONTENT==="
     cat /etc/caddy/Caddyfile
+    echo "===MTIME==="
+    stat -c %y /etc/caddy/Caddyfile 2>/dev/null || stat -f "%Sm" /etc/caddy/Caddyfile 2>/dev/null || echo ""
 else
     echo "Caddyfile不存在"
     exit 1
@@ -272,8 +497,27 @@ fi
             wait_time += 1
         
         if cmd.status == 'success':
+            result = cmd.result or ''
+            content = ''
+            mtime = None
+            
+            # 解析结果，分离内容和修改时间
+            if '===CONTENT===' in result and '===MTIME===' in result:
+                parts = result.split('===CONTENT===')
+                if len(parts) > 1:
+                    content_part = parts[1].split('===MTIME===')
+                    content = content_part[0].strip() if content_part else ''
+                    if len(content_part) > 1:
+                        mtime_str = content_part[1].strip()
+                        if mtime_str:
+                            mtime = mtime_str
+            else:
+                # 兼容旧格式（没有分隔符的情况）
+                content = result
+            
             return Response({
-                'content': cmd.result or '',
+                'content': content,
+                'mtime': mtime,  # 文件修改时间
                 'message': '读取成功'
             })
         else:
@@ -304,7 +548,10 @@ fi
         # 通过 Agent 更新 Caddyfile
         from apps.agents.command_queue import CommandQueue
         
-        # 创建更新脚本（直接使用内容，不需要base64编码）
+        # 创建更新脚本（先保存到临时文件，验证通过后再写入正式文件）
+        import uuid
+        temp_file = f"/tmp/caddyfile_{uuid.uuid4().hex[:8]}"
+        
         update_script = f"""#!/bin/bash
 set -e
 
@@ -313,21 +560,26 @@ if [ -f /etc/caddy/Caddyfile ]; then
     cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.$(date +%Y%m%d_%H%M%S)
 fi
 
-# 写入新文件
-cat > /etc/caddy/Caddyfile << 'CADDYFILE_EOF'
+# 先写入临时文件
+cat > {temp_file} << 'CADDYFILE_EOF'
 {content}
 CADDYFILE_EOF
 
-# 验证配置
-if caddy validate --config /etc/caddy/Caddyfile 2>&1; then
-    echo "配置验证成功"
+# 验证临时文件配置
+VALIDATE_OUTPUT=$(caddy validate --config {temp_file} 2>&1)
+VALIDATE_EXIT=$?
+
+if [ $VALIDATE_EXIT -eq 0 ]; then
+    # 验证通过，写入正式文件
+    cp {temp_file} /etc/caddy/Caddyfile
+    rm -f {temp_file}
+    echo "配置验证成功，文件已保存"
     exit 0
 else
-    echo "配置验证失败，已恢复备份"
-    LATEST_BAK=$(ls -t /etc/caddy/Caddyfile.bak.* 2>/dev/null | head -1)
-    if [ -n "$LATEST_BAK" ]; then
-        cp "$LATEST_BAK" /etc/caddy/Caddyfile
-    fi
+    # 验证失败，删除临时文件，保留原文件
+    rm -f {temp_file}
+    echo "配置验证失败："
+    echo "$VALIDATE_OUTPUT"
     exit 1
 fi
 """
@@ -345,15 +597,51 @@ fi
             wait_time += 1
         
         if cmd.status == 'success':
+            # 保存历史版本（只有验证通过并成功保存后才创建历史记录）
+            from .models import CaddyfileHistory
+            # 先创建历史记录
+            CaddyfileHistory.objects.create(
+                proxy=proxy,
+                content=content,
+                created_by=request.user
+            )
+            # 保留最近30个版本，删除更早的版本
+            histories = CaddyfileHistory.objects.filter(proxy=proxy).order_by('-created_at')
+            if histories.count() > 30:
+                # 删除第30个之后的版本
+                for old_history in histories[30:]:
+                    old_history.delete()
+            
             return Response({
-                'message': 'Caddyfile更新成功',
+                'message': 'Caddyfile更新成功（已通过验证）',
                 'result': cmd.result or ''
             })
         else:
+            # 验证失败，返回详细错误信息
+            error_msg = cmd.error or 'Caddyfile更新失败'
+            result_output = cmd.result or ''
+            
+            # 如果结果中包含验证错误信息，提取出来
+            if '配置验证失败' in result_output:
+                # 提取验证错误的具体信息
+                lines = result_output.split('\n')
+                validation_errors = []
+                in_error_section = False
+                for line in lines:
+                    if '配置验证失败' in line:
+                        in_error_section = True
+                        continue
+                    if in_error_section and line.strip():
+                        validation_errors.append(line)
+                
+                if validation_errors:
+                    error_msg = 'Caddyfile配置验证失败：\n' + '\n'.join(validation_errors)
+            
             return Response({
-                'error': cmd.error or 'Caddyfile更新失败',
-                'result': cmd.result or ''
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                'error': error_msg,
+                'result': result_output,
+                'validation_failed': True
+            }, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def validate_caddyfile(self, request, pk=None):
@@ -547,13 +835,13 @@ fi
             cert_key = (cert_path, key_path)
             if cert_key not in seen_certs:
                 seen_certs.add(cert_key)
-                certificates.append({
-                    'domain': domain,
-                    'cert_path': cert_path,
-                    'key_path': key_path,
+            certificates.append({
+                'domain': domain,
+                'cert_path': cert_path,
+                'key_path': key_path,
                     'line': caddyfile_content[:match.start()].count('\n') + 1,
                     'format': 'simple'
-                })
+            })
         
         # 匹配块格式: tls { certificate ... key ... }
         block_pattern = r'tls\s*\{[^}]*certificate\s+([^\s{}]+\.(pem|crt|key))[^}]*key\s+([^\s{}]+\.(pem|crt|key))[^}]*\}'
@@ -585,10 +873,10 @@ fi
             cert_key = (cert_path, key_path)
             if cert_key not in seen_certs:
                 seen_certs.add(cert_key)
-                certificates.append({
-                    'domain': domain,
-                    'cert_path': cert_path,
-                    'key_path': key_path,
+            certificates.append({
+                'domain': domain,
+                'cert_path': cert_path,
+                'key_path': key_path,
                     'line': caddyfile_content[:match.start()].count('\n') + 1,
                     'format': 'block'
                 })
@@ -613,7 +901,7 @@ fi
                     'format': 'database',  # 标记为数据库存储
                     'created_at': db_cert['created_at'].isoformat() if db_cert['created_at'] else None,
                     'updated_at': db_cert['updated_at'].isoformat() if db_cert['updated_at'] else None
-                })
+            })
         
         return Response({
             'certificates': certificates,
@@ -717,6 +1005,57 @@ echo "证书上传成功"
                 'error': cmd.error or '证书上传失败',
                 'result': cmd.result or ''
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def list_caddyfile_history(self, request, pk=None):
+        """列出Caddyfile历史版本"""
+        proxy = self.get_object()
+        
+        from .models import CaddyfileHistory
+        from django.core.paginator import Paginator
+        
+        histories = CaddyfileHistory.objects.filter(proxy=proxy).order_by('-created_at')
+        
+        # 分页（可选）
+        page = request.query_params.get('page', 1)
+        page_size = request.query_params.get('page_size', 30)
+        paginator = Paginator(histories, page_size)
+        page_obj = paginator.get_page(page)
+        
+        history_list = []
+        for history in page_obj:
+            history_list.append({
+                'id': history.id,
+                'content': history.content,
+                'created_at': history.created_at.isoformat(),
+                'created_by': history.created_by.username if history.created_by else None
+            })
+        
+        return Response({
+            'count': paginator.count,
+            'results': history_list,
+            'page': page_obj.number,
+            'pages': paginator.num_pages
+        })
+
+    @action(detail=True, methods=['get'], url_path='caddyfile_history/(?P<history_id>[^/.]+)')
+    def get_caddyfile_history(self, request, pk=None, history_id=None):
+        """获取指定历史版本的Caddyfile内容"""
+        proxy = self.get_object()
+        
+        from .models import CaddyfileHistory
+        try:
+            history = CaddyfileHistory.objects.get(id=history_id, proxy=proxy)
+            return Response({
+                'id': history.id,
+                'content': history.content,
+                'created_at': history.created_at.isoformat(),
+                'created_by': history.created_by.username if history.created_by else None
+            })
+        except CaddyfileHistory.DoesNotExist:
+            return Response({
+                'error': '历史版本不存在'
+            }, status=status.HTTP_404_NOT_FOUND)
 
     @action(detail=True, methods=['delete'], url_path='certificates/(?P<cert_id>[^/.]+)/delete_record')
     def delete_certificate_record(self, request, pk=None, cert_id=None):

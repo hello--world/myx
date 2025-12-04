@@ -54,6 +54,11 @@ const routes = [
         component: () => import('@/views/Settings.vue')
       },
       {
+        path: 'cloudflare-dns',
+        name: 'CloudflareDNS',
+        component: () => import('@/views/CloudflareDNS.vue')
+      },
+      {
         path: 'logs',
         name: 'Logs',
         component: () => import('@/views/Logs.vue')

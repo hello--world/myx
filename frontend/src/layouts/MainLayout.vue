@@ -38,9 +38,17 @@
             <el-icon><Monitor /></el-icon>
             <span>服务器管理</span>
           </el-menu-item>
+          <el-menu-item index="/agents">
+            <el-icon><Monitor /></el-icon>
+            <span>Agent管理</span>
+          </el-menu-item>
           <el-menu-item index="/caddyfiles">
             <el-icon><Document /></el-icon>
-            <span>Caddyfile</span>
+            <span>Caddy 配置</span>
+          </el-menu-item>
+          <el-menu-item index="/cloudflare-dns">
+            <el-icon><Link /></el-icon>
+            <span>DNS 管理</span>
           </el-menu-item>
           <el-menu-item index="/proxies">
             <el-icon><Connection /></el-icon>
@@ -53,10 +61,6 @@
           <el-menu-item index="/deployments">
             <el-icon><Tools /></el-icon>
             <span>部署任务</span>
-          </el-menu-item>
-          <el-menu-item index="/agents">
-            <el-icon><Monitor /></el-icon>
-            <span>Agent管理</span>
           </el-menu-item>
           <el-menu-item index="/logs">
             <el-icon><Document /></el-icon>

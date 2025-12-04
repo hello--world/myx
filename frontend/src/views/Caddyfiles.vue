@@ -35,15 +35,15 @@
           <!-- 工具栏 -->
           <div class="file-toolbar">
             <div class="file-info">
-              <span class="server-name">{{ currentServerName }}</span>
-              <span class="separator">|</span>
-              <span class="file-path">/etc/caddy/Caddyfile</span>
-              <span v-if="lastUpdateTime" class="separator">|</span>
-              <span v-if="lastUpdateTime" class="update-time">{{ lastUpdateTime }}</span>
+              <div class="server-name">{{ currentServerName }}</div>
+              <div class="file-path">/etc/caddy/Caddyfile</div>
             </div>
             <div class="toolbar-actions">
               <el-button type="primary" size="small" @click="handleSave" :loading="saving">
                 保存
+              </el-button>
+              <el-button size="small" @click="handleShowHistory">
+                历史
               </el-button>
               <el-button type="success" size="small" @click="handleValidate" :loading="validating">
                 验证配置
@@ -284,6 +284,139 @@
       </div>
     </div>
 
+    <!-- Caddyfile历史版本对话框 -->
+    <el-dialog
+      v-model="historyDialogVisible"
+      title="Caddyfile 历史版本"
+      width="80%"
+      :close-on-click-modal="false"
+    >
+      <div class="history-container">
+        <div class="history-list">
+          <el-table
+            :data="historyList"
+            stripe
+            style="width: 100%"
+            :max-height="400"
+            size="small"
+            v-loading="loadingHistory"
+            @row-click="handleViewHistory"
+          >
+            <el-table-column type="index" label="#" width="60" align="center" />
+            <el-table-column prop="created_at" label="保存时间" width="180">
+              <template #default="{ row }">
+                {{ formatHistoryDate(row.created_at) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_by" label="保存者" width="120" />
+            <el-table-column prop="content" label="内容预览" show-overflow-tooltip>
+              <template #default="{ row }">
+                <code style="font-size: 11px;">{{ row.content.substring(0, 100) }}{{ row.content.length > 100 ? '...' : '' }}</code>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100" align="center">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click.stop="handleViewHistory(row)"
+                >
+                  查看
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div v-if="viewingHistoryContent" class="history-content">
+          <div class="history-content-header">
+            <span>历史版本内容</span>
+            <el-button
+              size="small"
+              type="primary"
+              @click="handleRestoreHistory"
+            >
+              恢复此版本
+            </el-button>
+          </div>
+          <div class="history-content-body">
+            <pre><code>{{ viewingHistoryContent }}</code></pre>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="historyDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <!-- Caddyfile历史版本对话框 -->
+    <el-dialog
+      v-model="historyDialogVisible"
+      title="Caddyfile 历史版本"
+      width="90%"
+      :close-on-click-modal="false"
+    >
+      <div class="history-container">
+        <div class="history-list">
+          <el-table
+            :data="historyList"
+            stripe
+            style="width: 100%"
+            :max-height="500"
+            size="small"
+            v-loading="loadingHistory"
+            highlight-current-row
+            @row-click="handleViewHistory"
+          >
+            <el-table-column type="index" label="#" width="60" align="center" />
+            <el-table-column prop="created_at" label="保存时间" width="180">
+              <template #default="{ row }">
+                {{ formatHistoryDate(row.created_at) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_by" label="保存者" width="120" />
+            <el-table-column prop="content" label="内容预览" show-overflow-tooltip>
+              <template #default="{ row }">
+                <code style="font-size: 11px;">{{ row.content.substring(0, 100) }}{{ row.content.length > 100 ? '...' : '' }}</code>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100" align="center">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click.stop="handleViewHistory(row)"
+                >
+                  查看
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div v-if="viewingHistoryContent" class="history-content">
+          <div class="history-content-header">
+            <span>历史版本内容</span>
+            <el-button
+              size="small"
+              type="primary"
+              @click="handleRestoreHistory"
+            >
+              恢复此版本
+            </el-button>
+          </div>
+          <div class="history-content-body">
+            <pre><code>{{ viewingHistoryContent }}</code></pre>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="historyDialogVisible = false">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
     <!-- 证书查看/编辑对话框 -->
     <el-dialog
       v-model="certDialogVisible"
@@ -357,7 +490,6 @@ const servers = ref([])
 const selectedServerId = ref(null)
 const content = ref('')
 const currentProxyId = ref(null)
-const lastUpdateTime = ref('')
 const resultMessage = ref('')
 const resultType = ref('info')
 const resultDetail = ref('')
@@ -388,6 +520,11 @@ const updatingCertificate = ref(false)
 const certSearchText = ref('')
 const certFilterFormat = ref('')
 const filteredCertificates = ref([])
+const historyDialogVisible = ref(false)
+const historyList = ref([])
+const loadingHistory = ref(false)
+const viewingHistoryContent = ref('')
+const viewingHistoryId = ref(null)
 
 // Caddyfile 语法高亮定义
 const caddyfileLanguage = StreamLanguage.define({
@@ -512,7 +649,6 @@ const loadCaddyfile = async () => {
     // 读取 Caddyfile
     const caddyResponse = await api.get(`/proxies/${proxy.id}/get_caddyfile/`)
     content.value = caddyResponse.data.content || ''
-    lastUpdateTime.value = new Date().toLocaleString()
     
     // 如果当前在证书管理标签页，自动刷新证书列表（不显示消息）
     if (rightPanelTab.value === 'certificates') {
@@ -546,12 +682,14 @@ const handleSave = async () => {
     })
 
     if (response.data.message) {
-      ElMessage.success('保存成功')
-      lastUpdateTime.value = new Date().toLocaleString()
+      ElMessage.success('保存成功，已自动备份历史版本')
+      // 保存后重新加载文件以获取最新的修改时间
+      await loadCaddyfile()
       resultMessage.value = '保存成功'
       resultType.value = 'success'
-      resultDetail.value = response.data.result || '文件已成功保存到服务器'
+      resultDetail.value = response.data.result || '文件已成功保存到服务器，历史版本已备份'
     } else {
+      // 这种情况不应该发生，因为成功时会有 message
       ElMessage.error('保存失败')
       resultMessage.value = '保存失败'
       resultType.value = 'error'
@@ -559,10 +697,24 @@ const handleSave = async () => {
     }
   } catch (error) {
     console.error('保存失败:', error)
-    ElMessage.error('保存失败: ' + (error.response?.data?.error || error.message))
-    resultMessage.value = '保存失败'
-    resultType.value = 'error'
-    resultDetail.value = error.response?.data?.error || error.message || '未知错误'
+    const errorMsg = error.response?.data?.error || error.message || '未知错误'
+    const isValidationFailed = error.response?.data?.validation_failed
+    
+    if (isValidationFailed) {
+      ElMessage.error({
+        message: '配置验证失败，文件未保存',
+        duration: 5000,
+        showClose: true
+      })
+      resultMessage.value = '配置验证失败'
+      resultType.value = 'error'
+      resultDetail.value = errorMsg
+    } else {
+      ElMessage.error('保存失败: ' + errorMsg)
+      resultMessage.value = '保存失败'
+      resultType.value = 'error'
+      resultDetail.value = errorMsg
+    }
   } finally {
     saving.value = false
   }
@@ -661,6 +813,120 @@ const copyContent = () => {
     ElMessage.success('已复制到剪贴板')
   }).catch(() => {
     ElMessage.error('复制失败')
+  })
+}
+
+const handleShowHistory = async () => {
+  if (!currentProxyId.value) {
+    ElMessage.warning('请先选择服务器')
+    return
+  }
+
+  historyDialogVisible.value = true
+  viewingHistoryContent.value = ''
+  viewingHistoryId.value = null
+  await fetchHistory()
+}
+
+const fetchHistory = async () => {
+  if (!currentProxyId.value) return
+
+  loadingHistory.value = true
+  try {
+    const response = await api.get(`/proxies/${currentProxyId.value}/list_caddyfile_history/`)
+    historyList.value = response.data.results || []
+  } catch (error) {
+    console.error('获取历史版本失败:', error)
+    ElMessage.error('获取历史版本失败: ' + (error.response?.data?.error || error.message))
+    historyList.value = []
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+const handleViewHistory = async (history) => {
+  if (!currentProxyId.value) return
+
+  try {
+    const response = await api.get(`/proxies/${currentProxyId.value}/caddyfile_history/${history.id}/`)
+    viewingHistoryContent.value = response.data.content || ''
+    viewingHistoryId.value = history.id
+  } catch (error) {
+    console.error('获取历史版本内容失败:', error)
+    ElMessage.error('获取历史版本内容失败: ' + (error.response?.data?.error || error.message))
+  }
+}
+
+const handleRestoreHistoryDirect = async (history) => {
+  if (!currentProxyId.value) {
+    ElMessage.warning('请先选择服务器')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要恢复此历史版本吗？\n保存时间：${formatHistoryDate(history.created_at)}\n\n当前编辑器中的内容将被替换，恢复后需要点击"保存"按钮应用更改。`,
+      '确认恢复历史版本',
+      {
+        confirmButtonText: '确定恢复',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    // 获取完整的历史版本内容
+    try {
+      const response = await api.get(`/proxies/${currentProxyId.value}/caddyfile_history/${history.id}/`)
+      content.value = response.data.content || ''
+      historyDialogVisible.value = false
+      ElMessage.success('历史版本已加载到编辑器，请点击"保存"按钮应用更改')
+    } catch (error) {
+      console.error('获取历史版本内容失败:', error)
+      ElMessage.error('获取历史版本内容失败: ' + (error.response?.data?.error || error.message))
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('恢复失败:', error)
+    }
+  }
+}
+
+const handleRestoreHistory = async () => {
+  if (!viewingHistoryId.value || !viewingHistoryContent.value) {
+    ElMessage.warning('请先选择一个历史版本')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      '确定要恢复此历史版本吗？当前内容将被替换。',
+      '确认恢复',
+      {
+        confirmButtonText: '确定恢复',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    content.value = viewingHistoryContent.value
+    historyDialogVisible.value = false
+    ElMessage.success('历史版本已加载到编辑器，请点击保存应用更改')
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('恢复失败:', error)
+    }
+  }
+}
+
+const formatHistoryDate = (dateString) => {
+  const date = new Date(dateString)
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
   })
 }
 
@@ -1069,8 +1335,8 @@ onMounted(() => {
 
 .file-info {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
   font-size: 13px;
   color: #606266;
   flex: 1;
@@ -1081,21 +1347,15 @@ onMounted(() => {
 .file-info .server-name {
   font-weight: 600;
   color: #303133;
-}
-
-.file-info .separator {
-  color: #dcdfe6;
+  font-size: 14px;
 }
 
 .file-info .file-path {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   color: #909399;
-}
-
-.file-info .update-time {
-  color: #909399;
   font-size: 12px;
 }
+
 
 .toolbar-actions {
   display: flex;
@@ -1349,5 +1609,58 @@ onMounted(() => {
 .upload-cert-section :deep(.el-textarea__inner) {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 12px;
+}
+
+/* 历史版本对话框样式 */
+.history-container {
+  display: flex;
+  gap: 20px;
+  min-height: 400px;
+}
+
+.history-list {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-content {
+  width: 500px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.history-content-header {
+  padding: 12px 16px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #dcdfe6;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.history-content-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  background: #fff;
+  max-height: 500px;
+}
+
+.history-content-body pre {
+  margin: 0;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.history-content-body code {
+  color: #303133;
 }
 </style>

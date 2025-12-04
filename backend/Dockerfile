@@ -52,6 +52,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/api/health/ || exit 1
 
-# Run migrations and start server
-CMD ["sh", "-c", "cd backend && python manage.py migrate && python manage.py collectstatic --noinput && python manage.py runserver 0.0.0.0:8000"]
+# Run migrations, initialize subdomain words, and start server
+CMD ["sh", "-c", "cd backend && python manage.py migrate && python manage.py init_subdomain_words && python manage.py collectstatic --noinput && python manage.py runserver 0.0.0.0:8000"]
 

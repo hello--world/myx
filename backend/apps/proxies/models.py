@@ -85,3 +85,25 @@ class Proxy(models.Model):
         except:
             return {}
 
+
+class Certificate(models.Model):
+    """Caddy证书模型（记录手动上传的证书）"""
+    server = models.ForeignKey(Server, on_delete=models.CASCADE, related_name='certificates', verbose_name='服务器')
+    domain = models.CharField(max_length=255, blank=True, null=True, verbose_name='域名', help_text='证书关联的域名（可选）')
+    cert_path = models.CharField(max_length=500, verbose_name='证书路径', help_text='证书文件在服务器上的路径')
+    key_path = models.CharField(max_length=500, verbose_name='密钥路径', help_text='密钥文件在服务器上的路径')
+    remark = models.TextField(blank=True, null=True, verbose_name='备注')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    created_by = models.ForeignKey(django_settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name='创建者')
+
+    class Meta:
+        verbose_name = '证书'
+        verbose_name_plural = '证书'
+        ordering = ['-created_at']
+        # 确保同一服务器上证书路径和密钥路径的唯一性
+        unique_together = [['server', 'cert_path', 'key_path']]
+
+    def __str__(self):
+        return f"{self.domain or '未命名证书'} ({self.server.name})"
+

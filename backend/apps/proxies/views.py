@@ -509,35 +509,111 @@ fi
         
         # 解析 TLS 证书路径
         certificates = []
+        seen_certs = set()  # 用于去重
         
         # 匹配简单格式: tls /path/to/cert.pem /path/to/key.key
-        tls_pattern = r'tls\s+([^\s]+\.(pem|crt))\s+([^\s]+\.(key|pem))'
+        # 支持 .pem, .crt, .key 等扩展名
+        tls_pattern = r'tls\s+([^\s{}]+\.(pem|crt|key))\s+([^\s{}]+\.(pem|crt|key))'
         matches = re.finditer(tls_pattern, caddyfile_content, re.MULTILINE)
         for match in matches:
-            cert_path = match.group(1)
-            key_path = match.group(3)
-            # 提取域名（从上下文或路径推断）
-            domain = cert_path.split('/')[-1].replace('.pem', '').replace('.crt', '')
-            certificates.append({
-                'domain': domain,
-                'cert_path': cert_path,
-                'key_path': key_path,
-                'line': caddyfile_content[:match.start()].count('\n') + 1
-            })
+            cert_path = match.group(1).strip()
+            key_path = match.group(3).strip()
+            
+            # 确保第一个是证书文件，第二个是密钥文件
+            if cert_path.endswith('.key') and key_path.endswith(('.pem', '.crt')):
+                # 如果顺序反了，交换
+                cert_path, key_path = key_path, cert_path
+            
+            # 提取域名（从证书文件名推断，去掉扩展名）
+            cert_filename = cert_path.split('/')[-1]
+            domain = cert_filename.replace('.pem', '').replace('.crt', '').replace('.key', '')
+            
+            # 尝试从上下文提取域名（查找该 tls 行之前的域名行）
+            lines_before = caddyfile_content[:match.start()].split('\n')
+            for i in range(len(lines_before) - 1, max(0, len(lines_before) - 10), -1):
+                line = lines_before[i].strip()
+                # 跳过空行和注释
+                if not line or line.startswith('#'):
+                    continue
+                # 如果找到域名行（不以 { 开头，不包含空格或包含点号）
+                if '{' not in line and ('.' in line or not ' ' in line):
+                    # 提取域名（去掉端口号）
+                    potential_domain = line.split()[0] if ' ' in line else line
+                    potential_domain = potential_domain.split(':')[0]  # 去掉端口
+                    if '.' in potential_domain or potential_domain.startswith('localhost'):
+                        domain = potential_domain
+                        break
+            
+            cert_key = (cert_path, key_path)
+            if cert_key not in seen_certs:
+                seen_certs.add(cert_key)
+                certificates.append({
+                    'domain': domain,
+                    'cert_path': cert_path,
+                    'key_path': key_path,
+                    'line': caddyfile_content[:match.start()].count('\n') + 1,
+                    'format': 'simple'
+                })
         
         # 匹配块格式: tls { certificate ... key ... }
-        block_pattern = r'tls\s*\{[^}]*certificate\s+([^\s]+\.(pem|crt))[^}]*key\s+([^\s]+\.(key|pem))[^}]*\}'
+        block_pattern = r'tls\s*\{[^}]*certificate\s+([^\s{}]+\.(pem|crt|key))[^}]*key\s+([^\s{}]+\.(pem|crt|key))[^}]*\}'
         block_matches = re.finditer(block_pattern, caddyfile_content, re.MULTILINE | re.DOTALL)
         for match in block_matches:
-            cert_path = match.group(1)
-            key_path = match.group(3)
-            domain = cert_path.split('/')[-1].replace('.pem', '').replace('.crt', '')
-            certificates.append({
-                'domain': domain,
-                'cert_path': cert_path,
-                'key_path': key_path,
-                'line': caddyfile_content[:match.start()].count('\n') + 1
-            })
+            cert_path = match.group(1).strip()
+            key_path = match.group(3).strip()
+            
+            # 确保第一个是证书文件，第二个是密钥文件
+            if cert_path.endswith('.key') and key_path.endswith(('.pem', '.crt')):
+                cert_path, key_path = key_path, cert_path
+            
+            cert_filename = cert_path.split('/')[-1]
+            domain = cert_filename.replace('.pem', '').replace('.crt', '').replace('.key', '')
+            
+            # 尝试从上下文提取域名
+            lines_before = caddyfile_content[:match.start()].split('\n')
+            for i in range(len(lines_before) - 1, max(0, len(lines_before) - 10), -1):
+                line = lines_before[i].strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '{' not in line and ('.' in line or not ' ' in line):
+                    potential_domain = line.split()[0] if ' ' in line else line
+                    potential_domain = potential_domain.split(':')[0]
+                    if '.' in potential_domain or potential_domain.startswith('localhost'):
+                        domain = potential_domain
+                        break
+            
+            cert_key = (cert_path, key_path)
+            if cert_key not in seen_certs:
+                seen_certs.add(cert_key)
+                certificates.append({
+                    'domain': domain,
+                    'cert_path': cert_path,
+                    'key_path': key_path,
+                    'line': caddyfile_content[:match.start()].count('\n') + 1,
+                    'format': 'block'
+                })
+        
+        # 从数据库读取手动上传的证书（即使 Caddyfile 中没有配置）
+        from .models import Certificate
+        db_certificates = Certificate.objects.filter(server=server).values(
+            'id', 'domain', 'cert_path', 'key_path', 'created_at', 'updated_at'
+        )
+        
+        # 将数据库中的证书添加到列表中（如果不在 Caddyfile 中）
+        seen_paths = {(c['cert_path'], c['key_path']) for c in certificates}
+        for db_cert in db_certificates:
+            cert_key = (db_cert['cert_path'], db_cert['key_path'])
+            if cert_key not in seen_paths:
+                certificates.append({
+                    'id': db_cert['id'],
+                    'domain': db_cert['domain'] or db_cert['cert_path'].split('/')[-1].replace('.pem', '').replace('.crt', ''),
+                    'cert_path': db_cert['cert_path'],
+                    'key_path': db_cert['key_path'],
+                    'line': None,  # 数据库中的证书没有行号
+                    'format': 'database',  # 标记为数据库存储
+                    'created_at': db_cert['created_at'].isoformat() if db_cert['created_at'] else None,
+                    'updated_at': db_cert['updated_at'].isoformat() if db_cert['updated_at'] else None
+                })
         
         return Response({
             'certificates': certificates,
@@ -613,15 +689,52 @@ echo "证书上传成功"
             wait_time += 1
         
         if cmd.status == 'success':
+            # 保存证书信息到数据库
+            from .models import Certificate
+            domain = request.data.get('domain', '')
+            remark = request.data.get('remark', '')
+            
+            # 检查是否已存在相同的证书路径
+            cert, created = Certificate.objects.update_or_create(
+                server=server,
+                cert_path=cert_path,
+                key_path=key_path,
+                defaults={
+                    'domain': domain or None,
+                    'remark': remark or None,
+                    'created_by': request.user
+                }
+            )
+            
             return Response({
                 'message': '证书上传成功',
-                'result': cmd.result or ''
+                'result': cmd.result or '',
+                'certificate_id': cert.id,
+                'created': created
             })
         else:
             return Response({
                 'error': cmd.error or '证书上传失败',
                 'result': cmd.result or ''
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['delete'], url_path='certificates/(?P<cert_id>[^/.]+)/delete_record')
+    def delete_certificate_record(self, request, pk=None, cert_id=None):
+        """删除证书记录（仅删除数据库记录，不删除服务器上的文件）"""
+        proxy = self.get_object()
+        server = proxy.server
+        
+        from .models import Certificate
+        try:
+            cert = Certificate.objects.get(id=cert_id, server=server)
+            cert.delete()
+            return Response({
+                'message': '证书记录已删除'
+            }, status=status.HTTP_204_NO_CONTENT)
+        except Certificate.DoesNotExist:
+            return Response({
+                'error': '证书记录不存在'
+            }, status=status.HTTP_404_NOT_FOUND)
 
     @action(detail=True, methods=['get'])
     def get_certificate(self, request, pk=None):

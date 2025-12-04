@@ -76,46 +76,271 @@
         </div>
       </div>
 
-      <!-- 右侧：操作结果 -->
+      <!-- 右侧：操作结果和证书管理 -->
       <div class="result-panel">
-        <div class="result-header">
-          <h3>操作结果</h3>
-          <el-button
-            v-if="resultMessage"
-            size="small"
-            text
-            @click="clearResult"
-          >
-            清空
-          </el-button>
-        </div>
-        <div class="result-content">
-          <el-empty
-            v-if="!resultMessage"
-            description="暂无操作结果"
-            :image-size="100"
-          />
-          <div v-else class="result-display">
-            <el-alert
-              :title="resultMessage"
-              :type="resultType"
-              :closable="false"
-              show-icon
-            />
-            <div v-if="resultDetail" class="result-detail">
-              <div class="detail-header">详细信息</div>
-              <pre class="detail-content">{{ resultDetail }}</pre>
+        <el-tabs v-model="rightPanelTab" class="panel-tabs">
+          <!-- 操作结果标签页 -->
+          <el-tab-pane label="操作结果" name="result">
+            <div class="result-header">
+              <h3>操作结果</h3>
+              <el-button
+                v-if="resultMessage"
+                size="small"
+                text
+                @click="clearResult"
+              >
+                清空
+              </el-button>
             </div>
-          </div>
-        </div>
+            <div class="result-content">
+              <el-empty
+                v-if="!resultMessage"
+                description="暂无操作结果"
+                :image-size="100"
+              />
+              <div v-else class="result-display">
+                <el-alert
+                  :title="resultMessage"
+                  :type="resultType"
+                  :closable="false"
+                  show-icon
+                />
+                <div v-if="resultDetail" class="result-detail">
+                  <div class="detail-header">详细信息</div>
+                  <pre class="detail-content">{{ resultDetail }}</pre>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 证书管理标签页 -->
+          <el-tab-pane label="证书管理" name="certificates">
+            <div class="certificates-header">
+              <h3>证书管理</h3>
+              <div class="header-actions">
+                <el-input
+                  v-model="certSearchText"
+                  placeholder="搜索域名或路径..."
+                  size="small"
+                  style="width: 200px; margin-right: 8px;"
+                  clearable
+                  @input="handleCertSearch"
+                >
+                  <template #prefix>
+                    <el-icon><Search /></el-icon>
+                  </template>
+                </el-input>
+                <el-select
+                  v-model="certFilterFormat"
+                  placeholder="筛选格式"
+                  size="small"
+                  style="width: 120px; margin-right: 8px;"
+                  clearable
+                  @change="handleCertFilter"
+                >
+                  <el-option label="全部" value="" />
+                  <el-option label="Caddyfile" value="caddyfile" />
+                  <el-option label="数据库记录" value="database" />
+                </el-select>
+                <el-button
+                  size="small"
+                  type="primary"
+                  @click="handleRefreshCertificates"
+                  :loading="loadingCertificates"
+                >
+                  刷新
+                </el-button>
+              </div>
+            </div>
+            <div class="certificates-content">
+              <div v-loading="loadingCertificates">
+                <el-empty
+                  v-if="filteredCertificates.length === 0 && !loadingCertificates"
+                  :description="certificates.length === 0 ? '暂无证书配置' : '没有匹配的证书'"
+                  :image-size="100"
+                />
+                <el-table
+                  v-else
+                  :data="filteredCertificates"
+                  stripe
+                  style="width: 100%"
+                  :max-height="600"
+                  size="small"
+                >
+                  <el-table-column prop="domain" label="域名" width="100" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <div style="display: flex; align-items: center; gap: 6px;">
+                        <el-icon><Document /></el-icon>
+                        <span>{{ row.domain || '未命名证书' }}</span>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="cert_path" label="证书路径" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <code style="font-size: 11px;">{{ row.cert_path }}</code>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="key_path" label="密钥路径" show-overflow-tooltip>
+                    <template #default="{ row }">
+                      <code style="font-size: 11px;">{{ row.key_path }}</code>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="format" label="来源" width="110" align="center">
+                    <template #default="{ row }">
+                      <el-tag
+                        v-if="row.format"
+                        size="small"
+                        :type="row.format === 'database' ? 'warning' : 'info'"
+                      >
+                        {{ row.format === 'simple' ? '简单格式' : row.format === 'block' ? '块格式' : '数据库记录' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="line" label="行号" width="80" align="center">
+                    <template #default="{ row }">
+                      <span v-if="row.line !== null && row.line !== undefined" class="line-number">
+                        {{ row.line }}
+                      </span>
+                      <el-tag v-else size="small" type="warning">未配置</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="150" align="center" fixed="right">
+                    <template #default="{ row }">
+                      <el-button
+                        size="small"
+                        type="primary"
+                        @click="handleViewCertificate(row)"
+                      >
+                        查看/编辑
+                      </el-button>
+                      <el-button
+                        v-if="row.format === 'database'"
+                        size="small"
+                        type="danger"
+                        @click="handleDeleteCertificate(row)"
+                      >
+                        删除
+                      </el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+
+              <el-divider />
+
+              <div class="upload-cert-section">
+                <h4>上传新证书</h4>
+                <el-form :model="certForm" label-width="100px" size="small">
+                  <el-form-item label="域名（可选）">
+                    <el-input
+                      v-model="certForm.domain"
+                      placeholder="example.com（可选，用于标识证书）"
+                    />
+                  </el-form-item>
+                  <el-form-item label="证书路径">
+                    <el-input
+                      v-model="certForm.cert_path"
+                      placeholder="/etc/caddy/ssl/cert.pem"
+                    />
+                  </el-form-item>
+                  <el-form-item label="密钥路径">
+                    <el-input
+                      v-model="certForm.key_path"
+                      placeholder="/etc/caddy/ssl/key.pem"
+                    />
+                  </el-form-item>
+                  <el-form-item label="证书内容">
+                    <el-input
+                      v-model="certForm.cert_content"
+                      type="textarea"
+                      :rows="6"
+                      placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                    />
+                  </el-form-item>
+                  <el-form-item label="密钥内容">
+                    <el-input
+                      v-model="certForm.key_content"
+                      type="textarea"
+                      :rows="6"
+                      placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                    />
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button
+                      type="primary"
+                      @click="handleUploadCertificate"
+                      :loading="uploadingCertificate"
+                      :disabled="!certForm.cert_path || !certForm.key_path || !certForm.cert_content || !certForm.key_content"
+                    >
+                      上传证书
+                    </el-button>
+                    <el-button @click="resetCertForm">重置</el-button>
+                  </el-form-item>
+                </el-form>
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </div>
+
+    <!-- 证书查看/编辑对话框 -->
+    <el-dialog
+      v-model="certDialogVisible"
+      :title="editingCert ? '编辑证书' : '查看证书'"
+      width="800px"
+      :close-on-click-modal="false"
+    >
+      <el-form :model="editingCertForm" label-width="120px" v-loading="loadingCertContent">
+        <el-form-item label="域名">
+          <el-input v-model="editingCertForm.domain" disabled />
+        </el-form-item>
+        <el-form-item label="证书路径">
+          <el-input v-model="editingCertForm.cert_path" />
+        </el-form-item>
+        <el-form-item label="密钥路径">
+          <el-input v-model="editingCertForm.key_path" />
+        </el-form-item>
+        <el-form-item label="证书内容">
+          <el-input
+            v-model="editingCertForm.cert_content"
+            type="textarea"
+            :rows="10"
+            placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+            style="font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px;"
+          />
+        </el-form-item>
+        <el-form-item label="密钥内容">
+          <el-input
+            v-model="editingCertForm.key_content"
+            type="textarea"
+            :rows="10"
+            placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+            style="font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px;"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="certDialogVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            @click="handleUpdateCertificate"
+            :loading="updatingCertificate"
+            :disabled="!editingCertForm.cert_path || !editingCertForm.key_path || !editingCertForm.cert_content || !editingCertForm.key_content"
+          >
+            更新证书
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Document, Search } from '@element-plus/icons-vue'
 import { Codemirror } from 'vue-codemirror'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
@@ -137,6 +362,32 @@ const resultMessage = ref('')
 const resultType = ref('info')
 const resultDetail = ref('')
 const useDarkTheme = ref(false)
+const rightPanelTab = ref('result')
+const certificates = ref([])
+const loadingCertificates = ref(false)
+const uploadingCertificate = ref(false)
+const certForm = ref({
+  domain: '',
+  cert_path: '/etc/caddy/ssl/cert.pem',
+  key_path: '/etc/caddy/ssl/key.pem',
+  cert_content: '',
+  key_content: '',
+  remark: ''
+})
+const certDialogVisible = ref(false)
+const editingCert = ref(null) // 当前正在编辑的证书对象
+const editingCertForm = ref({
+  domain: '',
+  cert_path: '',
+  key_path: '',
+  cert_content: '',
+  key_content: ''
+})
+const loadingCertContent = ref(false)
+const updatingCertificate = ref(false)
+const certSearchText = ref('')
+const certFilterFormat = ref('')
+const filteredCertificates = ref([])
 
 // Caddyfile 语法高亮定义
 const caddyfileLanguage = StreamLanguage.define({
@@ -234,6 +485,7 @@ const selectServer = async (serverId) => {
   selectedServerId.value = serverId
   clearResult()
   await loadCaddyfile()
+  // loadCaddyfile 中已经处理了自动刷新证书列表的逻辑
 }
 
 const loadCaddyfile = async () => {
@@ -261,6 +513,11 @@ const loadCaddyfile = async () => {
     const caddyResponse = await api.get(`/proxies/${proxy.id}/get_caddyfile/`)
     content.value = caddyResponse.data.content || ''
     lastUpdateTime.value = new Date().toLocaleString()
+    
+    // 如果当前在证书管理标签页，自动刷新证书列表（不显示消息）
+    if (rightPanelTab.value === 'certificates') {
+      await handleRefreshCertificates(false)
+    }
   } catch (error) {
     console.error('读取 Caddyfile 失败:', error)
     ElMessage.error('读取 Caddyfile 失败: ' + (error.response?.data?.error || error.message))
@@ -413,6 +670,289 @@ const clearResult = () => {
   resultDetail.value = ''
 }
 
+const handleRefreshCertificates = async (showMessage = true) => {
+  if (!currentProxyId.value) {
+    if (showMessage) {
+      ElMessage.warning('请先选择服务器')
+    }
+    return
+  }
+
+  loadingCertificates.value = true
+  try {
+    const response = await api.get(`/proxies/${currentProxyId.value}/list_certificates/`)
+    certificates.value = response.data.certificates || []
+    applyCertFilters() // 应用过滤
+    if (showMessage) {
+      if (certificates.value.length === 0) {
+        ElMessage.info('未找到证书配置')
+      } else {
+        ElMessage.success(`找到 ${certificates.value.length} 个证书配置`)
+      }
+    }
+  } catch (error) {
+    console.error('获取证书列表失败:', error)
+    if (showMessage) {
+      ElMessage.error('获取证书列表失败: ' + (error.response?.data?.error || error.message))
+    }
+    certificates.value = []
+    filteredCertificates.value = []
+  } finally {
+    loadingCertificates.value = false
+  }
+}
+
+const applyCertFilters = () => {
+  let filtered = [...certificates.value]
+  
+  // 搜索过滤
+  if (certSearchText.value) {
+    const searchLower = certSearchText.value.toLowerCase()
+    filtered = filtered.filter(cert => {
+      const domain = (cert.domain || '').toLowerCase()
+      const certPath = (cert.cert_path || '').toLowerCase()
+      const keyPath = (cert.key_path || '').toLowerCase()
+      return domain.includes(searchLower) || certPath.includes(searchLower) || keyPath.includes(searchLower)
+    })
+  }
+  
+  // 格式过滤
+  if (certFilterFormat.value) {
+    if (certFilterFormat.value === 'caddyfile') {
+      filtered = filtered.filter(cert => cert.format === 'simple' || cert.format === 'block')
+    } else if (certFilterFormat.value === 'database') {
+      filtered = filtered.filter(cert => cert.format === 'database')
+    }
+  }
+  
+  filteredCertificates.value = filtered
+}
+
+const handleCertSearch = () => {
+  applyCertFilters()
+}
+
+const handleCertFilter = () => {
+  applyCertFilters()
+}
+
+const handleUploadCertificate = async () => {
+  if (!currentProxyId.value) {
+    ElMessage.warning('请先选择服务器')
+    return
+  }
+
+  if (!certForm.value.cert_path || !certForm.value.key_path) {
+    ElMessage.warning('请填写证书路径和密钥路径')
+    return
+  }
+
+  if (!certForm.value.cert_content || !certForm.value.key_content) {
+    ElMessage.warning('请填写证书内容和密钥内容')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要上传证书到以下路径吗？\n证书: ${certForm.value.cert_path}\n密钥: ${certForm.value.key_path}`,
+      '确认上传证书',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    uploadingCertificate.value = true
+
+    const response = await api.post(`/proxies/${currentProxyId.value}/upload_certificate/`, {
+      domain: certForm.value.domain,
+      cert_path: certForm.value.cert_path,
+      key_path: certForm.value.key_path,
+      cert_content: certForm.value.cert_content,
+      key_content: certForm.value.key_content,
+      remark: certForm.value.remark
+    })
+
+    if (response.data.message) {
+      ElMessage.success('证书上传成功')
+      resetCertForm()
+      // 刷新证书列表
+      await handleRefreshCertificates()
+    } else {
+      ElMessage.error('证书上传失败: ' + (response.data.error || '未知错误'))
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('上传证书失败:', error)
+      ElMessage.error('上传证书失败: ' + (error.response?.data?.error || error.message))
+    }
+  } finally {
+    uploadingCertificate.value = false
+  }
+}
+
+const resetCertForm = () => {
+  certForm.value = {
+    domain: '',
+    cert_path: '/etc/caddy/ssl/cert.pem',
+    key_path: '/etc/caddy/ssl/key.pem',
+    cert_content: '',
+    key_content: '',
+    remark: ''
+  }
+}
+
+const handleDeleteCertificate = async (cert) => {
+  if (!cert.id) {
+    ElMessage.warning('无法删除：该证书不是数据库中的记录')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除证书 "${cert.domain || cert.cert_path}" 吗？\n\n此操作只会删除数据库记录，不会删除服务器上的证书文件。`,
+      '确认删除证书',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    const response = await api.delete(`/proxies/${currentProxyId.value}/certificates/${cert.id}/delete_record/`)
+    
+    if (response.status === 204 || response.data?.message) {
+      ElMessage.success('证书记录已删除')
+      await handleRefreshCertificates(false)
+    } else {
+      ElMessage.error('删除失败')
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除证书失败:', error)
+      ElMessage.error('删除证书失败: ' + (error.response?.data?.error || error.message))
+    }
+  }
+}
+
+const handleViewCertificate = async (cert) => {
+  if (!currentProxyId.value) {
+    ElMessage.warning('请先选择服务器')
+    return
+  }
+
+  editingCert.value = cert
+  editingCertForm.value = {
+    domain: cert.domain || '',
+    cert_path: cert.cert_path || '',
+    key_path: cert.key_path || '',
+    cert_content: '',
+    key_content: ''
+  }
+
+  certDialogVisible.value = true
+  loadingCertContent.value = true
+
+  try {
+    // 读取证书和密钥内容（使用 GET 方法）
+    const response = await api.get(`/proxies/${currentProxyId.value}/get_certificate/`, {
+      params: {
+        cert_path: cert.cert_path,
+        key_path: cert.key_path
+      }
+    })
+
+    if (response.data.cert_content) {
+      editingCertForm.value.cert_content = response.data.cert_content
+    }
+    if (response.data.key_content) {
+      editingCertForm.value.key_content = response.data.key_content
+    }
+  } catch (error) {
+    console.error('读取证书内容失败:', error)
+    ElMessage.warning('读取证书内容失败: ' + (error.response?.data?.error || error.message))
+    // 即使读取失败，也允许用户手动输入
+  } finally {
+    loadingCertContent.value = false
+  }
+}
+
+const handleUpdateCertificate = async () => {
+  if (!currentProxyId.value) {
+    ElMessage.warning('请先选择服务器')
+    return
+  }
+
+  if (!editingCertForm.value.cert_path || !editingCertForm.value.key_path) {
+    ElMessage.warning('请填写证书路径和密钥路径')
+    return
+  }
+
+  if (!editingCertForm.value.cert_content || !editingCertForm.value.key_content) {
+    ElMessage.warning('请填写证书内容和密钥内容')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要更新证书吗？\n证书: ${editingCertForm.value.cert_path}\n密钥: ${editingCertForm.value.key_path}`,
+      '确认更新证书',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    updatingCertificate.value = true
+
+    const response = await api.post(`/proxies/${currentProxyId.value}/upload_certificate/`, {
+      domain: editingCertForm.value.domain,
+      cert_path: editingCertForm.value.cert_path,
+      key_path: editingCertForm.value.key_path,
+      cert_content: editingCertForm.value.cert_content,
+      key_content: editingCertForm.value.key_content,
+      remark: editingCertForm.value.remark || ''
+    })
+
+    if (response.data.message) {
+      ElMessage.success('证书更新成功')
+      certDialogVisible.value = false
+      // 刷新证书列表
+      await handleRefreshCertificates()
+    } else {
+      ElMessage.error('证书更新失败: ' + (response.data.error || '未知错误'))
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('更新证书失败:', error)
+      ElMessage.error('更新证书失败: ' + (error.response?.data?.error || error.message))
+    }
+  } finally {
+    updatingCertificate.value = false
+  }
+}
+
+// 当选择服务器时，自动刷新证书列表
+watch(selectedServerId, () => {
+  if (selectedServerId.value && rightPanelTab.value === 'certificates') {
+    // 延迟执行，等待 loadCaddyfile 完成并设置 currentProxyId
+    setTimeout(() => {
+      if (currentProxyId.value) {
+        handleRefreshCertificates(false) // 自动刷新时不显示消息
+      }
+    }, 500)
+  }
+})
+
+// 当切换到证书管理标签页时，自动刷新证书列表
+watch(rightPanelTab, (newTab) => {
+  if (newTab === 'certificates' && selectedServerId.value && currentProxyId.value) {
+    handleRefreshCertificates(false) // 自动刷新时不显示消息
+  }
+})
+
 onMounted(() => {
   fetchServers()
 })
@@ -437,7 +977,7 @@ onMounted(() => {
 
 /* 左侧服务器列表 */
 .sidebar {
-  width: 240px;
+  width: 250px;
   background: #fff;
   border-right: 1px solid #dcdfe6;
   display: flex;
@@ -499,11 +1039,13 @@ onMounted(() => {
 /* 中间编辑器区域 */
 .editor-area {
   flex: 1;
+  /* width: 600px; */
   display: flex;
   flex-direction: column;
   background: #f5f7fa;
   overflow: hidden;
   min-height: 0;
+  flex-shrink: 0;
 }
 
 .editor-container {
@@ -635,12 +1177,13 @@ onMounted(() => {
 
 /* 右侧结果面板 */
 .result-panel {
-  width: 320px;
+  width: 700px;
   background: #fff;
   border-left: 1px solid #dcdfe6;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
   flex-shrink: 0;
 }
 
@@ -696,5 +1239,115 @@ onMounted(() => {
   color: #606266;
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+/* 标签页样式 */
+.panel-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-tabs :deep(.el-tabs__header) {
+  margin: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid #dcdfe6;
+  flex-shrink: 0;
+}
+
+.panel-tabs :deep(.el-tabs__content) {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  height: 0;
+}
+
+.panel-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 证书管理样式 */
+.certificates-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #dcdfe6;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.certificates-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.certificates-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  min-height: 0;
+  height: 0;
+}
+
+/* 证书表格样式优化 */
+.certificates-content :deep(.el-table) {
+  font-size: 13px;
+}
+
+.certificates-content :deep(.el-table code) {
+  background: #f5f7fa;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  color: #606266;
+}
+
+.certificates-content :deep(.el-table .line-number) {
+  color: #409eff;
+  font-weight: 500;
+}
+
+.line-number {
+  color: #409eff;
+  font-weight: 500;
+}
+
+.cert-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ed;
+}
+
+.upload-cert-section {
+  margin-top: 16px;
+}
+
+.upload-cert-section h4 {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.upload-cert-section :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.upload-cert-section :deep(.el-textarea__inner) {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
 }
 </style>

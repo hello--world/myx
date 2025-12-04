@@ -26,7 +26,7 @@ class Server(models.Model):
         ('docker', 'Docker'),
     ]
 
-    name = models.CharField(max_length=100, verbose_name='服务器名称')
+    name = models.CharField(max_length=100, blank=True, verbose_name='服务器名称')
     host = models.CharField(max_length=255, verbose_name='主机地址')
     port = models.IntegerField(default=22, verbose_name='SSH端口')
     username = models.CharField(max_length=100, verbose_name='SSH用户名')

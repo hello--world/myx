@@ -119,6 +119,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Codemirror } from 'vue-codemirror'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
+import { StreamLanguage } from '@codemirror/language'
+import { oneDark } from '@codemirror/theme-one-dark'
 import api from '@/api'
 
 const loading = ref(false)
@@ -134,12 +136,81 @@ const lastUpdateTime = ref('')
 const resultMessage = ref('')
 const resultType = ref('info')
 const resultDetail = ref('')
+const useDarkTheme = ref(false)
+
+// Caddyfile 语法高亮定义
+const caddyfileLanguage = StreamLanguage.define({
+  name: 'caddyfile',
+  startState: () => ({ inBlock: false }),
+  token: (stream, state) => {
+    // 跳过空白
+    if (stream.eatSpace()) return null
+    
+    // 匹配注释
+    if (stream.match(/^#.*/)) {
+      return 'comment'
+    }
+    
+    // 匹配行首的域名/地址
+    if (stream.sol()) {
+      if (stream.match(/^[\w\.\-:\[\]]+/)) {
+        return 'string'
+      }
+    }
+    
+    // 匹配花括号
+    if (stream.match(/^[{}]/)) {
+      if (stream.match(/^{/)) {
+        state.inBlock = true
+      } else {
+        state.inBlock = false
+      }
+      return 'bracket'
+    }
+    
+    // 在块内匹配指令
+    if (state.inBlock) {
+      if (stream.match(/^\w+/)) {
+        return 'keyword'
+      }
+    }
+    
+    // 匹配路径
+    if (stream.match(/^\/[\w\/\.\-]+/)) {
+      return 'string'
+    }
+    
+    // 匹配端口号
+    if (stream.match(/^:\d+/)) {
+      return 'number'
+    }
+    
+    // 匹配引号内的字符串
+    if (stream.match(/^"[^"]*"/) || stream.match(/^'[^']*'/)) {
+      return 'string'
+    }
+    
+    // 匹配其他内容
+    stream.next()
+    return null
+  }
+})
 
 // CodeMirror 配置
-const extensions = [
-  EditorView.lineWrapping,
-  EditorState.tabSize.of(2),
-]
+const extensions = computed(() => {
+  const baseExtensions = [
+    EditorView.lineWrapping,
+    EditorState.tabSize.of(2),
+    caddyfileLanguage, // 使用自定义 Caddyfile 语法高亮
+  ]
+  
+  // 可选：添加暗色主题
+  if (useDarkTheme.value) {
+    baseExtensions.push(oneDark)
+  }
+  
+  return baseExtensions
+})
 
 const currentServerName = computed(() => {
   const server = servers.value.find(s => s.id === selectedServerId.value)
@@ -536,6 +607,30 @@ onMounted(() => {
 .code-editor :deep(.cm-gutters) {
   background: #fafafa;
   border-right: 1px solid #e4e7ed;
+}
+
+/* Caddyfile 语法高亮样式 */
+.code-editor :deep(.cm-comment) {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.code-editor :deep(.cm-keyword) {
+  color: #d73a49;
+  font-weight: 500;
+}
+
+.code-editor :deep(.cm-string) {
+  color: #032f62;
+}
+
+.code-editor :deep(.cm-number) {
+  color: #005cc5;
+}
+
+.code-editor :deep(.cm-bracket) {
+  color: #e36209;
+  font-weight: 600;
 }
 
 /* 右侧结果面板 */

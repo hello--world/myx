@@ -1206,14 +1206,19 @@ echo $?' '''
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def create(self, request, *args, **kwargs):
-        """创建服务器，处理密码保存和SSH key生成"""
-        serializer = self.get_serializer(data=request.data)
+        """创建服务器，处理自动生成服务器名和密码保存"""
+        # 如果服务器名为空，使用host作为默认值
+        data = request.data.copy()
+        if not data.get('name', '').strip():
+            data['name'] = data.get('host', '未命名服务器')
+        
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         
-        save_password = request.data.get('save_password', False)
-        enable_ssh_key = request.data.get('enable_ssh_key', False)
-        password = request.data.get('password', '')
-        connection_method = request.data.get('connection_method', 'agent')
+        save_password = data.get('save_password', False)
+        enable_ssh_key = data.get('enable_ssh_key', False)
+        password = data.get('password', '')
+        connection_method = data.get('connection_method', 'agent')
         
         # 创建服务器（先保存密码，即使save_password=False，也需要临时保存用于安装Agent）
         # 安装完成后，如果save_password=False，再清空密码
@@ -1523,7 +1528,13 @@ echo $?' '''
         """更新服务器，处理密码保存和SSH key生成"""
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        
+        # 如果服务器名为空，使用host作为默认值
+        data = request.data.copy()
+        if not data.get('name', '').strip():
+            data['name'] = data.get('host', instance.host) or '未命名服务器'
+        
+        serializer = self.get_serializer(instance, data=data, partial=partial)
         serializer.is_valid(raise_exception=True)
         
         save_password = request.data.get('save_password', False)

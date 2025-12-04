@@ -152,16 +152,27 @@
         <!-- 基础信息 -->
         <el-divider content-position="left" class="first-divider">基础信息</el-divider>
         <div class="form-row-two-cols">
-          <el-form-item label="服务器名" prop="name">
-            <el-input v-model="form.name" placeholder="服务器名" />
-          </el-form-item>
           <el-form-item label="SSH端口" prop="port">
             <el-input-number v-model="form.port" :min="1" :max="65535" style="width: 100%;" />
+          </el-form-item>
+          <el-form-item label="服务器名" prop="name">
+            <el-input 
+              v-model="form.name" 
+              placeholder="留空自动生成" 
+              @blur="handleNameBlur"
+            />
+            <div v-if="autoGeneratingName" style="font-size: 12px; color: #909399; margin-top: 4px;">
+              <el-icon class="is-loading"><Loading /></el-icon> 正在自动生成服务器名...
+            </div>
           </el-form-item>
         </div>
         <div class="form-row-two-cols">
           <el-form-item label="主机地址" prop="host">
-            <el-input v-model="form.host" placeholder="IP或域名" />
+            <el-input 
+              v-model="form.host" 
+              placeholder="IP或域名" 
+              @blur="handleHostBlur"
+            />
           </el-form-item>
           <el-form-item label="用户名" prop="username">
             <el-input v-model="form.username" placeholder="SSH用户名" />
@@ -228,6 +239,7 @@
             <el-input
               v-model="form.agent_connect_host"
               placeholder="agent.example.com（可选）"
+              @change="handleAgentConnectHostChange"
             />
           </el-form-item>
           <el-form-item label="连接端口" prop="agent_connect_port">
@@ -377,7 +389,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, h } from 'vue'
 import { ElMessage, ElMessageBox, ElCheckbox } from 'element-plus'
-import { Connection, Check, CopyDocument } from '@element-plus/icons-vue'
+import { Connection, Check, CopyDocument, Loading } from '@element-plus/icons-vue'
 import api from '@/api'
 
 const loading = ref(false)
@@ -432,10 +444,250 @@ const form = reactive({
 })
 
 const rules = {
-  name: [{ required: true, message: '请输入服务器名称', trigger: 'blur' }],
+  name: [], // 服务器名改为可选，自动生成
   host: [{ required: true, message: '请输入主机地址', trigger: 'blur' }],
   port: [{ required: true, message: '请输入SSH端口', trigger: 'blur' }],
   username: [{ required: true, message: '请输入SSH用户名', trigger: 'blur' }]
+}
+
+const autoGeneratingName = ref(false)
+
+// 获取IP地理位置信息（使用多个API作为备用）
+const getIPGeoInfo = async (ip) => {
+  console.log('[IP地理位置] 开始获取IP地理位置信息:', ip)
+  
+  // API列表（按优先级排序）
+  const apis = [
+    {
+      name: 'freeipapi',
+      url: `https://free.freeipapi.com/api/json/${ip}`,
+      parser: (data) => {
+        if (data && data.countryCode) {
+          return {
+            country: data.countryName || data.country,
+            countryCode: data.countryCode.toLowerCase(),
+            ip: data.ip || ip
+          }
+        }
+        return null
+      }
+    },
+    {
+      name: 'ipinfo',
+      url: `https://ipinfo.io/${ip}/json`,
+      parser: (data) => {
+        if (data && data.country) {
+          return {
+            country: data.country_name || data.country,
+            countryCode: data.country.toLowerCase(),
+            ip: data.ip || ip
+          }
+        }
+        return null
+      }
+    },
+    {
+      name: 'ip-api',
+      url: `http://ip-api.com/json/${ip}?fields=status,country,countryCode,query`,
+      parser: (data) => {
+        if (data && data.status === 'success') {
+          return {
+            country: data.country,
+            countryCode: data.countryCode.toLowerCase(),
+            ip: data.query || ip
+          }
+        }
+        return null
+      }
+    }
+  ]
+
+  // 依次尝试每个API
+  for (const api of apis) {
+    try {
+      console.log(`[IP地理位置] 尝试API: ${api.name}, URL: ${api.url}`)
+      const response = await fetch(api.url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
+      })
+      
+      console.log(`[IP地理位置] API ${api.name} 响应状态:`, response.status, response.statusText)
+      
+      if (!response.ok) {
+        console.warn(`[IP地理位置] API ${api.name} 请求失败，状态码:`, response.status)
+        continue // 如果请求失败，尝试下一个API
+      }
+      
+      const data = await response.json()
+      console.log(`[IP地理位置] API ${api.name} 返回数据:`, data)
+      
+      const result = api.parser(data)
+      console.log(`[IP地理位置] API ${api.name} 解析结果:`, result)
+      
+      if (result) {
+        console.log(`[IP地理位置] 成功获取地理位置信息，使用API: ${api.name}`, result)
+        return result
+      } else {
+        console.warn(`[IP地理位置] API ${api.name} 解析结果为空，尝试下一个API`)
+      }
+    } catch (error) {
+      console.warn(`[IP地理位置] API ${api.name} 请求异常:`, error)
+      continue // 继续尝试下一个API
+    }
+  }
+  
+  // 所有API都失败
+  console.error('[IP地理位置] 所有API都请求失败，无法获取地理位置信息')
+  return null
+}
+
+// 国家代码到国旗emoji的映射
+const countryFlags = {
+  'us': '🇺🇸',
+  'cn': '🇨🇳',
+  'jp': '🇯🇵',
+  'kr': '🇰🇷',
+  'gb': '🇬🇧',
+  'de': '🇩🇪',
+  'fr': '🇫🇷',
+  'ca': '🇨🇦',
+  'au': '🇦🇺',
+  'ru': '🇷🇺',
+  'in': '🇮🇳',
+  'br': '🇧🇷',
+  'mx': '🇲🇽',
+  'es': '🇪🇸',
+  'it': '🇮🇹',
+  'nl': '🇳🇱',
+  'sg': '🇸🇬',
+  'hk': '🇭🇰',
+  'tw': '🇹🇼',
+}
+
+// 自动生成服务器名
+const generateServerName = async (forceGenerate = false) => {
+  console.log('[生成服务器名] 开始生成，form.host:', form.host, 'form.name:', form.name, 'editingId:', editingId.value, 'forceGenerate:', forceGenerate)
+  
+  // 如果主机地址为空，无法生成
+  if (!form.host) {
+    console.log('[生成服务器名] 跳过：主机地址为空')
+    return
+  }
+  
+  // 如果不是强制生成，且已有服务器名，不自动生成
+  if (!forceGenerate && form.name) {
+    console.log('[生成服务器名] 跳过：已有服务器名且不是强制生成')
+    return
+  }
+
+  autoGeneratingName.value = true
+  
+  try {
+    // 确定使用的地址（优先使用agent_connect_host，否则使用host）
+    const address = form.agent_connect_host || form.host
+    console.log('[生成服务器名] 使用的地址:', address, 'agent_connect_host:', form.agent_connect_host, 'host:', form.host)
+    
+    // 判断是否是IP地址（IPv4）
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/
+    const isIP = ipRegex.test(address)
+    console.log('[生成服务器名] 是否为IP地址:', isIP)
+    
+    // 如果不是IP地址（域名），直接使用地址
+    if (!isIP) {
+      console.log('[生成服务器名] 不是IP地址，直接使用地址:', address)
+      form.name = address
+      autoGeneratingName.value = false
+      return
+    }
+    
+    // 只有IP地址才获取地理位置信息
+    console.log('[生成服务器名] 开始获取IP地理位置信息:', address)
+    let countryCode = null
+    let countryFlag = ''
+    
+    const geoInfo = await getIPGeoInfo(address)
+    console.log('[生成服务器名] 地理位置信息:', geoInfo)
+    
+    if (geoInfo && geoInfo.countryCode) {
+      countryCode = geoInfo.countryCode
+      countryFlag = countryFlags[countryCode] || ''
+      console.log('[生成服务器名] 国家代码:', countryCode, '国旗:', countryFlag)
+    } else {
+      console.log('[生成服务器名] 无法获取地理位置信息')
+    }
+    
+    // 生成服务器名（按照规则）
+    let serverName = ''
+    
+    if (countryCode === 'us' && countryFlag) {
+      // 美国：🇺🇸 us | 地址
+      serverName = `${countryFlag} us | ${address}`
+      console.log('[生成服务器名] 规则：美国，生成:', serverName)
+    } else if (countryCode && countryFlag) {
+      // 其他有国旗的国家：国旗 国家代码 | 地址
+      serverName = `${countryFlag} ${countryCode} | ${address}`
+      console.log('[生成服务器名] 规则：其他有国旗的国家，生成:', serverName)
+    } else if (countryCode) {
+      // 有国家代码但无国旗：国家代码 | 地址
+      serverName = `${countryCode} | ${address}`
+      console.log('[生成服务器名] 规则：有国家代码但无国旗，生成:', serverName)
+    } else {
+      // 无法获取地理位置：直接使用地址
+      serverName = address
+      console.log('[生成服务器名] 规则：无法获取地理位置，直接使用地址:', serverName)
+    }
+    
+    form.name = serverName
+    console.log('[生成服务器名] 最终生成的服务器名:', form.name)
+  } catch (error) {
+    console.error('[生成服务器名] 生成失败:', error)
+    // 如果生成失败，直接使用地址
+    form.name = form.agent_connect_host || form.host
+    console.log('[生成服务器名] 失败后使用默认名称:', form.name)
+  } finally {
+    autoGeneratingName.value = false
+  }
+}
+
+// 处理主机地址失焦事件
+const handleHostBlur = async () => {
+  console.log('[主机地址失焦] editingId:', editingId.value, 'form.name:', form.name, 'form.host:', form.host)
+  
+  // 如果服务器名为空，自动生成（编辑模式和新建模式都支持）
+  if (!form.name && form.host) {
+    console.log('[主机地址失焦] 服务器名为空，开始自动生成（强制生成）')
+    await generateServerName(true) // 强制生成
+  } else {
+    console.log('[主机地址失焦] 服务器名不为空或主机地址为空，不自动生成')
+  }
+}
+
+// 处理Agent连接地址变化
+const handleAgentConnectHostChange = async () => {
+  console.log('[Agent连接地址变化] editingId:', editingId.value, 'form.name:', form.name, 'form.agent_connect_host:', form.agent_connect_host)
+  
+  // 如果服务器名为空，或者是自动生成的格式，重新生成（编辑模式和新建模式都支持）
+  if (!form.name || form.name === form.host || form.name.match(/^[🇺🇸🇨🇳🇯🇵🇰🇷🇬🇧🇩🇪🇫🇷🇨🇦🇦🇺🇷🇺🇮🇳🇧🇷🇲🇽🇪🇸🇮🇹🇳🇱🇸🇬🇭🇰🇹🇼]/) || form.name.includes(' | ')) {
+    console.log('[Agent连接地址变化] 需要重新生成服务器名（强制生成）')
+    await generateServerName(true) // 强制生成
+  } else {
+    console.log('[Agent连接地址变化] 不需要重新生成服务器名')
+  }
+}
+
+// 处理服务器名失焦事件
+const handleNameBlur = () => {
+  console.log('[服务器名失焦] editingId:', editingId.value, 'form.name:', form.name, 'form.host:', form.host)
+  
+  // 如果用户清空了服务器名，自动生成（编辑模式和新建模式都支持）
+  if (!form.name && form.host) {
+    console.log('[服务器名失焦] 服务器名为空，开始自动生成（强制生成）')
+    generateServerName(true) // 强制生成
+  } else {
+    console.log('[服务器名失焦] 服务器名不为空或主机地址为空，不自动生成')
+  }
 }
 
 const fetchServers = async () => {
@@ -523,6 +775,7 @@ const handleAdd = () => {
 }
 
 const handleEdit = (row) => {
+  console.log('[编辑服务器] 开始编辑，服务器信息:', row)
   dialogTitle.value = '编辑服务器'
   editingId.value = row.id
   Object.assign(form, {
@@ -539,6 +792,7 @@ const handleEdit = (row) => {
     agent_connect_host: row.agent_connect_host || '',
     agent_connect_port: row.agent_connect_port || null
   })
+  console.log('[编辑服务器] 表单数据已填充:', form)
   dialogTestSuccess.value = false // 重置测试状态
   dialogVisible.value = true
 }
@@ -1032,27 +1286,47 @@ const handleTestInDialog = async () => {
 }
 
 const handleSubmit = async () => {
-  if (!formRef.value) return
+  console.log('[提交服务器] 开始提交，editingId:', editingId.value, 'form:', form)
+  
+  if (!formRef.value) {
+    console.log('[提交服务器] formRef 不存在，返回')
+    return
+  }
   
   await formRef.value.validate(async (valid) => {
+    console.log('[提交服务器] 表单验证结果:', valid)
     if (valid) {
       saving.value = true
+      console.log('[提交服务器] 开始保存，editingId:', editingId.value)
       try {
         if (editingId.value) {
-          await api.put(`/servers/${editingId.value}/`, form)
+          console.log('[提交服务器] 更新服务器，ID:', editingId.value, '提交数据:', JSON.stringify(form, null, 2))
+          const response = await api.put(`/servers/${editingId.value}/`, form)
+          console.log('[提交服务器] 更新成功，响应:', response.data)
           ElMessage.success('更新成功')
         } else {
-          await api.post('/servers/', form)
+          console.log('[提交服务器] 创建新服务器，提交数据:', JSON.stringify(form, null, 2))
+          const response = await api.post('/servers/', form)
+          console.log('[提交服务器] 创建成功，响应:', response.data)
           ElMessage.success('添加成功')
         }
         
         dialogVisible.value = false
-        fetchServers()
+        await fetchServers()
+        console.log('[提交服务器] 服务器列表已刷新')
       } catch (error) {
-        const errorMsg = error.response?.data?.message || '操作失败'
+        console.error('[提交服务器] 操作失败:', error)
+        console.error('[提交服务器] 错误详情:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status,
+          statusText: error.response?.statusText
+        })
+        const errorMsg = error.response?.data?.message || error.response?.data?.error || '操作失败'
         ElMessage.error(errorMsg)
       } finally {
         saving.value = false
+        console.log('[提交服务器] 保存操作完成')
       }
     }
   })

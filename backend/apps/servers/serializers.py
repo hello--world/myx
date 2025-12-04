@@ -21,6 +21,7 @@ class ServerSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'has_password', 'has_private_key', 'has_agent']
         extra_kwargs = {
+            'name': {'required': False, 'allow_blank': True},
             'password': {'write_only': True, 'required': False},
             'private_key': {'write_only': True, 'required': False},
         }

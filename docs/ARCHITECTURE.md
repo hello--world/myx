@@ -13,6 +13,54 @@ MyX 是一个基于 Agent 的服务器管理和部署系统，采用**服务器�
 
 ## 2. 组件架构
 
+### 2.0 分层架构（v2.1 新增）
+
+MyX 采用清晰的分层架构，业务逻辑从View层迁移到Service层，统一使用Ansible playbook进行部署。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    View Layer (视图层)                    │
+│  - 接收HTTP请求                                           │
+│  - 参数验证                                               │
+│  - 调用Service层                                          │
+│  - 返回HTTP响应                                           │
+│  文件：agents/views.py, deployments/views.py            │
+└─────────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│                  Service Layer (服务层)                   │
+│  - agents/services/                                       │
+│    ├─ agent_service.py: Agent管理                       │
+│    ├─ certificate_service.py: 证书管理                   │
+│    └─ upgrade_service.py: Agent升级                     │
+│  - deployments/services/                                  │
+│    ├─ deployment_service.py: 部署管理                    │
+│    └─ ansible_executor.py: Ansible执行器                │
+└─────────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│            AnsibleExecutor (统一执行层)                   │
+│  - execute_via_ssh(): SSH本地执行Ansible                │
+│  - execute_via_agent(): Agent远程执行Ansible             │
+│  - 自动选择执行方式（auto模式）                          │
+└─────────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│          Ansible Playbooks (统一部署脚本)                 │
+│  - install_agent.yml: Agent安装                          │
+│  - upgrade_agent.yml: Agent升级（含回滚）                │
+│  - deploy_xray.yml: Xray宿主机部署                       │
+│  - deploy_xray_docker.yml: Xray Docker部署               │
+│  - deploy_caddy.yml: Caddy部署                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+**架构优势**：
+- ✅ **清晰分层**：View只负责HTTP，Service负责业务逻辑
+- ✅ **统一部署**：SSH和Agent方式都使用Ansible playbook
+- ✅ **易于测试**：Service层可独立测试
+- ✅ **代码复用**：消除重复代码（如RPC端口生成、Token生成）
+
 ### 2.1 Agent 端（deployment-tool/agent/）
 
 #### 主要文件
@@ -112,10 +160,21 @@ MyX 是一个基于 Agent 的服务器管理和部署系统，采用**服务器�
 - `apps.py`: Django App 配置（启动心跳调度器）
 
 **deployments/**
-- `tasks.py`: 部署任务
-  - `install_agent_via_ssh()`: 通过 SSH 安装 Agent
-  - `wait_for_agent_startup()`: 等待 Agent 启动并检查 RPC 服务是否可用
-- `agent_deployer.py`: Agent 部署器
+- `tasks.py`: 部署任务（已重构为调用Service层）
+  - `install_agent_via_ssh()`: 通过 SSH 安装 Agent（调用DeploymentService）
+  - `wait_for_agent_startup()`: 等待 Agent 启动（调用DeploymentService）
+  - `install_agent_via_ssh_legacy()`: 旧版本（已弃用）
+- `agent_deployer.py`: Agent 部署器（已重构为调用Service层）
+  - `deploy_via_agent()`: 通过Agent部署（调用DeploymentService）
+- `services/`: Service层（业务逻辑）
+  - `deployment_service.py`: 部署管理服务
+    - `install_agent()`: 安装Agent（使用install_agent.yml）
+    - `wait_for_agent_startup()`: 等待Agent启动
+    - `deploy_service()`: 部署服务（Xray/Caddy）
+  - `ansible_executor.py`: Ansible执行器
+    - `execute_playbook()`: 执行playbook
+    - `_execute_via_ssh()`: SSH方式执行
+    - `_execute_via_agent()`: Agent方式执行
 
 **servers/**
 - `models.py`: 服务器数据模型
@@ -123,57 +182,60 @@ MyX 是一个基于 Agent 的服务器管理和部署系统，采用**服务器�
 
 ## 3. 通信流程
 
-### 3.1 Agent 部署流程
+### 3.1 Agent 部署流程（v2.1 更新）
+
+**使用统一的Ansible playbook**（install_agent.yml）
 
 ```
 1. 用户通过 Web 界面添加服务器（提供 SSH 凭证）
    ↓
-2. 服务器端创建 Agent 记录
+2. 服务器端创建 Agent 记录（AgentService.create_or_get_agent）
    - 生成 agent_token（随机字符串）
    - 生成 secret_key（加密密钥）
    - 生成 rpc_port（随机端口，8000-65535，排除常用端口，检查数据库确保唯一）
    - 生成 rpc_path（随机路径字符串，16-32字符，用于路径混淆，保障安全）
+   - 生成 SSL 证书（CertificateService.generate_certificate）
    ↓
-3. 通过 SSH 连接目标服务器
-   - 服务器通过SSH检查目标服务器端口可用性（可选，但建议）
-   ↓
-4. 上传 Agent 核心文件（通过SSH SFTP上传到 `/opt/myx-agent/`）
+3. 通过 SSH SFTP 上传 Agent 核心文件到 `/opt/myx-agent/`
    - main.py（Agent主程序）
    - requirements.txt（Python依赖列表）
    - rpc_server.py（JSON-RPC服务器实现）
    - ansible_executor.py（Ansible执行器）
-   - 其他被 main.py 直接或间接导入的 Python 模块文件
+   - pyproject.toml（uv项目配置）
+   - SSL证书和私钥（如果已生成）
    ↓
-5. 创建配置文件（/etc/myx-agent/config.json）
-   - 写入 agent_token（服务器分配）
-   - 写入 secret_key（服务器分配）
-   - 写入 rpc_port（**服务器分配，Agent必须使用此端口，不可更改**）
-   - 写入 rpc_path（**服务器分配，Agent必须使用此路径，不可更改**）
+4. 执行 install_agent.yml playbook（通过AnsibleExecutor.execute_via_ssh）
+   playbook 自动完成：
+   - 检查Python版本（>=3.6）
+   - 安装uv工具（Python依赖管理）
+   - 使用uv安装Python依赖
+   - 创建配置文件（/etc/myx-agent/config.json）
+     - agent_token（服务器分配）
+     - secret_key（服务器分配）
+     - rpc_port（服务器分配，Agent必须使用此端口）
+     - rpc_path（服务器分配，Agent必须使用此路径）
+   - 创建 systemd 服务（myx-agent.service）
+   - 启动 Agent 服务
    ↓
-6. 创建 systemd 服务（myx-agent.service）
+5. 等待 Agent 启动（DeploymentService.wait_for_agent_startup）
+   - 每 3 秒检查一次 Agent RPC 服务是否可用
+   - 使用完整路径 `https://agent_ip:rpc_port/{rpc_path}/rpc` 进行连接
+   - 超时时间：60-120 秒（根据调用场景）
    ↓
-7. 启动 systemd 服务
+6. Agent 启动成功，RPC 服务可用
    ↓
-8. Agent 启动，读取配置文件
-   ↓
-9. Agent 启动 JSON-RPC 服务器（HTTPS，端口=rpc_port，路径=/{rpc_path}/rpc）
-   ↓
-10. 服务器端等待 Agent 启动
-    - 每 3 秒检查一次 Agent RPC 服务是否可用
-    - 每 10 秒输出进度日志
-    - 使用完整路径 `https://agent_ip:rpc_port/{rpc_path}/rpc` 进行连接
-    - 超时时间：30-120 秒（根据调用场景）
-    - **如果超时或 RPC 不可用，触发 Agent 重新安装**
-   ↓
-11. Agent 启动成功，RPC 服务可用
-   ↓
-12. 同步部署工具目录到 Agent（可选，按需同步）
-    - 通过 Agent 命令执行 `sync_deployment_tool_to_agent()`
-    - 将整个 `deployment-tool` 目录打包为 tar.gz
-    - 上传到 Agent 端的 `/opt/myx-deployment-tool/` 目录
-    - 包含：playbooks/、scripts/、inventory/、ansible.cfg、VERSION 等
-    - 用于后续的部署任务执行（Xray、Caddy等服务的安装和配置）
+7. 同步部署工具目录到 Agent（可选，按需同步）
+   - 通过 Agent RPC 调用 `sync_deployment_tool_to_agent()`
+   - 将整个 `deployment-tool` 目录打包为 tar.gz
+   - 上传到 Agent 端的 `/opt/myx-deployment-tool/` 目录
+   - 包含：playbooks/、scripts/、inventory/、ansible.cfg、VERSION 等
+   - 版本控制：只在版本不一致或playbooks更新时同步
 ```
+
+**关键改进**：
+- ✅ 使用 Ansible playbook 替代 Bash heredoc 脚本
+- ✅ 通过 Service 层调用，代码更清晰
+- ✅ 统一的部署方式（SSH 和 Agent 逻辑一致）
 
 ### 3.2 心跳机制
 
@@ -492,13 +554,64 @@ AGENT_RPC_TIMEOUT = 30  # RPC调用超时时间（秒）
 4. Agent 启动，服务器等待并验证
 5. 部署完成
 
-### 8.2 Agent 重新部署
+### 8.2 Agent 升级流程（v2.1 更新）
 
-1. 用户触发重新部署
-2. 通过 SSH 更新 Agent 文件
-3. 重启 systemd 服务
-4. Agent 重新启动（使用相同的 RPC 端口）
-5. 服务器验证 Agent 状态
+**使用upgrade_agent.yml playbook，支持自动回滚**
+
+#### 方式1：通过Agent自升级（Agent在线）
+
+```
+1. 检查Agent状态
+   - Agent必须在线且RPC可用
+   ↓
+2. 上传新Agent文件到临时目录（AgentUpgradeService.upload_agent_files）
+   - 将新的Agent核心文件上传到 /tmp/myx-agent-new/
+   - 包含：main.py, rpc_server.py, ansible_executor.py等
+   ↓
+3. 同步部署工具到Agent
+   - 确保有最新的 upgrade_agent.yml playbook
+   ↓
+4. 通过systemd-run执行升级playbook（独立进程）
+   - 使用systemd-run创建临时服务
+   - 执行：ansible-playbook playbooks/upgrade_agent.yml
+   - 独立于当前Agent进程，确保升级过程不受Agent重启影响
+   ↓
+5. upgrade_agent.yml playbook 自动完成：
+   - 备份当前Agent文件和配置
+   - 停止Agent服务
+   - 复制新文件到 /opt/myx-agent/
+   - 更新Python依赖（uv sync + uv pip install）
+   - 启动Agent服务
+   - 验证服务状态
+   - 如果成功：清理备份和临时文件
+   - 如果失败：自动从备份恢复（rescue块）
+   ↓
+6. 服务器监控升级进度
+   - 读取日志文件变更
+   - 检查完成标记
+   - 验证Agent重新上线
+```
+
+#### 方式2：通过SSH升级（Agent离线）
+
+```
+1. 检查SSH凭据
+   - 确保服务器有SSH密码或私钥
+   ↓
+2. 调用 install_agent_via_ssh()
+   - 实际上就是重新安装Agent
+   - 使用相同的Token和RPC配置
+   ↓
+3. 等待Agent启动
+   - DeploymentService.wait_for_agent_startup()
+   - 验证RPC服务可用
+```
+
+**upgrade_agent.yml playbook特性**：
+- ✅ **自动备份**：升级前备份所有文件
+- ✅ **独立进程**：使用systemd-run隔离执行
+- ✅ **失败回滚**：Ansible rescue块自动恢复备份
+- ✅ **验证机制**：检查服务状态，确保升级成功
 
 ## 9. 架构特点
 
@@ -524,6 +637,16 @@ AGENT_RPC_TIMEOUT = 30  # RPC调用超时时间（秒）
 
 ---
 
-**最后更新**：2025-01-03
-**架构版本**：v2.0（无状态 Agent + JSON-RPC）
+**最后更新**：2025-01-05
+**架构版本**：v2.1（分层架构 + 统一Ansible部署）
+
+**v2.1 更新内容**：
+- ✅ 引入 Service 层，业务逻辑从 View 层分离
+- ✅ 统一使用 Ansible playbook 进行部署（SSH 和 Agent 方式）
+- ✅ 新增 install_agent.yml 和 upgrade_agent.yml playbook
+- ✅ Agent 升级支持自动回滚机制
+- ✅ 消除重复代码，提升可维护性
+
+**参考文档**：
+- [重构指南](REFACTORING_GUIDE.md) - 详细的重构说明和迁移步骤
 

@@ -8,6 +8,8 @@ class ServerSerializer(serializers.ModelSerializer):
     has_password = serializers.SerializerMethodField()
     has_private_key = serializers.SerializerMethodField()
     has_agent = serializers.SerializerMethodField()
+    agent_status = serializers.SerializerMethodField()
+    agent_rpc_supported = serializers.SerializerMethodField()
 
     class Meta:
         model = Server
@@ -17,9 +19,10 @@ class ServerSerializer(serializers.ModelSerializer):
             'agent_connect_host', 'agent_connect_port',
             'status', 'last_check', 'save_password', 'enable_ssh_key',
             'has_password', 'has_private_key', 'has_agent',
+            'agent_status', 'agent_rpc_supported',
             'created_at', 'updated_at', 'created_by', 'created_by_username'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'has_password', 'has_private_key', 'has_agent']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'has_password', 'has_private_key', 'has_agent', 'agent_status', 'agent_rpc_supported']
         extra_kwargs = {
             'name': {'required': False, 'allow_blank': True},
             'password': {'write_only': True, 'required': False},
@@ -40,6 +43,24 @@ class ServerSerializer(serializers.ModelSerializer):
             from apps.agents.models import Agent
             Agent.objects.get(server=obj)
             return True
+        except:
+            return False
+    
+    def get_agent_status(self, obj):
+        """获取Agent状态"""
+        try:
+            from apps.agents.models import Agent
+            agent = Agent.objects.get(server=obj)
+            return agent.status
+        except:
+            return None
+    
+    def get_agent_rpc_supported(self, obj):
+        """检查Agent是否支持RPC"""
+        try:
+            from apps.agents.models import Agent
+            agent = Agent.objects.get(server=obj)
+            return agent.rpc_supported
         except:
             return False
 

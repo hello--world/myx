@@ -146,3 +146,67 @@ class CloudflareDNSRecord(models.Model):
     def __str__(self):
         return f"{self.name} ({self.record_type})"
 
+
+class CloudflareOriginCertificate(models.Model):
+    """Cloudflare 源证书模型"""
+    account = models.ForeignKey(
+        CloudflareAccount,
+        on_delete=models.CASCADE,
+        related_name='origin_certificates',
+        verbose_name='Cloudflare 账户'
+    )
+    zone = models.ForeignKey(
+        CloudflareZone,
+        on_delete=models.CASCADE,
+        related_name='origin_certificates',
+        verbose_name='Zone'
+    )
+    
+    # 证书信息
+    cert_id = models.CharField(
+        max_length=100,
+        unique=True,
+        verbose_name='证书 ID',
+        help_text='Cloudflare 证书 ID'
+    )
+    hostnames = models.JSONField(
+        default=list,
+        verbose_name='域名列表',
+        help_text='证书覆盖的域名列表'
+    )
+    certificate = models.TextField(
+        verbose_name='证书内容',
+        help_text='PEM 格式的证书内容'
+    )
+    private_key = models.TextField(
+        verbose_name='私钥内容',
+        help_text='PEM 格式的私钥内容'
+    )
+    
+    # 状态
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name='启用'
+    )
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='过期时间'
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+    created_by = models.ForeignKey(
+        django_settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name='创建者'
+    )
+    
+    class Meta:
+        verbose_name = 'Cloudflare 源证书'
+        verbose_name_plural = 'Cloudflare 源证书'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"源证书 {self.cert_id[:8]}... ({self.zone.zone_name})"
+

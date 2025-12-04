@@ -92,8 +92,8 @@ def _check_deployment(deployment: Deployment):
         logger.debug(f'部署任务 {deployment.id} 的服务器没有Agent')
         return
     
-    # 确定日志文件路径
-    log_file_path = f'/tmp/agent_redeploy_{deployment.id}.log'
+    # 确定日志文件路径（Agent升级使用agent_upgrade前缀）
+    log_file_path = f'/tmp/agent_upgrade_{deployment.id}.log'
     
     # 查找相关的命令（通过服务器和Agent查找最近的命令）
     # 查找最近1小时内创建的、与这个部署任务相关的命令
@@ -118,7 +118,7 @@ def _check_deployment(deployment: Deployment):
     if not command and recent_commands:
         command = recent_commands[0]
     
-    # 从命令结果读取日志
+    # 从命令结果读取日志（只显示有用的信息，过滤掉"日志文件尚未创建"等提示）
     if command and command.status in ['success', 'failed']:
         if command.result:
             # 检查是否已经添加过这个日志（避免重复）
@@ -127,8 +127,18 @@ def _check_deployment(deployment: Deployment):
                 # 解码base64内容
                 from apps.logs.utils import format_log_content
                 formatted_result = format_log_content(command.result, decode_base64=True)
-                deployment.log = (deployment.log or '') + f"\n[命令结果-{command.id}]\n{formatted_result}\n"
-                deployment.save()
+                
+                # 过滤掉"日志文件尚未创建"等提示信息（这些信息不是实际的命令输出）
+                if formatted_result and '[信息] 日志文件尚未创建' not in formatted_result:
+                    # 检查命令结果是否只是systemd-run的输出（通常是服务名称）
+                    # 如果是，不显示在部署日志中（因为实际日志在日志文件中）
+                    lines = formatted_result.strip().split('\n')
+                    if len(lines) == 1 and ('myx-agent-redeploy' in lines[0] or lines[0].isdigit()):
+                        # 这可能是systemd-run的输出（服务名称或退出码），不显示
+                        logger.debug(f'命令结果只是systemd-run输出，跳过显示: {formatted_result}')
+                    else:
+                        deployment.log = (deployment.log or '') + f"\n[命令结果-{command.id}]\n{formatted_result}\n"
+                        deployment.save()
         if command.error:
             if f"[命令错误-{command.id}]" not in (deployment.log or ''):
                 # 解码base64内容
@@ -224,6 +234,28 @@ def _handle_completion(deployment: Deployment, agent: Agent, script_success: boo
         if agent_online:
             deployment.status = 'success'
             deployment.log = (deployment.log or '') + f"\n[完成] Agent重新部署成功，服务运行正常\n"
+            
+            # 自动配置 Agent 域名（如果服务器还没有域名）
+            try:
+                from apps.servers.server_domain_utils import auto_setup_server_agent_domain
+                result = auto_setup_server_agent_domain(
+                    server=deployment.server,
+                    auto_setup=True
+                )
+                if result.get('success'):
+                    domain = result.get('domain')
+                    deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置成功: {domain}\n"
+                    logger.info(f'Agent 域名自动配置成功: server_id={deployment.server.id}, domain={domain}')
+                elif not result.get('skipped'):
+                    # 配置失败但不影响部署成功状态
+                    error_msg = result.get('error', '未知错误')
+                    deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置失败: {error_msg}\n"
+                    logger.warning(f'Agent 域名自动配置失败: server_id={deployment.server.id}, error={error_msg}')
+            except Exception as e:
+                # 域名配置失败不影响部署成功状态
+                logger.warning(f'Agent 域名自动配置时出错: {str(e)}', exc_info=True)
+                deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置时出错: {str(e)}\n"
+            
             # 记录部署成功日志
             create_log_entry(
                 log_type='deployment',
@@ -283,7 +315,7 @@ def _read_log_file_via_agent(agent: Agent, log_file_path: str, deployment: Deplo
         check_and_read_cmd = CommandQueue.add_command(
             agent=agent,
             command='bash',
-            args=['-c', f'if [ -f "{log_file_path}" ]; then cat "{log_file_path}"; else echo "[信息] 日志文件尚未创建: {log_file_path}"; fi'],
+            args=['-c', f'if [ -f "{log_file_path}" ]; then cat "{log_file_path}"; else echo ""; fi'],
             timeout=10
         )
         
@@ -296,9 +328,9 @@ def _read_log_file_via_agent(agent: Agent, log_file_path: str, deployment: Deplo
                     # 解码base64内容
                     from apps.logs.utils import format_log_content
                     log_content = format_log_content(check_and_read_cmd.result, decode_base64=True)
-                    # 如果日志文件不存在，返回None（不记录到部署日志中）
-                    if '[信息] 日志文件尚未创建' in log_content:
-                        logger.debug(f'日志文件尚未创建: {log_file_path}')
+                    # 如果日志文件不存在或为空，返回None（不记录到部署日志中）
+                    if not log_content or not log_content.strip():
+                        logger.debug(f'日志文件不存在或为空: {log_file_path}')
                         return None
                     logger.debug(f'成功读取日志文件: {log_file_path}, 长度: {len(log_content)}')
                     return log_content

@@ -322,3 +322,171 @@ def delete_dns_record(zone_id: str,
         logger.error(f'删除 DNS 记录失败: {str(e)}')
         raise CloudflareAPIError(f'删除 DNS 记录失败: {str(e)}')
 
+
+def create_origin_certificate(
+    hostnames: List[str],
+    api_token: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_email: Optional[str] = None,
+    validity_days: int = 5475  # 15 年
+) -> Dict[str, Any]:
+    """
+    创建 Cloudflare 源证书
+    
+    Args:
+        hostnames: 域名列表，支持通配符（如 ['*.example.com', 'example.com']）
+        api_token: API Token（推荐）
+        api_key: Global API Key（备选）
+        api_email: API Email（备选）
+        validity_days: 有效期（天数，默认 15 年）
+    
+    Returns:
+        包含证书 ID、证书内容、私钥的字典
+    """
+    headers = get_cloudflare_api_headers(api_token, api_key, api_email)
+    
+    url = 'https://api.cloudflare.com/client/v4/certificates'
+    
+    data = {
+        'hostnames': hostnames,
+        'requested_validity': validity_days
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if not result.get('success', False):
+            errors = result.get('errors', [])
+            error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
+            raise CloudflareAPIError(f'创建源证书失败: {error_msg}')
+        
+        cert_data = result.get('result', {})
+        return {
+            'id': cert_data.get('id'),
+            'certificate': cert_data.get('certificate'),
+            'private_key': cert_data.get('private_key'),
+            'hostnames': cert_data.get('hostnames', []),
+            'expires_on': cert_data.get('expires_on')
+        }
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f'创建源证书失败: {str(e)}')
+        raise CloudflareAPIError(f'创建源证书失败: {str(e)}')
+
+
+def get_origin_certificate(
+    cert_id: str,
+    api_token: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_email: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    获取 Cloudflare 源证书详情
+    
+    Args:
+        cert_id: 证书 ID
+        api_token: API Token（推荐）
+        api_key: Global API Key（备选）
+        api_email: API Email（备选）
+    
+    Returns:
+        证书信息字典
+    """
+    headers = get_cloudflare_api_headers(api_token, api_key, api_email)
+    
+    url = f'https://api.cloudflare.com/client/v4/certificates/{cert_id}'
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if not result.get('success', False):
+            errors = result.get('errors', [])
+            error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
+            raise CloudflareAPIError(f'获取源证书失败: {error_msg}')
+        
+        cert_data = result.get('result', {})
+        return {
+            'id': cert_data.get('id'),
+            'certificate': cert_data.get('certificate'),
+            'private_key': cert_data.get('private_key'),
+            'hostnames': cert_data.get('hostnames', []),
+            'expires_on': cert_data.get('expires_on')
+        }
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f'获取源证书失败: {str(e)}')
+        raise CloudflareAPIError(f'获取源证书失败: {str(e)}')
+
+
+def list_origin_certificates(
+    api_token: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_email: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    列出所有源证书
+    
+    Returns:
+        证书列表
+    """
+    headers = get_cloudflare_api_headers(api_token, api_key, api_email)
+    
+    url = 'https://api.cloudflare.com/client/v4/certificates'
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if not result.get('success', False):
+            errors = result.get('errors', [])
+            error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
+            raise CloudflareAPIError(f'列出源证书失败: {error_msg}')
+        
+        return result.get('result', [])
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f'列出源证书失败: {str(e)}')
+        raise CloudflareAPIError(f'列出源证书失败: {str(e)}')
+
+
+def revoke_origin_certificate(
+    cert_id: str,
+    api_token: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_email: Optional[str] = None
+) -> bool:
+    """
+    撤销 Cloudflare 源证书
+    
+    Returns:
+        是否成功
+    """
+    headers = get_cloudflare_api_headers(api_token, api_key, api_email)
+    
+    url = f'https://api.cloudflare.com/client/v4/certificates/{cert_id}'
+    
+    try:
+        response = requests.delete(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if not result.get('success', False):
+            errors = result.get('errors', [])
+            error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
+            raise CloudflareAPIError(f'撤销源证书失败: {error_msg}')
+        
+        return True
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f'撤销源证书失败: {str(e)}')
+        raise CloudflareAPIError(f'撤销源证书失败: {str(e)}')
+

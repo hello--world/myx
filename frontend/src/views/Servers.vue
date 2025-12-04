@@ -800,10 +800,19 @@ const handleEdit = (row) => {
 const handleInstallAgent = async (row) => {
   if (installingAgentId.value === row.id) return // 防止重复点击
   
-  // 检查是否有SSH凭证（使用has_password和has_private_key字段，因为password和private_key是write_only）
-  if (!row.has_password && !row.has_private_key) {
+  // 确认安装/升级
+  const isUpgrade = row.has_agent
+  
+  // 检查是否需要SSH凭证
+  // 如果是升级且Agent在线且支持RPC，则不需要SSH凭证（可以通过Agent升级）
+  const canUpgradeViaAgent = isUpgrade && row.agent_status === 'online' && row.agent_rpc_supported
+  
+  // 只有在不是通过Agent升级的情况下，才需要检查SSH凭证
+  if (!canUpgradeViaAgent && !row.has_password && !row.has_private_key) {
     ElMessageBox.confirm(
-      '该服务器缺少SSH密码或私钥，无法安装Agent。是否现在编辑服务器并输入SSH凭证？',
+      isUpgrade 
+        ? '该服务器缺少SSH密码或私钥，且Agent不在线，无法升级Agent。是否现在编辑服务器并输入SSH凭证？'
+        : '该服务器缺少SSH密码或私钥，无法安装Agent。是否现在编辑服务器并输入SSH凭证？',
       '缺少SSH凭证',
       {
         confirmButtonText: '去编辑',
@@ -815,9 +824,6 @@ const handleInstallAgent = async (row) => {
     }).catch(() => {})
     return
   }
-  
-  // 确认安装/升级
-  const isUpgrade = row.has_agent
   try {
     if (isUpgrade) {
       await ElMessageBox.confirm(

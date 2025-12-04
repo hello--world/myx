@@ -333,10 +333,34 @@ def quick_deploy_full(deployment_id, is_temporary=False):
 
 def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
     """
-    通过SSH安装Agent
-    
-    注意：Agent Token和配置由服务器在部署时生成并写入配置文件，
-    Agent启动时直接读取配置，不需要向服务器注册
+    通过SSH安装Agent（已重构为调用DeploymentService）
+
+    注意：保留此函数是为了向后兼容，内部已使用Service层重构
+    """
+    try:
+        # 调用Service层的install_agent
+        from apps.deployments.services import DeploymentService
+
+        success, message = DeploymentService.install_agent(
+            server=server,
+            deployment=deployment,
+            user=deployment.created_by if deployment else None
+        )
+
+        return success
+    except Exception as e:
+        logger.error(f'安装Agent失败: {e}', exc_info=True)
+        if deployment:
+            deployment.log = (deployment.log or '') + f"[异常] {str(e)}\n"
+            deployment.save()
+        return False
+
+
+def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool:
+    """
+    通过SSH安装Agent（旧版本，已弃用）
+
+    保留用于参考，新代码请使用install_agent_via_ssh（内部调用DeploymentService）
     """
     backup_path = None  # 记录备份路径，用于失败时恢复
     try:
@@ -940,10 +964,31 @@ echo "[完成] Agent安装完成"
 
 def wait_for_agent_startup(server: Server, timeout: int = 60, deployment: Deployment = None) -> Agent:
     """
-    等待Agent启动并检查RPC支持
-    
-    注意：Agent记录已在部署时创建，这里只需要等待Agent启动并检查RPC支持
-    
+    等待Agent启动并检查RPC支持（已重构为调用DeploymentService）
+
+    注意：保留此函数是为了向后兼容，内部已使用Service层重构
+
+    Args:
+        server: 服务器实例
+        timeout: 超时时间（秒）
+        deployment: 部署实例（可选，用于更新日志）
+    """
+    # 调用Service层的wait_for_agent_startup
+    from apps.deployments.services import DeploymentService
+
+    return DeploymentService.wait_for_agent_startup(
+        server=server,
+        timeout=timeout,
+        deployment=deployment
+    )
+
+
+def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment: Deployment = None) -> Agent:
+    """
+    等待Agent启动并检查RPC支持（旧版本，已弃用）
+
+    保留用于参考，新代码请使用wait_for_agent_startup（内部调用DeploymentService）
+
     Args:
         server: 服务器实例
         timeout: 超时时间（秒）

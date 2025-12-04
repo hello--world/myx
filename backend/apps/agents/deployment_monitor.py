@@ -235,6 +235,27 @@ class DeploymentMonitor:
             if agent_online:
                 self.deployment.status = 'success'
                 self._update_log(f"\n[完成] Agent重新部署成功，服务运行正常\n")
+                
+                # 自动配置 Agent 域名（如果服务器还没有域名）
+                try:
+                    from apps.servers.server_domain_utils import auto_setup_server_agent_domain
+                    result = auto_setup_server_agent_domain(
+                        server=self.server,
+                        auto_setup=True
+                    )
+                    if result.get('success'):
+                        domain = result.get('domain')
+                        self._update_log(f"\n[域名] Agent 域名自动配置成功: {domain}\n")
+                        logger.info(f'Agent 域名自动配置成功: server_id={self.server.id}, domain={domain}')
+                    elif not result.get('skipped'):
+                        # 配置失败但不影响部署成功状态
+                        error_msg = result.get('error', '未知错误')
+                        self._update_log(f"\n[域名] Agent 域名自动配置失败: {error_msg}\n")
+                        logger.warning(f'Agent 域名自动配置失败: server_id={self.server.id}, error={error_msg}')
+                except Exception as e:
+                    # 域名配置失败不影响部署成功状态
+                    logger.warning(f'Agent 域名自动配置时出错: {str(e)}', exc_info=True)
+                    self._update_log(f"\n[域名] Agent 域名自动配置时出错: {str(e)}\n")
             else:
                 # 即使测试失败，如果脚本成功执行，也标记为成功
                 self.deployment.status = 'success'

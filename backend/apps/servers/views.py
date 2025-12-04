@@ -630,13 +630,12 @@ print("[成功] Agent 卸载完成")
             # 生成唯一的服务名称
             service_name = f'myx-agent-redeploy-{deployment.id}-{int(time_module.time())}'
             
-            # 构建部署命令：使用heredoc写入脚本文件，然后使用systemd-run执行
-            deploy_command = f'''bash -c 'cat > "{script_file}" << '\''SCRIPT_EOF'\''
-{redeploy_script}
-SCRIPT_EOF
-chmod +x "{script_file}"
-systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"
-echo $?' '''
+            # 使用base64编码脚本内容，避免heredoc中的特殊字符问题
+            import base64
+            script_base64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('ascii')
+            
+            # 构建部署命令：使用base64解码脚本内容，写入脚本文件，然后使用systemd-run执行
+            deploy_command = f'''bash -c 'echo "{script_base64}" | base64 -d > "{script_file}" && chmod +x "{script_file}" && systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"; echo $?' '''
             
             logger.info(f'[upgrade] 创建Agent升级命令: deployment_id={deployment.id}, script_file={script_file}, log_file={log_file}')
             
@@ -1430,6 +1429,30 @@ echo $?' '''
                     # 如果原始连接方式为SSH，保持SSH（但Agent已安装，可以随时切换）
                     
                     server.save()
+                    
+                    # 自动配置 Agent 域名（如果服务器还没有域名）
+                    try:
+                        from apps.servers.server_domain_utils import auto_setup_server_agent_domain
+                        result = auto_setup_server_agent_domain(
+                            server=server,
+                            auto_setup=True
+                        )
+                        if result.get('success'):
+                            domain = result.get('domain')
+                            deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置成功: {domain}\n"
+                            deployment.save()
+                            logger.info(f'Agent 域名自动配置成功: server_id={server.id}, domain={domain}')
+                        elif not result.get('skipped'):
+                            # 配置失败但不影响安装成功状态
+                            error_msg = result.get('error', '未知错误')
+                            deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置失败: {error_msg}\n"
+                            deployment.save()
+                            logger.warning(f'Agent 域名自动配置失败: server_id={server.id}, error={error_msg}')
+                    except Exception as e:
+                        # 域名配置失败不影响安装成功状态
+                        logger.warning(f'Agent 域名自动配置时出错: {str(e)}', exc_info=True)
+                        deployment.log = (deployment.log or '') + f"\n[域名] Agent 域名自动配置时出错: {str(e)}\n"
+                        deployment.save()
                     
                     # 记录Agent安装成功日志
                     create_log_entry(

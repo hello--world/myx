@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def deploy_via_agent(deployment: Deployment, deployment_target: str = 'host'):
-    """通过Agent部署（使用Python脚本）
+    """通过Agent部署（已重构为调用DeploymentService）
+
+    注意：保留此函数是为了向后兼容，内部已使用Service层重构
 
     Args:
         deployment: 部署任务
@@ -21,157 +23,30 @@ def deploy_via_agent(deployment: Deployment, deployment_target: str = 'host'):
         注意：Caddy 目前只支持宿主机部署
     """
     try:
-        agent = Agent.objects.get(server=deployment.server)
-        if agent.status != 'online':
-            deployment.status = 'failed'
-            deployment.error_message = 'Agent不在线'
-            deployment.save()
-            return
+        # 调用Service层的deploy_service
+        from apps.deployments.services import DeploymentService
 
         deployment.status = 'running'
         deployment.started_at = timezone.now()
         deployment.save()
 
-        # 同步部署工具到Agent端
-        try:
-            logger.info(f"Agent {agent.id} 开始同步部署工具...")
-            deployment.log = (deployment.log or '') + "[信息] 同步部署工具脚本到Agent...\n"
-            deployment.save()
-            sync_result = sync_deployment_tool_to_agent(agent)
-            if not sync_result:
-                logger.warning(f"同步部署工具到Agent {agent.id} 失败")
-                deployment.log = (deployment.log or '') + "[警告] 同步部署工具失败，继续尝试部署\n"
-                deployment.save()
-            else:
-                logger.info(f"Agent {agent.id} 部署工具同步成功")
-                deployment.log = (deployment.log or '') + "[成功] 部署工具同步完成\n"
-                deployment.save()
-        except Exception as e:
-            logger.warning(f"同步部署工具时出错: {e}", exc_info=True)
-            deployment.log = (deployment.log or '') + f"[警告] 同步部署工具失败: {e}\n"
-            deployment.save()
-
-        # Caddy 只支持宿主机部署
-        if deployment.deployment_type == 'caddy':
-            deployment_target = 'host'
-            deployment.log = (deployment.log or '') + "[信息] Caddy 仅支持宿主机部署\n"
-            deployment.save()
-
-        # 选择部署脚本
-        if deployment.deployment_type == 'xray':
-            if deployment_target == 'docker':
-                script_name = 'deploy_xray_docker.py'
-                log_prefix = "Xray (Docker)"
-            else:
-                script_name = 'deploy_xray.py'
-                log_prefix = "Xray (宿主机)"
-        elif deployment.deployment_type == 'caddy':
-            script_name = 'deploy_caddy.py'
-            log_prefix = "Caddy (宿主机)"
-        else:
-            deployment.status = 'failed'
-            deployment.error_message = f'不支持的部署类型: {deployment.deployment_type}'
-            deployment.save()
-            return
-
-        # 执行Python部署脚本
-        script_path = f"{AGENT_DEPLOYMENT_TOOL_DIR}/scripts/{script_name}"
-        deployment.log = (deployment.log or '') + f"[信息] 开始部署 {log_prefix}...\n"
-        deployment.save()
-
-        logger.info(f"执行部署脚本: {script_path}")
-
-        # 直接使用python3执行脚本
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='python3',
-            args=[script_path],
-            timeout=600  # 10分钟超时
+        success, message = DeploymentService.deploy_service(
+            server=deployment.server,
+            service_type=deployment.deployment_type,
+            deployment_target=deployment_target,
+            deployment=deployment,
+            user=deployment.created_by if deployment else None
         )
 
-        # 等待命令执行完成
-        deployment.log = (deployment.log or '') + "[信息] 开始等待命令执行完成（超时时间: 1200秒）...\n"
-        deployment.save()
-
-        max_wait = 1200  # 20分钟
-        wait_time = 0
-        last_log_time = 0
-
-        while wait_time < max_wait:
-            cmd.refresh_from_db()
-
-            # 定期输出等待状态
-            if wait_time - last_log_time >= 10:
-                status_info = f"等待命令执行完成... ({wait_time}秒, 命令状态: {cmd.status}"
-                if cmd.status == 'running' and cmd.started_at:
-                    elapsed = (timezone.now() - cmd.started_at).total_seconds()
-                    status_info += f", 已执行: {int(elapsed)}秒"
-                status_info += ")\n"
-                deployment.log = (deployment.log or '') + status_info
-                deployment.save()
-                last_log_time = wait_time
-
-            # 检查命令是否完成
-            if cmd.status in ['success', 'failed']:
-                break
-
-            time.sleep(2)
-            wait_time += 2
-
-        # 处理执行结果
-        if wait_time >= max_wait:
-            # 超时
-            deployment.status = 'failed'
-            deployment.error_message = '部署超时（超过20分钟）'
-            deployment.log = (deployment.log or '') + "\n[错误] 部署超时\n"
-            deployment.completed_at = timezone.now()
-            deployment.save()
-            logger.error(f"部署超时: deployment_id={deployment.id}")
-            return
-
-        # 获取命令输出
-        from apps.logs.utils import format_log_content
-        result_output = format_log_content(cmd.result or '', decode_base64=True)
-        error_output = format_log_content(cmd.error or '', decode_base64=True)
-
-        deployment.log = (deployment.log or '') + "\n=== 部署脚本输出 ===\n"
-        if result_output:
-            deployment.log += result_output + "\n"
-        if error_output:
-            deployment.log += "=== 错误输出 ===\n" + error_output + "\n"
-        deployment.save()
-
-        # 判断是否成功
-        # 安全地获取 exit_code（如果字段不存在，默认为 0 表示成功）
-        exit_code = getattr(cmd, 'exit_code', 0 if cmd.status == 'success' else -1)
-        
-        if cmd.status == 'success' and exit_code == 0:
-            # 额外验证：检查输出中是否包含成功标记
-            if '部署完成' in result_output or 'SUCCESS' in result_output:
-                deployment.status = 'success'
-                deployment.log = (deployment.log or '') + f"\n[成功] {log_prefix} 部署成功\n"
-                logger.info(f"部署成功: deployment_id={deployment.id}, type={deployment.deployment_type}")
-            else:
-                # 命令执行成功但可能有问题
-                deployment.status = 'success'
-                deployment.log = (deployment.log or '') + f"\n[完成] {log_prefix} 部署命令执行完成\n"
-                logger.info(f"部署命令执行完成: deployment_id={deployment.id}")
+        if success:
+            deployment.status = 'success'
         else:
-            # 部署失败
             deployment.status = 'failed'
-            deployment.error_message = f'部署失败（退出码: {exit_code}）'
-            deployment.log = (deployment.log or '') + f"\n[失败] {log_prefix} 部署失败\n"
-            logger.error(f"部署失败: deployment_id={deployment.id}, exit_code={exit_code}")
+            deployment.error_message = message
 
         deployment.completed_at = timezone.now()
         deployment.save()
 
-    except Agent.DoesNotExist:
-        deployment.status = 'failed'
-        deployment.error_message = 'Agent不存在'
-        deployment.completed_at = timezone.now()
-        deployment.save()
-        logger.error(f"Agent不存在: server_id={deployment.server.id}")
     except Exception as e:
         deployment.status = 'failed'
         deployment.error_message = str(e)

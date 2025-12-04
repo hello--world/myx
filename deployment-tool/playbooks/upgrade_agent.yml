@@ -1,0 +1,248 @@
+---
+# Agent升级playbook
+# 用于Agent自升级（通过RPC调用，独立进程执行）
+#
+# 执行方式：
+# - Agent方式：通过RPC调用，使用systemd-run在独立进程中执行
+# - SSH方式：可以直接执行，但通常Agent升级通过Agent自己执行
+#
+# 前置条件：
+# - 新的Agent核心文件已上传到临时目录（/tmp/myx-agent-new/）
+# - Agent当前正在运行
+#
+# Extra vars:
+# - backup_dir: 备份目录（默认 /opt/myx-agent-backup）
+# - new_files_dir: 新文件目录（默认 /tmp/myx-agent-new）
+# - agent_token: Agent Token（如果需要重新生成配置）
+# - secret_key: 加密密钥（如果需要重新生成配置）
+# - rpc_port: RPC端口（如果需要重新生成配置）
+# - rpc_path: RPC路径（如果需要重新生成配置）
+
+- name: 升级MyX Agent
+  hosts: all
+  become: yes
+  vars:
+    agent_dir: /opt/myx-agent
+    config_dir: /etc/myx-agent
+    service_name: myx-agent
+    backup_dir: "{{ backup_dir | default('/opt/myx-agent-backup-' + ansible_date_time.epoch) }}"
+    new_files_dir: "{{ new_files_dir | default('/tmp/myx-agent-new') }}"
+
+  tasks:
+    # ============ 备份阶段 ============
+    - name: 输出升级开始信息
+      debug:
+        msg: "[开始] Agent升级开始，备份目录: {{ backup_dir }}"
+
+    - name: 检查Agent目录是否存在
+      stat:
+        path: "{{ agent_dir }}"
+      register: agent_dir_stat
+
+    - name: 备份当前Agent文件
+      shell: |
+        if [ -d "{{ agent_dir }}" ]; then
+          mkdir -p "{{ backup_dir }}"
+          cp -r "{{ agent_dir }}"/* "{{ backup_dir }}/" || true
+          echo "备份完成: {{ backup_dir }}"
+        else
+          echo "Agent目录不存在，无需备份"
+        fi
+      register: backup_result
+      when: agent_dir_stat.stat.exists
+
+    - name: 输出备份结果
+      debug:
+        msg: "{{ backup_result.stdout }}"
+      when: agent_dir_stat.stat.exists
+
+    - name: 备份配置文件
+      copy:
+        src: "{{ config_dir }}/config.json"
+        dest: "{{ config_dir }}/config.json.bak"
+        remote_src: yes
+        force: yes
+      failed_when: false
+
+    # ============ 停止服务 ============
+    - name: 停止Agent服务
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      register: stop_result
+      failed_when: false
+
+    - name: 等待服务完全停止
+      wait_for:
+        timeout: 3
+
+    # ============ 更新文件 ============
+    - name: 检查新文件目录是否存在
+      stat:
+        path: "{{ new_files_dir }}"
+      register: new_files_stat
+
+    - name: 复制新文件到Agent目录
+      shell: |
+        if [ -d "{{ new_files_dir }}" ]; then
+          cp -r "{{ new_files_dir }}"/* "{{ agent_dir }}/"
+          echo "新文件已复制"
+        else
+          echo "错误: 新文件目录不存在: {{ new_files_dir }}"
+          exit 1
+        fi
+      register: copy_result
+      when: new_files_stat.stat.exists
+
+    - name: 输出复制结果
+      debug:
+        msg: "{{ copy_result.stdout }}"
+      when: new_files_stat.stat.exists
+
+    - name: 失败如果新文件目录不存在
+      fail:
+        msg: "新文件目录不存在: {{ new_files_dir }}"
+      when: not new_files_stat.stat.exists
+
+    # ============ 更新依赖 ============
+    - name: 查找uv路径
+      shell: |
+        if command -v uv &> /dev/null; then
+          command -v uv | head -n 1
+        elif [ -f "$HOME/.cargo/bin/uv" ]; then
+          echo "$HOME/.cargo/bin/uv"
+        elif [ -f "$HOME/.local/bin/uv" ]; then
+          echo "$HOME/.local/bin/uv"
+        else
+          echo "not_found"
+        fi
+      register: uv_path_result
+      changed_when: false
+
+    - name: 设置uv路径变量（清理换行符）
+      set_fact:
+        uv_path: "{{ uv_path_result.stdout | trim }}"
+
+    - name: 更新Python依赖
+      shell: |
+        set -e
+        cd {{ agent_dir }}
+        if [ -f pyproject.toml ]; then
+          "{{ uv_path }}" sync || echo "警告: uv sync 失败，继续尝试 pip install"
+        fi
+        "{{ uv_path }}" pip install -r requirements.txt
+        echo "依赖安装成功"
+      when: uv_path != "not_found"
+      register: deps_update_result
+
+    - name: 输出依赖更新结果
+      debug:
+        msg: "{{ deps_update_result.stdout_lines }}"
+      when: deps_update_result is defined
+
+    - name: 验证关键依赖是否已安装
+      shell: |
+        cd {{ agent_dir }}
+        "{{ uv_path }}" pip list | grep -E "Flask|ansible-runner" || (echo "错误: 关键依赖未安装" && exit 1)
+      when: uv_path != "not_found"
+      register: verify_deps_result
+
+    # ============ 启动服务 ============
+    - name: 重新加载systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: 启动Agent服务
+      systemd:
+        name: "{{ service_name }}"
+        state: started
+      register: start_result
+
+    - name: 等待服务启动
+      wait_for:
+        timeout: 5
+
+    - name: 检查服务状态
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status
+
+    # ============ 验证升级结果 ============
+    - name: 验证服务是否运行
+      fail:
+        msg: "Agent服务启动失败"
+      when: service_status.status.ActiveState != "active"
+
+    - name: 清理备份（升级成功）
+      shell: |
+        if [ -d "{{ backup_dir }}" ]; then
+          rm -rf "{{ backup_dir }}"
+          echo "备份已清理"
+        fi
+      when: service_status.status.ActiveState == "active"
+      failed_when: false
+
+    - name: 清理新文件目录
+      shell: |
+        if [ -d "{{ new_files_dir }}" ]; then
+          rm -rf "{{ new_files_dir }}"
+          echo "临时文件已清理"
+        fi
+      failed_when: false
+
+    - name: 输出完成信息
+      debug:
+        msg: "[完成] Agent升级成功"
+
+  # ============ 失败恢复 ============
+  rescue:
+    - name: 输出失败信息
+      debug:
+        msg: "[失败] Agent升级失败，开始回滚..."
+
+    - name: 停止可能失败的服务
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      failed_when: false
+
+    - name: 从备份恢复文件
+      shell: |
+        if [ -d "{{ backup_dir }}" ]; then
+          rm -rf "{{ agent_dir }}"/*
+          cp -r "{{ backup_dir }}"/* "{{ agent_dir }}/"
+          echo "已从备份恢复"
+        else
+          echo "备份目录不存在: {{ backup_dir }}"
+          exit 1
+        fi
+      register: restore_result
+
+    - name: 输出恢复结果
+      debug:
+        msg: "{{ restore_result.stdout }}"
+
+    - name: 恢复配置文件
+      copy:
+        src: "{{ config_dir }}/config.json.bak"
+        dest: "{{ config_dir }}/config.json"
+        remote_src: yes
+        force: yes
+      failed_when: false
+
+    - name: 重启Agent服务
+      systemd:
+        name: "{{ service_name }}"
+        state: restarted
+
+    - name: 等待服务恢复
+      wait_for:
+        timeout: 5
+
+    - name: 输出回滚完成信息
+      debug:
+        msg: "[回滚] Agent已回滚到升级前的版本"
+
+    - name: 失败退出
+      fail:
+        msg: "Agent升级失败，已回滚到旧版本"

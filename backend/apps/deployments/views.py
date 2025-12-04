@@ -97,7 +97,6 @@ class DeploymentViewSet(viewsets.ModelViewSet):
             elif deployment.deployment_type == 'agent':
                 # Agent部署任务需要特殊处理
                 from .tasks import install_agent_via_ssh, wait_for_agent_startup
-                from django.utils import timezone
                 import threading
                 
                 def _retry_agent():

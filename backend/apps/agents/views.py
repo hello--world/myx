@@ -93,19 +93,14 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
         if not command:
             return Response({'error': '命令不能为空'}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .command_queue import CommandQueue
-        cmd = CommandQueue.add_command(agent, command, args, timeout)
-        
-        # 记录命令下发日志
-        create_log_entry(
-            log_type='command',
-            level='info',
-            title=f'下发命令到Agent: {agent.server.name}',
-            content=f'命令: {command} {", ".join(str(arg) for arg in args) if args else ""}\n超时: {timeout}秒',
-            user=request.user,
-            server=agent.server,
-            related_id=cmd.id,
-            related_type='command'
+        # 调用Service
+        from .services import AgentService
+        cmd = AgentService.send_command(
+            agent=agent,
+            command=command,
+            args=args,
+            timeout=timeout,
+            user=request.user
         )
 
         from .serializers import AgentCommandDetailSerializer
@@ -116,128 +111,51 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
     def update_certificate(self, request, pk=None):
         """更新Agent的SSL证书"""
         agent = self.get_object()
-        
-        # 检查是否提供新证书
+
         regenerate = request.data.get('regenerate', False)
         verify_ssl = request.data.get('verify_ssl', agent.verify_ssl)
-        
-        try:
-            if regenerate:
-                # 重新生成证书
-                from apps.deployments.tasks import generate_ssl_certificate
-                cert_bytes, key_bytes = generate_ssl_certificate(agent.server.host, agent.token)
-                agent.certificate_content = cert_bytes.decode('utf-8')
-                agent.private_key_content = key_bytes.decode('utf-8')
-                agent.verify_ssl = verify_ssl
-                agent.save()
-                
-                # 如果Agent在线，上传新证书到Agent服务器
-                if agent.status == 'online' and agent.rpc_port:
-                    try:
-                        from apps.agents.rpc_client import get_agent_rpc_client
-                        from apps.agents.utils import execute_script_via_agent
-                        
-                        # 创建上传证书的脚本（使用base64编码避免特殊字符问题）
-                        import base64
-                        cert_b64 = base64.b64encode(agent.certificate_content.encode('utf-8')).decode('ascii')
-                        key_b64 = base64.b64encode(agent.private_key_content.encode('utf-8')).decode('ascii')
-                        
-                        upload_script = f"""#!/usr/bin/env python3
-import os
-import sys
-import base64
 
-# 创建SSL目录
-os.makedirs('/etc/myx-agent/ssl', exist_ok=True)
+        # 调用Service
+        from .services import CertificateService
 
-# 解码并写入证书
-cert_b64 = '{cert_b64}'
-cert_content = base64.b64decode(cert_b64).decode('utf-8')
-with open('/etc/myx-agent/ssl/agent.crt', 'w') as f:
-    f.write(cert_content)
-os.chmod('/etc/myx-agent/ssl/agent.crt', 0o644)
+        if regenerate:
+            # 重新生成证书
+            success, message = CertificateService.regenerate_agent_certificate(
+                agent=agent,
+                verify_ssl=verify_ssl,
+                user=request.user
+            )
 
-# 解码并写入私钥
-key_b64 = '{key_b64}'
-key_content = base64.b64decode(key_b64).decode('utf-8')
-with open('/etc/myx-agent/ssl/agent.key', 'w') as f:
-    f.write(key_content)
-os.chmod('/etc/myx-agent/ssl/agent.key', 0o600)
-
-print("[成功] SSL证书已更新")
-sys.exit(0)
-"""
-                        
-                        # 通过RPC执行脚本
-                        cmd = execute_script_via_agent(agent, upload_script, timeout=30, script_name='update_certificate.py')
-                        
-                        # 等待命令完成
-                        import time
-                        max_wait = 30
-                        wait_time = 0
-                        while wait_time < max_wait:
-                            cmd.refresh_from_db()
-                            if cmd.status in ['success', 'failed']:
-                                break
-                            time.sleep(1)
-                            wait_time += 1
-                        
-                        if cmd.status == 'success':
-                            logger.info(f'Agent证书已更新并上传: agent_id={agent.id}')
-                            # 重启Agent服务以使用新证书
-                            from apps.agents.command_queue import CommandQueue
-                            CommandQueue.add_command(agent, 'systemctl', ['restart', 'myx-agent'], timeout=30)
-                        else:
-                            logger.warning(f'Agent证书更新失败: agent_id={agent.id}, error={cmd.error}')
-                    except Exception as e:
-                        logger.error(f'上传证书到Agent失败: {e}', exc_info=True)
-                
-                # 记录日志
-                create_log_entry(
-                    log_type='agent',
-                    level='info',
-                    title=f'更新Agent SSL证书: {agent.server.name}',
-                    content=f'SSL证书已重新生成并{'已上传到Agent服务器' if agent.status == 'online' else '等待Agent上线后上传'}',
-                    user=request.user,
-                    server=agent.server,
-                    related_id=agent.id,
-                    related_type='agent'
-                )
-                
+            if success:
                 serializer = self.get_serializer(agent)
                 return Response({
                     'success': True,
-                    'message': '证书已重新生成',
+                    'message': message,
                     'agent': serializer.data
                 })
             else:
-                # 只更新verify_ssl选项
-                agent.verify_ssl = verify_ssl
-                agent.save()
-                
-                # 记录日志
-                create_log_entry(
-                    log_type='agent',
-                    level='info',
-                    title=f'更新Agent SSL验证选项: {agent.server.name}',
-                    content=f'SSL验证选项已更新为: {verify_ssl}',
-                    user=request.user,
-                    server=agent.server,
-                    related_id=agent.id,
-                    related_type='agent'
-                )
-                
+                return Response({
+                    'error': message
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        else:
+            # 只更新verify_ssl选项
+            success, message = CertificateService.update_verify_ssl(
+                agent=agent,
+                verify_ssl=verify_ssl,
+                user=request.user
+            )
+
+            if success:
                 serializer = self.get_serializer(agent)
                 return Response({
                     'success': True,
-                    'message': 'SSL验证选项已更新',
+                    'message': message,
                     'agent': serializer.data
                 })
-        except Exception as e:
-            logger.error(f'更新Agent证书失败: {e}', exc_info=True)
-            return Response({
-                'error': f'更新证书失败: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            else:
+                return Response({
+                    'error': message
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'])
     def redeploy(self, request, pk=None):
@@ -247,8 +165,7 @@ sys.exit(0)
 
         # 创建部署任务
         from apps.deployments.models import Deployment
-        from django.utils import timezone
-        
+
         deployment = Deployment.objects.create(
             name=f"重新部署Agent - {server.name}",
             server=server,
@@ -260,168 +177,87 @@ sys.exit(0)
             created_by=request.user
         )
 
-        # 根据服务器连接方式选择部署方法
-        if server.connection_method == 'agent' and agent.status == 'online':
-            # 如果已经是Agent连接且Agent在线，通过Agent执行重新部署
-            from .command_queue import CommandQueue
-            from django.conf import settings
-            import os
-            import time
-            
-            # 获取API URL用于上报进度和下载文件
-            api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
-            if not api_url:
-                # 从request构建API URL
-                scheme = 'https' if request.is_secure() else 'http'
-                host = request.get_host()
-                api_url = f"{scheme}://{host}/api/agents"
-            
-            # 从模板文件加载脚本
-            script_template_path = os.path.join(
-                os.path.dirname(__file__),
-                'scripts',
-                'agent_redeploy.sh.template'
-            )
-            with open(script_template_path, 'r', encoding='utf-8') as f:
-                redeploy_script = f.read()
-            
-            # 替换占位符（注意顺序：先替换 DEPLOYMENT_ID，因为 LOG_FILE 中也包含它）
-            redeploy_script = redeploy_script.replace('{DEPLOYMENT_ID}', str(deployment.id))
-            redeploy_script = redeploy_script.replace('{API_URL}', api_url)
-            redeploy_script = redeploy_script.replace('{AGENT_TOKEN}', str(agent.token))
-            
-            # 使用deployment_id作为日志文件路径的唯一标识
-            log_file = f'/tmp/agent_redeploy_{deployment.id}.log'
-            script_file = f'/tmp/agent_redeploy_script_{deployment.id}.sh'
-            
-            # 生成唯一的服务名称
-            service_name = f'myx-agent-redeploy-{deployment.id}-{int(time.time())}'
-            
-            # 构建部署命令：使用heredoc写入脚本文件，然后使用systemd-run执行
-            # 使用单引号包裹heredoc标记，避免脚本内容中的特殊字符被shell解析
-            deploy_command = f'''bash -c 'cat > "{script_file}" << '\''SCRIPT_EOF'\''
-{redeploy_script}
-SCRIPT_EOF
-chmod +x "{script_file}"
-systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"
-echo $?' '''
-            
-            logger.info(f'[redeploy] 创建重新部署命令: deployment_id={deployment.id}, script_file={script_file}, log_file={log_file}')
-            logger.debug(f'[redeploy] 命令长度: {len(deploy_command)} 字符')
-            
-            # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
-            cmd = CommandQueue.add_command(
-                agent=agent,
-                command='bash',
-                args=['-c', deploy_command],
-                timeout=600
-            )
-            
-            logger.info(f'[redeploy] 命令已添加到队列: command_id={cmd.id}, agent_id={agent.id}')
-            
-            # 不需要启动单独的监控线程，全局调度器会自动检查
-            # 初始化部署日志
-            deployment.log = f"[开始] Agent重新部署已启动，命令ID: {cmd.id}\n"
-            deployment.log += f"[信息] 日志文件: {log_file}\n"
-            deployment.log += f"[信息] 脚本文件: {script_file}\n"
-            deployment.save()
-            
-            # 记录Agent重新部署开始日志
-            create_log_entry(
-                log_type='agent',
-                level='info',
-                title=f'开始重新部署Agent: {server.name}',
-                content=f'Agent重新部署已启动，部署任务ID: {deployment.id}，命令ID: {cmd.id}',
-                user=request.user,
-                server=server,
-                related_id=deployment.id,
-                related_type='deployment'
-            )
-            
-            return Response({
-                'message': 'Agent重新部署已启动，请查看部署任务',
-                'deployment_id': deployment.id,
-                'command_id': cmd.id
-            }, status=status.HTTP_202_ACCEPTED)
-        
-        # 使用SSH重新部署（如果Agent不在线或未配置Agent连接）
-        # 检查服务器是否有SSH凭据
-        if not server.password and not server.private_key:
-            # 部署任务已创建，更新状态为失败
-            deployment.status = 'failed'
-            deployment.error_message = '服务器缺少SSH凭据，无法重新部署。请先配置SSH密码或私钥。'
-            deployment.completed_at = timezone.now()
-            deployment.save()
-            return Response({'error': '服务器缺少SSH凭据，无法重新部署。请先配置SSH密码或私钥。'}, status=status.HTTP_400_BAD_REQUEST)
+        # 根据Agent状态选择升级方式
+        from .services.upgrade_service import AgentUpgradeService
 
-        # 异步执行部署
-        from apps.deployments.tasks import install_agent_via_ssh
-        import threading
-        def _deploy():
-            try:
-                install_agent_via_ssh(server, deployment)
-                # 等待Agent启动
-                from apps.deployments.tasks import wait_for_agent_startup
-                agent = wait_for_agent_startup(server, timeout=60, deployment=deployment)
-                if agent and agent.rpc_supported:
-                    deployment.status = 'success'
-                    deployment.completed_at = timezone.now()
-                else:
-                    deployment.status = 'failed'
-                    deployment.error_message = 'Agent启动超时或RPC不支持'
-                    deployment.completed_at = timezone.now()
-            except Exception as e:
+        if server.connection_method == 'agent' and agent.status == 'online':
+            # Agent在线：通过Agent自升级
+            success, message = AgentUpgradeService.upgrade_via_agent(
+                agent=agent,
+                deployment=deployment,
+                user=request.user
+            )
+
+            if success:
+                return Response({
+                    'message': 'Agent重新部署已启动，请查看部署任务',
+                    'deployment_id': deployment.id
+                }, status=status.HTTP_202_ACCEPTED)
+            else:
                 deployment.status = 'failed'
-                deployment.error_message = f'部署失败: {str(e)}'
+                deployment.error_message = message
                 deployment.completed_at = timezone.now()
-            finally:
                 deployment.save()
 
-        thread = threading.Thread(target=_deploy)
-        thread.daemon = True
-        thread.start()
-        
-        # 记录Agent重新部署开始日志（通过SSH）
-        create_log_entry(
-            log_type='agent',
-            level='info',
-            title=f'开始重新部署Agent（通过SSH）: {server.name}',
-            content=f'Agent重新部署已启动（通过SSH），部署任务ID: {deployment.id}',
-            user=request.user,
-            server=server,
-            related_id=deployment.id,
-            related_type='deployment'
-        )
+                return Response({
+                    'error': message
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response({
-            'message': 'Agent重新部署已启动（通过SSH）',
-            'deployment_id': deployment.id
-        }, status=status.HTTP_202_ACCEPTED)
+        else:
+            # Agent离线：通过SSH升级
+            if not server.password and not server.private_key:
+                deployment.status = 'failed'
+                deployment.error_message = '服务器缺少SSH凭据'
+                deployment.completed_at = timezone.now()
+                deployment.save()
+
+                return Response({
+                    'error': '服务器缺少SSH凭据，无法重新部署'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 异步执行SSH升级
+            import threading
+
+            def _upgrade():
+                try:
+                    success, message = AgentUpgradeService.upgrade_via_ssh(
+                        server=server,
+                        deployment=deployment,
+                        user=request.user
+                    )
+
+                    if success:
+                        deployment.status = 'success'
+                    else:
+                        deployment.status = 'failed'
+                        deployment.error_message = message
+
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+
+                except Exception as e:
+                    deployment.status = 'failed'
+                    deployment.error_message = str(e)
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+
+            thread = threading.Thread(target=_upgrade)
+            thread.daemon = True
+            thread.start()
+
+            return Response({
+                'message': 'Agent重新部署已启动（通过SSH）',
+                'deployment_id': deployment.id
+            }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])
     def stop(self, request, pk=None):
         """停止Agent服务"""
         agent = self.get_object()
 
-        from .command_queue import CommandQueue
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='systemctl',
-            args=['stop', 'myx-agent'],
-            timeout=30
-        )
-        
-        # 记录停止Agent命令日志
-        create_log_entry(
-            log_type='agent',
-            level='info',
-            title=f'停止Agent服务: {agent.server.name}',
-            content=f'停止Agent服务命令已下发，命令ID: {cmd.id}',
-            user=request.user,
-            server=agent.server,
-            related_id=cmd.id,
-            related_type='command'
-        )
+        # 调用Service
+        from .services import AgentService
+        cmd = AgentService.stop_agent(agent=agent, user=request.user)
 
         from .serializers import AgentCommandDetailSerializer
         serializer = AgentCommandDetailSerializer(cmd)
@@ -435,25 +271,9 @@ echo $?' '''
         """启动Agent服务"""
         agent = self.get_object()
 
-        from .command_queue import CommandQueue
-        cmd = CommandQueue.add_command(
-            agent=agent,
-            command='systemctl',
-            args=['start', 'myx-agent'],
-            timeout=30
-        )
-        
-        # 记录启动Agent命令日志
-        create_log_entry(
-            log_type='agent',
-            level='info',
-            title=f'启动Agent服务: {agent.server.name}',
-            content=f'启动Agent服务命令已下发，命令ID: {cmd.id}',
-            user=request.user,
-            server=agent.server,
-            related_id=cmd.id,
-            related_type='command'
-        )
+        # 调用Service
+        from .services import AgentService
+        cmd = AgentService.start_agent(agent=agent, user=request.user)
 
         from .serializers import AgentCommandDetailSerializer
         serializer = AgentCommandDetailSerializer(cmd)
@@ -477,36 +297,18 @@ echo $?' '''
     def check_status(self, request, pk=None):
         """手动检查Agent状态（拉取模式）"""
         agent = self.get_object()
-        
-        if agent.heartbeat_mode != 'pull':
-            return Response({'error': '此Agent不是拉取模式'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        from .tasks import check_agent_status
-        # 只检查这个Agent
-        try:
-            server = agent.server
-            connect_host = server.agent_connect_host or server.host
-            connect_port = server.agent_connect_port or 8000
-            
-            import requests
-            health_url = f"http://{connect_host}:{connect_port}/health"
-            response = requests.get(health_url, timeout=5)
-            
-            if response.status_code == 200:
-                agent.status = 'online'
-                agent.last_check = timezone.now()
-                agent.last_heartbeat = timezone.now()
-            else:
-                agent.status = 'offline'
-                agent.last_check = timezone.now()
-        except Exception as e:
-            agent.status = 'offline'
-            agent.last_check = timezone.now()
-        
-        agent.save()
-        
-        serializer = self.get_serializer(agent)
-        return Response(serializer.data)
+
+        # 调用Service
+        from .services import AgentService
+        success, message = AgentService.check_agent_status(agent)
+
+        if success:
+            serializer = self.get_serializer(agent)
+            return Response(serializer.data)
+        else:
+            return Response({
+                'error': message
+            }, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CommandTemplateViewSet(viewsets.ModelViewSet):

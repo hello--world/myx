@@ -51,6 +51,60 @@ class Proxy(models.Model):
     deployment_log = models.TextField(blank=True, null=True, verbose_name='部署日志')
     deployed_at = models.DateTimeField(null=True, blank=True, verbose_name='部署时间')
     
+    # Cloudflare 域名配置
+    cloudflare_zone = models.ForeignKey(
+        'settings.CloudflareZone',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name='Cloudflare Zone',
+        help_text='使用的 Cloudflare 域名'
+    )
+    agent_domain = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name='Agent 域名',
+        help_text='自动分配的域名，如 agent-随机10个字符.example.com'
+    )
+    dns_record = models.OneToOneField(
+        'settings.CloudflareDNSRecord',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='proxy',
+        verbose_name='DNS 记录',
+        help_text='关联的 Cloudflare DNS 记录'
+    )
+    
+    # 证书配置
+    use_cloudflare_cert = models.BooleanField(
+        default=False,
+        verbose_name='使用 Cloudflare 源证书',
+        help_text='是否使用 Cloudflare 源证书（仅适用于代理模式）'
+    )
+    cloudflare_cert_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        verbose_name='Cloudflare 证书 ID',
+        help_text='Cloudflare 源证书 ID'
+    )
+    certificate_path = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+        verbose_name='证书路径',
+        help_text='证书文件在服务器上的路径'
+    )
+    private_key_path = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+        verbose_name='私钥路径',
+        help_text='私钥文件在服务器上的路径'
+    )
+    
     # 时间戳
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')

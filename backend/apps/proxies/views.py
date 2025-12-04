@@ -136,6 +136,32 @@ class ProxyViewSet(viewsets.ModelViewSet):
             # Agent还未创建，将在部署时创建，此时心跳模式会在注册时设置
             pass
         
+        # 如果启用了自动配置域名，执行域名配置
+        auto_setup_domain = request.data.get('auto_setup_domain', False)
+        zone_id = request.data.get('zone_id')
+        if auto_setup_domain:
+            try:
+                from .proxy_domain_utils import auto_setup_proxy_with_domain
+                from apps.settings.models import CloudflareZone
+                
+                zone = None
+                if zone_id:
+                    try:
+                        zone = CloudflareZone.objects.get(id=zone_id, is_active=True)
+                    except CloudflareZone.DoesNotExist:
+                        logger.warning(f'指定的 Cloudflare Zone 不存在: zone_id={zone_id}')
+                
+                result = auto_setup_proxy_with_domain(proxy, zone)
+                if result['success']:
+                    logger.info(f'代理 {proxy.id} 自动配置域名成功: {result.get("domain")}')
+                    # 域名配置成功，继续部署流程
+                else:
+                    logger.warning(f'代理 {proxy.id} 自动配置域名失败: {result.get("error")}')
+                    # 域名配置失败，但不阻止代理创建和部署
+            except Exception as e:
+                logger.error(f'自动配置域名时出错: {str(e)}', exc_info=True)
+                # 出错时不阻止代理创建和部署
+        
         # 异步启动自动部署（传递心跳模式）
         auto_deploy_proxy(proxy.id, heartbeat_mode=heartbeat_mode)
         
@@ -1196,6 +1222,121 @@ echo "证书删除成功"
             return Response({
                 'error': cmd.error or '证书删除失败',
                 'result': cmd.result or ''
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='setup-domain')
+    def setup_domain(self, request, pk=None):
+        """为代理自动设置域名、DNS 记录、证书和 Caddyfile"""
+        proxy = self.get_object()
+        
+        # 检查权限
+        if proxy.created_by != request.user:
+            return Response({
+                'error': '无权操作此代理',
+                'detail': '此代理不属于当前用户'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # 获取可选的 zone_id
+        zone_id = request.data.get('zone_id')
+        zone = None
+        if zone_id:
+            from apps.settings.models import CloudflareZone
+            try:
+                zone = CloudflareZone.objects.get(id=zone_id, is_active=True)
+            except CloudflareZone.DoesNotExist:
+                return Response({
+                    'error': '指定的 Cloudflare Zone 不存在或未激活'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 调用自动配置函数
+        from .proxy_domain_utils import auto_setup_proxy_with_domain
+        
+        try:
+            result = auto_setup_proxy_with_domain(proxy, zone)
+            
+            if result['success']:
+                # 如果配置成功，尝试更新 Caddyfile
+                caddyfile_config = result.get('caddyfile_config')
+                if caddyfile_config:
+                    # 读取现有 Caddyfile
+                    from apps.agents.models import Agent
+                    try:
+                        agent = Agent.objects.get(server=proxy.server)
+                        if agent.status == 'online':
+                            # 获取现有 Caddyfile
+                            get_caddyfile_script = """#!/bin/bash
+if [ -f /etc/caddy/Caddyfile ]; then
+    cat /etc/caddy/Caddyfile
+else
+    echo ""
+fi
+"""
+                            cmd = execute_script_via_agent(agent, get_caddyfile_script, timeout=10)
+                            if cmd.status == 'success':
+                                existing_content = cmd.result.strip() if cmd.result else ''
+                                
+                                # 合并配置
+                                domain = result['domain']
+                                import re
+                                # 检查是否已存在该域名的配置
+                                pattern = rf'{re.escape(domain)}\s*\{{[^}}]*\}}'
+                                if re.search(pattern, existing_content, re.MULTILINE | re.DOTALL):
+                                    # 替换现有配置
+                                    updated_content = re.sub(pattern, caddyfile_config, existing_content, flags=re.MULTILINE | re.DOTALL)
+                                else:
+                                    # 追加新配置
+                                    if existing_content:
+                                        updated_content = f"{existing_content}\n\n{caddyfile_config}"
+                                    else:
+                                        updated_content = caddyfile_config
+                                
+                                # 更新 Caddyfile
+                                update_response = self.update_caddyfile(
+                                    request=type('Request', (), {
+                                        'data': {'content': updated_content},
+                                        'user': request.user
+                                    })(),
+                                    pk=proxy.id
+                                )
+                                
+                                if update_response.status_code != 200:
+                                    logger.warning(f'更新 Caddyfile 失败: {update_response.data}')
+                    except Agent.DoesNotExist:
+                        logger.warning('服务器未安装 Agent，跳过 Caddyfile 更新')
+                    except Exception as e:
+                        logger.warning(f'更新 Caddyfile 时出错: {str(e)}')
+                
+                # 记录日志
+                create_log_entry(
+                    log_type='proxy',
+                    level='info',
+                    title=f'自动配置代理域名: {proxy.name}',
+                    content=f'为代理 {proxy.name} 自动配置域名 {result["domain"]}，DNS 记录和证书已创建',
+                    user=request.user,
+                    server=proxy.server,
+                    related_id=proxy.id,
+                    related_type='proxy'
+                )
+                
+                return Response({
+                    'success': True,
+                    'message': result['message'],
+                    'domain': result['domain'],
+                    'dns_record_id': result['dns_record'].id if result.get('dns_record') else None,
+                    'cert_id': result['certificate']['cert_id'] if result.get('certificate') else None,
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'error': result.get('error', '未知错误'),
+                    'message': result.get('message', '自动配置失败')
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            logger.error(f'自动配置代理域名失败: {str(e)}', exc_info=True)
+            return Response({
+                'success': False,
+                'error': str(e),
+                'message': f'自动配置失败: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def destroy(self, request, *args, **kwargs):

@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 def check_agent_status():
-    """检查Agent状态（拉取模式）"""
-    # 获取所有使用拉取模式的Agent
-    agents = Agent.objects.filter(heartbeat_mode='pull', status__in=['online', 'offline'])
+    """检查Agent状态（服务器主动检查）"""
+    # 获取所有 Agent（服务器主动检查）
+    agents = Agent.objects.filter(status__in=['online', 'offline'])
     
     for agent in agents:
         try:
@@ -31,25 +31,21 @@ def check_agent_status():
             
             if response.status_code == 200:
                 agent.status = 'online'
-                agent.last_check = timezone.now()
                 agent.last_heartbeat = timezone.now()
             else:
                 agent.status = 'offline'
-                agent.last_check = timezone.now()
         except Exception as e:
             logger.error(f"检查Agent {agent.id} 状态失败: {str(e)}")
             agent.status = 'offline'
-            agent.last_check = timezone.now()
         
         agent.save()
 
 
 def mark_offline_agents():
-    """标记长时间未心跳的Agent为离线（推送模式）"""
-    # 对于推送模式，如果超过5分钟没有心跳，标记为离线
+    """标记长时间未心跳的Agent为离线"""
+    # 如果超过5分钟没有心跳，标记为离线
     threshold = timezone.now() - timedelta(minutes=5)
     Agent.objects.filter(
-        heartbeat_mode='push',
         status='online',
         last_heartbeat__lt=threshold
     ).update(status='offline')

@@ -9,11 +9,6 @@ class Agent(models.Model):
         ('offline', '离线'),
     ]
 
-    HEARTBEAT_MODE_CHOICES = [
-        ('push', '推送模式'),
-        ('pull', '拉取模式'),
-    ]
-
     server = models.OneToOneField('servers.Server', on_delete=models.CASCADE, related_name='agent', verbose_name='服务器')
     token = models.CharField(max_length=64, unique=True, verbose_name='Token')
     secret_key = models.CharField(max_length=255, blank=True, null=True, verbose_name='加密密钥', help_text='用于Agent通信加密的密钥')
@@ -21,8 +16,6 @@ class Agent(models.Model):
     version = models.CharField(max_length=50, blank=True, null=True, verbose_name='版本')
     deployment_tool_version = models.CharField(max_length=50, blank=True, null=True, verbose_name='部署工具版本', help_text='Agent端部署工具的版本号')
     last_heartbeat = models.DateTimeField(null=True, blank=True, verbose_name='最后心跳时间')
-    heartbeat_mode = models.CharField(max_length=10, choices=HEARTBEAT_MODE_CHOICES, default='push', verbose_name='心跳模式')
-    last_check = models.DateTimeField(null=True, blank=True, verbose_name='最后检查时间（拉取模式）')
     # Web服务配置
     web_service_port = models.IntegerField(default=8443, verbose_name='Web服务端口', help_text='Agent Web服务监听的端口')
     web_service_enabled = models.BooleanField(default=True, verbose_name='启用Web服务', help_text='是否启用Agent Web服务模式（新架构）')

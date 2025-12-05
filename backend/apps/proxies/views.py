@@ -97,8 +97,6 @@ class ProxyViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        # 获取心跳模式（如果提供）
-        heartbeat_mode = request.data.get('heartbeat_mode', 'push')
         agent_connect_host = request.data.get('agent_connect_host')
         agent_connect_port = request.data.get('agent_connect_port')
         
@@ -126,16 +124,6 @@ class ProxyViewSet(viewsets.ModelViewSet):
                 server.agent_connect_port = agent_connect_port
             server.save()
         
-        # 如果服务器已有Agent，更新心跳模式
-        from apps.agents.models import Agent
-        try:
-            agent = Agent.objects.get(server=proxy.server)
-            agent.heartbeat_mode = heartbeat_mode
-            agent.save()
-        except Agent.DoesNotExist:
-            # Agent还未创建，将在部署时创建，此时心跳模式会在注册时设置
-            pass
-        
         # 如果启用了自动配置域名，执行域名配置
         auto_setup_domain = request.data.get('auto_setup_domain', False)
         zone_id = request.data.get('zone_id')
@@ -162,8 +150,8 @@ class ProxyViewSet(viewsets.ModelViewSet):
                 logger.error(f'自动配置域名时出错: {str(e)}', exc_info=True)
                 # 出错时不阻止代理创建和部署
         
-        # 异步启动自动部署（传递心跳模式）
-        auto_deploy_proxy(proxy.id, heartbeat_mode=heartbeat_mode)
+        # 异步启动自动部署
+        auto_deploy_proxy(proxy.id)
         
         # 记录部署开始日志
         create_log_entry(

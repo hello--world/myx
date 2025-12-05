@@ -71,7 +71,6 @@ class AgentService:
                 'token': secrets.token_urlsafe(32),
                 'secret_key': secrets.token_urlsafe(32),
                 'status': 'offline',
-                'heartbeat_mode': 'push',
                 'web_service_enabled': True,
                 'web_service_port': 8443,
                 'rpc_port': AgentService.generate_rpc_port(),
@@ -224,8 +223,7 @@ class AgentService:
         Returns:
             Tuple[bool, str]: (是否在线, 状态消息)
         """
-        if agent.heartbeat_mode != 'pull':
-            return False, '此Agent不是拉取模式'
+        # 服务器主动检查 Agent 状态（通过 JSON-RPC）
 
         try:
             import requests
@@ -238,18 +236,15 @@ class AgentService:
 
             if response.status_code == 200:
                 agent.status = 'online'
-                agent.last_check = timezone.now()
                 agent.last_heartbeat = timezone.now()
                 agent.save()
                 return True, 'Agent在线'
             else:
                 agent.status = 'offline'
-                agent.last_check = timezone.now()
                 agent.save()
                 return False, f'健康检查失败: {response.status_code}'
 
         except Exception as e:
             agent.status = 'offline'
-            agent.last_check = timezone.now()
             agent.save()
             return False, f'连接失败: {str(e)}'

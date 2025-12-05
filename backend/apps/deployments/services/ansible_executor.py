@@ -157,12 +157,20 @@ class AnsibleExecutor:
 
             # 判断成功/失败
             success = result.returncode == 0
-            output = result.stdout + result.stderr
+            # 合并 stdout 和 stderr，确保所有输出都被捕获
+            output = ""
+            if result.stdout:
+                output += result.stdout
+            if result.stderr:
+                output += result.stderr
+            if not output:
+                output = f"执行完成，退出码: {result.returncode}"
 
             if success:
                 logger.info(f"Ansible playbook执行成功: {playbook_name}")
             else:
                 logger.error(f"Ansible playbook执行失败: {playbook_name}, 退出码: {result.returncode}")
+                logger.error(f"执行输出: {output}")
 
             return success, output
 

@@ -11,7 +11,7 @@ from django.utils import timezone
 from .models import Agent, CommandTemplate
 from .serializers import (
     AgentSerializer, AgentRegisterSerializer,
-    AgentHeartbeatSerializer, AgentCommandSerializer,
+    AgentCommandSerializer,
     AgentCommandDetailSerializer, CommandTemplateSerializer
 )
 from apps.servers.models import Server
@@ -53,34 +53,6 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         # 只返回当前用户创建的服务器关联的 Agent
         return Agent.objects.filter(server__created_by=self.request.user)
-
-    @action(detail=True, methods=['patch'])
-    def update_heartbeat_mode(self, request, pk=None):
-        """更新Agent心跳模式"""
-        agent = self.get_object()
-        heartbeat_mode = request.data.get('heartbeat_mode')
-        
-        if heartbeat_mode not in ['push', 'pull']:
-            return Response({'error': '心跳模式必须是push或pull'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        old_mode = agent.heartbeat_mode
-        agent.heartbeat_mode = heartbeat_mode
-        agent.save()
-        
-        # 记录心跳模式更新日志
-        create_log_entry(
-            log_type='agent',
-            level='info',
-            title=f'更新Agent心跳模式: {agent.server.name}',
-            content=f'心跳模式从 {old_mode} 更新为 {heartbeat_mode}',
-            user=request.user,
-            server=agent.server,
-            related_id=agent.id,
-            related_type='agent'
-        )
-        
-        serializer = self.get_serializer(agent)
-        return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
     def send_command(self, request, pk=None):
@@ -158,16 +130,32 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'])
-    def redeploy(self, request, pk=None):
-        """重新部署Agent"""
+    def upgrade(self, request, pk=None):
+        """升级Agent"""
         agent = self.get_object()
         server = agent.server
 
-        # 创建部署任务
+        # 检查并停止正在运行的相同类型的部署任务
         from apps.deployments.models import Deployment
+        
+        running_deployments = Deployment.objects.filter(
+            server=server,
+            deployment_type='agent',
+            status='running'
+        )
+        
+        if running_deployments.exists():
+            for deployment in running_deployments:
+                deployment.status = 'cancelled'
+                deployment.error_message = f'被新的升级任务取消（{timezone.now().strftime("%Y-%m-%d %H:%M:%S")}）'
+                deployment.completed_at = timezone.now()
+                deployment.log = (deployment.log or '') + f"\n[取消] 升级任务被新的升级请求取消\n"
+                deployment.save()
+                logger.info(f'已取消正在运行的升级任务: deployment_id={deployment.id}, server={server.name}')
 
+        # 创建部署任务
         deployment = Deployment.objects.create(
-            name=f"重新部署Agent - {server.name}",
+            name=f"升级Agent - {server.name}",
             server=server,
             deployment_type='agent',
             connection_method='agent' if (server.connection_method == 'agent' and agent.status == 'online') else 'ssh',
@@ -190,7 +178,7 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
 
             if success:
                 return Response({
-                    'message': 'Agent重新部署已启动，请查看部署任务',
+                    'message': 'Agent升级已启动，请查看部署任务',
                     'deployment_id': deployment.id
                 }, status=status.HTTP_202_ACCEPTED)
             else:
@@ -212,7 +200,7 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
                 deployment.save()
 
                 return Response({
-                    'error': '服务器缺少SSH凭据，无法重新部署'
+                    'error': '服务器缺少SSH凭据，无法升级Agent'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # 异步执行SSH升级
@@ -246,7 +234,7 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             thread.start()
 
             return Response({
-                'message': 'Agent重新部署已启动（通过SSH）',
+                'message': 'Agent升级已启动（通过SSH）',
                 'deployment_id': deployment.id
             }, status=status.HTTP_202_ACCEPTED)
 
@@ -350,18 +338,8 @@ def agent_register(request):
         return Response({'error': f'查找服务器失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
     # 检查是否已有Agent
-    # 获取心跳模式（从服务器配置或默认值）
-    heartbeat_mode = 'push'  # 默认推送模式
-    # 如果服务器已有Agent，使用现有心跳模式；否则使用默认值
-    try:
-        existing_agent = Agent.objects.get(server=server)
-        heartbeat_mode = existing_agent.heartbeat_mode
-    except Agent.DoesNotExist:
-        pass
-    
     # 生成随机RPC端口（如果不存在）
     import random
-    import socket
     def generate_rpc_port():
         excluded_ports = {22, 80, 443, 8000, 8443, 3306, 5432, 6379, 8080, 9000}
         for _ in range(100):
@@ -386,7 +364,6 @@ def agent_register(request):
             'status': 'online',
             'version': serializer.validated_data.get('version', ''),
             'last_heartbeat': timezone.now(),
-            'heartbeat_mode': heartbeat_mode,
             'web_service_enabled': True,  # 默认启用Web服务
             'web_service_port': 8443,  # 默认端口
             'rpc_port': generate_rpc_port()  # 生成随机RPC端口
@@ -447,76 +424,7 @@ def agent_register(request):
         'token': str(agent.token),
         'secret_key': agent.secret_key,  # 返回加密密钥
         'server_id': server.id,
-        'heartbeat_mode': agent.heartbeat_mode  # 返回心跳模式
     })
-
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def agent_heartbeat(request):
-    """Agent心跳接口"""
-    logger.info(f'[agent_heartbeat] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
-    
-    token = request.headers.get('X-Agent-Token')
-    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
-    logger.info(f'[agent_heartbeat] Token: {token_display}')
-    
-    if not token:
-        logger.warning('[agent_heartbeat] ✗ 缺少Agent Token - 返回401 Unauthorized')
-        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    try:
-        agent = get_agent_by_token(token)
-        logger.info(f'[agent_heartbeat] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
-    except Agent.DoesNotExist:
-        logger.error(f'[agent_heartbeat] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
-        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
-
-    serializer = AgentHeartbeatSerializer(data=request.data)
-    if serializer.is_valid():
-        if serializer.validated_data.get('status'):
-            agent.status = serializer.validated_data['status']
-        if serializer.validated_data.get('version'):
-            agent.version = serializer.validated_data['version']
-    
-    # 处理RPC端口（从请求数据中获取，如果提供）
-    rpc_port = request.data.get('rpc_port')
-    if rpc_port and not agent.rpc_port:
-        # 只有在端口未设置时才设置（不可更改已存在的端口）
-        agent.rpc_port = rpc_port
-        logger.info(f"Agent {agent.id} 设置RPC端口: {rpc_port}")
-
-    agent.last_heartbeat = timezone.now()
-    agent.status = 'online'
-    agent.save()
-
-    # 检查是否有待执行的命令
-    from .command_queue import CommandQueue
-    from .models import AgentCommand
-    pending_count = AgentCommand.objects.filter(agent=agent, status='pending').count()
-    
-    # 返回配置信息
-    from django.conf import settings
-    response_data = {
-        'status': 'ok',
-        'heartbeat_mode': agent.heartbeat_mode,  # 返回心跳模式
-        'config': {
-            'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
-            'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
-            'poll_min_interval': getattr(settings, 'AGENT_POLL_MIN_INTERVAL', 5),
-            'poll_max_interval': getattr(settings, 'AGENT_POLL_MAX_INTERVAL', 60),
-        }
-    }
-    
-    # 如果有待执行的命令，告诉Agent立即轮询（不返回命令，让Agent通过轮询获取）
-    if pending_count > 0:
-        logger.info(f'[agent_heartbeat] Agent {agent.id} 心跳时发现 {pending_count} 条待执行命令，通知立即轮询')
-        response_data['urgent_poll'] = True  # 标志：需要立即轮询
-        # 部署时加速轮询：临时缩短轮询间隔
-        response_data['config']['poll_min_interval'] = 1  # 部署时最短1秒
-        response_data['config']['poll_max_interval'] = 3   # 部署时最长3秒
-    
-    return Response(response_data)
 
 
 @api_view(['POST'])
@@ -549,57 +457,6 @@ def agent_command(request):
         'command': serializer.validated_data['command'],
         'args': serializer.validated_data.get('args', []),
         'timeout': serializer.validated_data.get('timeout', 300)
-    })
-
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def agent_poll_commands(request):
-    """Agent轮询命令接口"""
-    logger.info(f'[agent_poll_commands] ✓ URL匹配成功 - 收到请求: {request.method} {request.path}')
-    
-    token = request.headers.get('X-Agent-Token')
-    token_display = token[:10] + "..." if token and len(token) > 10 else (token or "None")
-    logger.info(f'[agent_poll_commands] Token: {token_display}')
-    
-    if not token:
-        logger.warning('[agent_poll_commands] ✗ 缺少Agent Token - 返回401 Unauthorized')
-        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    try:
-        agent = get_agent_by_token(token)
-        logger.info(f'[agent_poll_commands] ✓ Agent找到: ID={agent.id}, Server={agent.server.name if agent.server else "None"}')
-    except Agent.DoesNotExist:
-        logger.error(f'[agent_poll_commands] ✗ Agent不存在 - Token: {token_display} - 返回404（这是视图函数返回的404，不是路由404！URL匹配成功）')
-        return Response({'error': 'Agent不存在', 'detail': f'Token: {token_display}', 'note': '这是视图函数返回的404，URL匹配成功'}, status=status.HTTP_404_NOT_FOUND)
-
-    # 更新心跳
-    agent.last_heartbeat = timezone.now()
-    agent.status = 'online'
-    agent.save()
-
-    # 从命令队列获取待执行的命令
-    from .command_queue import CommandQueue
-    commands = CommandQueue.get_pending_commands(agent)
-
-    # 调试：记录获取到的命令
-    logger.info(f'[agent_poll_commands] Agent {agent.id} 获取到 {len(commands)} 条待执行命令')
-    if commands:
-        command_ids = [cmd['id'] for cmd in commands]
-        logger.info(f'[agent_poll_commands] 命令ID列表: {command_ids}')
-
-    # 返回命令和配置信息
-    from django.conf import settings
-    return Response({
-        'commands': commands,
-        'status': 'ok',
-        'heartbeat_mode': agent.heartbeat_mode,  # 返回心跳模式
-        'config': {
-            'heartbeat_min_interval': getattr(settings, 'AGENT_HEARTBEAT_MIN_INTERVAL', 30),
-            'heartbeat_max_interval': getattr(settings, 'AGENT_HEARTBEAT_MAX_INTERVAL', 300),
-            'poll_min_interval': getattr(settings, 'AGENT_POLL_MIN_INTERVAL', 5),
-            'poll_max_interval': getattr(settings, 'AGENT_POLL_MAX_INTERVAL', 60),
-        }
     })
 
 
@@ -663,108 +520,4 @@ def agent_command_result(request, command_id):
         logger.error(f'[agent_command_result] ✗ 错误: {str(e)}')
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def agent_command_progress(request, command_id):
-    """Agent命令执行进度接口（实时上报增量输出）"""
-    logger.debug(f'[agent_command_progress] 收到命令进度更新: command_id={command_id}')
-    token = request.headers.get('X-Agent-Token')
-    
-    if not token:
-        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    try:
-        agent = get_agent_by_token(token)
-    except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
-    stdout = request.data.get('stdout', '')
-    stderr = request.data.get('stderr', '')
-    append = request.data.get('append', True)  # 默认为增量更新
-    
-    try:
-        from .command_queue import CommandQueue
-        from .models import AgentCommand
-        cmd = AgentCommand.objects.get(id=command_id, agent=agent)
-        
-        # 更新命令结果（增量追加）
-        CommandQueue.update_command_result(command_id, None, stdout, stderr, append=True)
-        
-        logger.debug(f'[agent_command_progress] 命令进度已更新: command_id={command_id}, stdout_len={len(stdout)}, stderr_len={len(stderr)}')
-        
-        return Response({'status': 'ok'})
-    except AgentCommand.DoesNotExist:
-        return Response({'error': '命令不存在'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        logger.error(f'[agent_command_progress] 错误: {str(e)}')
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def agent_report_progress(request, deployment_id):
-    """Agent上报部署进度接口"""
-    token = request.headers.get('X-Agent-Token')
-    if not token:
-        return Response({'error': '缺少Agent Token'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    try:
-        agent = get_agent_by_token(token)
-    except Agent.DoesNotExist:
-        return Response({'error': 'Agent不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
-    try:
-        from apps.deployments.models import Deployment
-        deployment = Deployment.objects.get(id=deployment_id, server=agent.server)
-    except Deployment.DoesNotExist:
-        return Response({'error': '部署任务不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # 更新部署日志
-    progress_log = request.data.get('log', '')
-    if progress_log:
-        deployment.log = (deployment.log or '') + progress_log
-        deployment.save()
-    
-    return Response({'status': 'ok'})
-
-
-@api_view(['GET'])
-@permission_classes([AllowAny])  # Agent需要访问，所以允许匿名
-def agent_file_download(request, filename):
-    """提供Agent文件下载"""
-    # 只允许下载特定文件（main.py已包含Web服务功能，不再需要单独的web_server.py）
-    allowed_files = ['main.py', 'requirements.txt']
-    if filename not in allowed_files:
-        return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # 获取Agent文件路径（从deployment-tool目录）
-    # __file__ 是 backend/apps/agents/views.py
-    # 需要回到项目根目录: backend/apps/agents -> backend/apps -> backend -> 项目根
-    base_dir = Path(__file__).resolve().parent.parent.parent
-    agent_dir = base_dir / 'deployment-tool' / 'agent'
-    file_path = agent_dir / filename
-    
-    if not file_path.exists():
-        return Response({'error': '文件不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # 读取文件内容
-    try:
-        with open(file_path, 'rb') as f:
-            content = f.read()
-        
-        # 根据文件类型设置Content-Type
-        if filename.endswith('.py'):
-            content_type = 'text/x-python; charset=utf-8'
-        elif filename.endswith('.txt'):
-            content_type = 'text/plain; charset=utf-8'
-        else:
-            content_type = 'application/octet-stream'
-        
-        response = HttpResponse(content, content_type=content_type)
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
-    except Exception as e:
-        logger.error(f'下载Agent文件失败: {e}')
-        return Response({'error': '文件读取失败'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

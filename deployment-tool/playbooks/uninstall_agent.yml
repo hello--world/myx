@@ -1,0 +1,88 @@
+---
+# Agent卸载playbook
+# 用于卸载MyX Agent及其相关文件和服务
+#
+# 执行方式：
+# - SSH方式：通过SSH连接到目标服务器执行
+# - Agent方式：通过Agent RPC执行（如果Agent在线）
+#
+# 功能：
+# - 停止Agent服务
+# - 禁用Agent服务
+# - 删除systemd服务文件
+# - 删除Agent文件目录
+# - 删除Agent配置文件目录
+# - 删除Agent日志文件
+
+- name: 卸载MyX Agent
+  hosts: all
+  become: yes
+  vars:
+    agent_dir: /opt/myx-agent
+    config_dir: /etc/myx-agent
+    service_name: myx-agent
+    log_file: /var/log/myx-agent.log
+
+  tasks:
+    # ============ 停止Agent服务 ============
+    - name: 停止Agent服务（如果存在）
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      failed_when: false
+      ignore_errors: yes
+
+    - name: 等待服务完全停止
+      wait_for:
+        timeout: 3
+
+    # ============ 禁用Agent服务 ============
+    - name: 禁用Agent服务（如果已启用）
+      systemd:
+        name: "{{ service_name }}"
+        enabled: no
+      failed_when: false
+      ignore_errors: yes
+
+    # ============ 删除systemd服务文件 ============
+    - name: 检查systemd服务文件是否存在
+      stat:
+        path: /etc/systemd/system/{{ service_name }}.service
+      register: service_file_stat
+
+    - name: 删除systemd服务文件
+      file:
+        path: /etc/systemd/system/{{ service_name }}.service
+        state: absent
+      when: service_file_stat.stat.exists
+      failed_when: false
+
+    - name: 重新加载systemd（如果服务文件被删除）
+      systemd:
+        daemon_reload: yes
+      when: service_file_stat.stat.exists
+      failed_when: false
+
+    # ============ 删除Agent文件目录 ============
+    - name: 删除Agent文件目录
+      file:
+        path: "{{ agent_dir }}"
+        state: absent
+
+    # ============ 删除Agent配置文件目录 ============
+    - name: 删除Agent配置文件目录
+      file:
+        path: "{{ config_dir }}"
+        state: absent
+
+    # ============ 删除Agent日志文件 ============
+    - name: 删除Agent日志文件
+      file:
+        path: "{{ log_file }}"
+        state: absent
+      failed_when: false
+
+    - name: 输出卸载完成信息
+      debug:
+        msg: "[完成] Agent卸载完成"
+

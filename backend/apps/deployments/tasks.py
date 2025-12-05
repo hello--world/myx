@@ -333,9 +333,13 @@ def quick_deploy_full(deployment_id, is_temporary=False):
 
 def install_agent_via_ssh(server: Server, deployment: Deployment) -> bool:
     """
-    通过SSH安装Agent（已重构为调用DeploymentService）
+    通过SSH安装Agent（已重构为调用DeploymentService，统一使用全新安装方式）
 
     注意：保留此函数是为了向后兼容，内部已使用Service层重构
+
+    Args:
+        server: Server对象
+        deployment: Deployment对象
     """
     try:
         # 调用Service层的install_agent
@@ -397,7 +401,6 @@ def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool
                 'token': secrets.token_urlsafe(32),
                 'secret_key': secrets.token_urlsafe(32),
                 'status': 'offline',  # 初始状态为离线，启动后更新
-                'heartbeat_mode': 'push',
                 'web_service_enabled': True,
                 'web_service_port': 8443,
                 'rpc_port': generate_rpc_port(),

@@ -5,14 +5,10 @@ from django.utils import timezone
 from .models import Server
 from .serializers import ServerSerializer, ServerTestSerializer
 from .utils import test_ssh_connection
-from apps.proxies.tasks import deploy_agent_and_services
 from apps.agents.models import Agent
 from apps.logs.utils import create_log_entry
 import paramiko
 from io import StringIO
-import os
-import subprocess
-import tempfile
 import threading
 import logging
 
@@ -33,11 +29,9 @@ class ServerViewSet(viewsets.ModelViewSet):
         
         # 检查是否有相关的 Agent 和 Proxy
         has_agent = False
-        has_proxies = False
         agent_info = None
         proxies_info = []
-        proxies_count = 0
-        
+
         try:
             agent = Agent.objects.get(server=server)
             has_agent = True
@@ -107,106 +101,30 @@ class ServerViewSet(viewsets.ModelViewSet):
                     agent_id = agent.id  # 保存 agent.id，因为删除后无法访问
                     deleted_agent_info = agent_info
                     
-                    # 在删除数据库记录之前，先尝试卸载 Agent（如果 Agent 在线）
+                    # 在删除数据库记录之前，先尝试卸载 Agent
                     uninstall_success = False
                     uninstall_error = None
-                    if agent.status == 'online' and agent.rpc_port and agent.rpc_supported:
-                        try:
-                            from apps.agents.rpc_client import get_agent_rpc_client
-                            rpc_client = get_agent_rpc_client(agent)
-                            if rpc_client and rpc_client.health_check():
-                                # Agent 在线，发送卸载命令（使用 Python 脚本）
-                                # 读取卸载脚本内容
-                                import os
-                                from pathlib import Path
-                                
-                                # 获取项目根目录
-                                base_dir = Path(__file__).resolve().parent.parent.parent.parent
-                                uninstall_script_path = base_dir / 'deployment-tool' / 'scripts' / 'uninstall_agent.py'
-                                
-                                if uninstall_script_path.exists():
-                                    with open(uninstall_script_path, 'r', encoding='utf-8') as f:
-                                        uninstall_script = f.read()
-                                else:
-                                    # 如果脚本文件不存在，使用内联脚本
-                                    uninstall_script = """#!/usr/bin/env python3
-import os
-import subprocess
-import sys
-import shutil
-
-def run_command(cmd, check=True, capture_output=True):
-    try:
-        result = subprocess.run(cmd, shell=True, check=check, capture_output=capture_output, text=True, timeout=30)
-        return result.returncode == 0, result.stdout, result.stderr
-    except Exception as e:
-        return False, '', str(e)
-
-print("[信息] 开始卸载 Agent...")
-
-# 停止 Agent 服务
-success, _, _ = run_command("systemctl is-active --quiet myx-agent", check=False)
-if success:
-    run_command("systemctl stop myx-agent", check=False)
-    print("[信息] Agent 服务已停止")
-
-# 禁用 Agent 服务
-success, _, _ = run_command("systemctl is-enabled --quiet myx-agent", check=False)
-if success:
-    run_command("systemctl disable myx-agent", check=False)
-    print("[信息] Agent 服务已禁用")
-
-# 删除 systemd 服务文件
-if os.path.exists("/etc/systemd/system/myx-agent.service"):
-    os.remove("/etc/systemd/system/myx-agent.service")
-    run_command("systemctl daemon-reload", check=False)
-    print("[信息] systemd 服务文件已删除")
-
-# 删除 Agent 文件目录
-if os.path.exists("/opt/myx-agent"):
-    shutil.rmtree("/opt/myx-agent")
-    print("[信息] Agent 文件目录已删除")
-
-# 删除 Agent 配置文件目录
-if os.path.exists("/etc/myx-agent"):
-    shutil.rmtree("/etc/myx-agent")
-    print("[信息] Agent 配置文件目录已删除")
-
-# 删除 Agent 日志文件
-if os.path.exists("/var/log/myx-agent.log"):
-    os.remove("/var/log/myx-agent.log")
-    print("[信息] Agent 日志文件已删除")
-
-print("[成功] Agent 卸载完成")
-"""
-                                
-                                from apps.agents.utils import execute_script_via_agent
-                                cmd = execute_script_via_agent(agent, uninstall_script, timeout=60, script_name='uninstall_agent.py')
-                                
-                                # 等待命令执行完成（最多等待30秒）
-                                import time
-                                max_wait = 30
-                                wait_time = 0
-                                while wait_time < max_wait:
-                                    cmd.refresh_from_db()
-                                    if cmd.status in ['success', 'failed']:
-                                        break
-                                    time.sleep(1)
-                                    wait_time += 1
-                                
-                                if cmd.status == 'success':
-                                    uninstall_success = True
-                                    logger.info(f'Agent 卸载成功: agent_id={agent_id}, server_id={server_id}')
-                                else:
-                                    uninstall_error = cmd.error or '卸载命令执行失败'
-                                    logger.warning(f'Agent 卸载失败: agent_id={agent_id}, server_id={server_id}, error={uninstall_error}')
-                            else:
-                                logger.warning(f'Agent 不在线或 RPC 不可用，跳过卸载: agent_id={agent_id}, server_id={server_id}')
-                        except Exception as e:
-                            uninstall_error = str(e)
-                            logger.warning(f'发送 Agent 卸载命令失败: agent_id={agent_id}, server_id={server_id}, error={e}', exc_info=True)
-                    else:
-                        logger.info(f'Agent 不在线或 RPC 不支持，跳过卸载: agent_id={agent_id}, server_id={server_id}, status={agent.status}, rpc_supported={agent.rpc_supported}')
+                    
+                    try:
+                        # 使用 Ansible playbook 卸载 Agent
+                        from apps.deployments.services.ansible_executor import AnsibleExecutor
+                        
+                        executor = AnsibleExecutor(server)
+                        success, output = executor.execute_playbook(
+                            playbook_name='uninstall_agent.yml',
+                            method='auto',  # 自动选择 SSH 或 Agent 方式
+                            timeout=120
+                        )
+                        
+                        if success:
+                            uninstall_success = True
+                            logger.info(f'Agent 卸载成功: agent_id={agent_id}, server_id={server_id}')
+                        else:
+                            uninstall_error = output or '卸载 playbook 执行失败'
+                            logger.warning(f'Agent 卸载失败: agent_id={agent_id}, server_id={server_id}, error={uninstall_error}')
+                    except Exception as e:
+                        uninstall_error = str(e)
+                        logger.warning(f'执行 Agent 卸载 playbook 失败: agent_id={agent_id}, server_id={server_id}, error={e}', exc_info=True)
                     
                     # 删除 Agent 数据库记录
                     agent.delete()
@@ -571,6 +489,25 @@ print("[成功] Agent 卸载完成")
     def install_agent(self, request, pk=None):
         """安装Agent到服务器"""
         server = self.get_object()
+
+        # 检查并停止正在运行的相同类型的部署任务
+        from apps.deployments.models import Deployment
+        from django.utils import timezone
+        
+        running_deployments = Deployment.objects.filter(
+            server=server,
+            deployment_type='agent',
+            status='running'
+        )
+        
+        if running_deployments.exists():
+            for deployment in running_deployments:
+                deployment.status = 'cancelled'
+                deployment.error_message = f'被新的部署任务取消（{timezone.now().strftime("%Y-%m-%d %H:%M:%S")}）'
+                deployment.completed_at = timezone.now()
+                deployment.log = (deployment.log or '') + f"\n[取消] 部署任务被新的部署请求取消\n"
+                deployment.save()
+                logger.info(f'已取消正在运行的部署任务: deployment_id={deployment.id}, server={server.name}')
         
         # 检查是否已有Agent（允许升级）
         is_upgrade = False
@@ -581,14 +518,29 @@ print("[成功] Agent 卸载完成")
         except Agent.DoesNotExist:
             pass
         
-        # 如果Agent已安装且在线，使用Agent进行升级
-        if is_upgrade and agent and agent.status == 'online' and agent.rpc_supported:
-            # 通过Agent进行升级（使用redeploy功能）
+        # 如果Agent已安装且在线，且服务器连接方式为agent，使用Agent进行升级
+        # 如果服务器连接方式为ssh，即使Agent在线也使用SSH升级（用于修复Agent问题）
+        if is_upgrade and agent and agent.status == 'online' and agent.rpc_supported and server.connection_method == 'agent':
+            # 通过Agent进行升级（使用install_agent.yml playbook）
             from apps.deployments.models import Deployment
-            from apps.agents.command_queue import CommandQueue
-            from django.conf import settings
-            import os
-            import time as time_module
+            from apps.agents.services.upgrade_service import AgentUpgradeService
+            
+            # 检查并停止正在运行的相同类型的部署任务（Agent方式）
+            running_deployments = Deployment.objects.filter(
+                server=server,
+                deployment_type='agent',
+                connection_method='agent',
+                status='running'
+            )
+            
+            if running_deployments.exists():
+                for dep in running_deployments:
+                    dep.status = 'cancelled'
+                    dep.error_message = f'被新的部署任务取消（{timezone.now().strftime("%Y-%m-%d %H:%M:%S")}）'
+                    dep.completed_at = timezone.now()
+                    dep.log = (dep.log or '') + f"\n[取消] 部署任务被新的部署请求取消\n"
+                    dep.save()
+                    logger.info(f'已取消正在运行的部署任务: deployment_id={dep.id}, server={server.name}')
             
             # 创建部署任务
             task_name = f"升级Agent - {server.name}"
@@ -603,81 +555,33 @@ print("[成功] Agent 卸载完成")
                 created_by=request.user
             )
             
-            # 获取API URL用于上报进度和下载文件
-            api_url = os.getenv('AGENT_API_URL', getattr(settings, 'AGENT_API_URL', None))
-            if not api_url:
-                # 从request构建API URL
-                scheme = 'https' if request.is_secure() else 'http'
-                host = request.get_host()
-                api_url = f"{scheme}://{host}/api/agents"
-            
-            # 从模板文件加载脚本
-            from pathlib import Path
-            base_dir = Path(__file__).resolve().parent.parent.parent.parent
-            script_template_path = str(base_dir / 'backend' / 'apps' / 'agents' / 'scripts' / 'agent_redeploy.sh.template')
-            with open(script_template_path, 'r', encoding='utf-8') as f:
-                redeploy_script = f.read()
-            
-            # 替换占位符
-            redeploy_script = redeploy_script.replace('{DEPLOYMENT_ID}', str(deployment.id))
-            redeploy_script = redeploy_script.replace('{API_URL}', api_url)
-            redeploy_script = redeploy_script.replace('{AGENT_TOKEN}', str(agent.token))
-            
-            # 使用deployment_id作为日志文件路径的唯一标识
-            log_file = f'/tmp/agent_redeploy_{deployment.id}.log'
-            script_file = f'/tmp/agent_redeploy_script_{deployment.id}.sh'
-            
-            # 生成唯一的服务名称
-            service_name = f'myx-agent-redeploy-{deployment.id}-{int(time_module.time())}'
-            
-            # 使用base64编码脚本内容，避免heredoc中的特殊字符问题
-            import base64
-            script_base64 = base64.b64encode(redeploy_script.encode('utf-8')).decode('ascii')
-            
-            # 构建部署命令：使用base64解码脚本内容，写入脚本文件，然后使用systemd-run执行
-            deploy_command = f'''bash -c 'echo "{script_base64}" | base64 -d > "{script_file}" && chmod +x "{script_file}" && systemd-run --unit={service_name} --service-type=oneshot --no-block --property=StandardOutput=file:{log_file} --property=StandardError=file:{log_file} bash "{script_file}"; echo $?' '''
-            
-            logger.info(f'[upgrade] 创建Agent升级命令: deployment_id={deployment.id}, script_file={script_file}, log_file={log_file}')
-            
-            # 使用systemd-run创建临时服务执行脚本，确保独立于Agent进程运行
-            cmd = CommandQueue.add_command(
+            # 使用AgentUpgradeService进行升级（统一使用install_agent.yml playbook）
+            success, message = AgentUpgradeService.upgrade_via_agent(
                 agent=agent,
-                command='bash',
-                args=['-c', deploy_command],
-                timeout=600
+                deployment=deployment,
+                user=request.user
             )
             
-            logger.info(f'[upgrade] 命令已添加到队列: command_id={cmd.id}, agent_id={agent.id}')
-            
-            # 初始化部署日志
-            deployment.log = f"[开始] Agent升级已启动（通过Agent），命令ID: {cmd.id}\n"
-            deployment.log += f"[信息] 升级将使用systemd-run在独立进程中执行，确保升级过程不受影响\n"
-            deployment.log += f"[信息] 日志文件: {log_file}\n"
-            deployment.log += f"[信息] 脚本文件: {script_file}\n"
-            deployment.log += f"[信息] 如果升级失败，系统会自动回滚到原始版本\n"
-            deployment.save()
-            
-            # 记录Agent升级开始日志
-            create_log_entry(
-                log_type='agent',
-                level='info',
-                title=f'开始升级Agent: {server.name}',
-                content=f'Agent升级已启动（通过Agent），部署任务ID: {deployment.id}，命令ID: {cmd.id}。升级将使用systemd-run在独立进程中执行，如果失败会自动回滚。',
-                user=request.user,
-                server=server,
-                related_id=deployment.id,
-                related_type='deployment'
-            )
-            
-            return Response({
-                'success': True,
-                'message': 'Agent升级任务已启动（通过Agent），请查看部署任务',
-                'deployment_id': deployment.id,
-                'is_upgrade': True,
-                'upgrade_method': 'agent'
-            }, status=status.HTTP_202_ACCEPTED)
+            if success:
+                return Response({
+                    'success': True,
+                    'message': 'Agent升级任务已启动（通过Agent），请查看部署任务',
+                    'deployment_id': deployment.id,
+                    'is_upgrade': True,
+                    'upgrade_method': 'agent'
+                }, status=status.HTTP_202_ACCEPTED)
+            else:
+                deployment.status = 'failed'
+                deployment.error_message = message
+                deployment.completed_at = timezone.now()
+                deployment.save()
+                
+                return Response({
+                    'success': False,
+                    'error': message
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-        # 如果Agent不在线或未安装，使用SSH安装/升级
+        # 如果Agent不在线、未安装，或服务器连接方式为ssh，使用SSH安装/升级
         # 检查是否有SSH凭证
         if not server.password and not server.private_key:
             if is_upgrade:
@@ -749,23 +653,23 @@ print("[成功] Agent 卸载完成")
                 # 重新获取服务器和部署对象
                 server.refresh_from_db()
                 deployment.refresh_from_db()
-                
+
                 # 临时设置连接方式为SSH（如果原来是Agent）
                 original_connection_method = server.connection_method
                 if server.connection_method == 'agent':
                     server.connection_method = 'ssh'
                     server.save()
-                
+
                 # 通过SSH安装Agent
                 from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_startup
-                
+
                 action_text = "升级" if is_upgrade else "安装"
                 deployment.log = (deployment.log or '') + f"[开始] 开始通过SSH{action_text}Agent到服务器 {server.host}\n"
                 if is_upgrade:
-                    deployment.log = (deployment.log or '') + f"[信息] 升级模式：将安装最新版本的Agent文件并重启服务\n"
+                    deployment.log = (deployment.log or '') + f"[信息] 升级模式：将停止旧服务并全新安装最新版本的Agent\n"
                 deployment.save()
-                
-                # 安装/升级Agent
+
+                # 安装/升级Agent（统一使用全新安装方式）
                 if not install_agent_via_ssh(server, deployment):
                     deployment.status = 'failed'
                     deployment.error_message = f'Agent{action_text}失败'

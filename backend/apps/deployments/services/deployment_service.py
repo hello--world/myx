@@ -23,7 +23,7 @@ class DeploymentService:
     @staticmethod
     def install_agent(server: Server, deployment: Deployment, user=None) -> Tuple[bool, str]:
         """
-        安装Agent（使用install_agent.yml playbook）
+        安装Agent（使用install_agent.yml playbook，统一使用全新安装方式）
 
         Args:
             server: Server对象
@@ -97,7 +97,11 @@ class DeploymentService:
                 timeout=600
             )
 
-            deployment.log = (deployment.log or '') + f"\n=== Ansible执行输出 ===\n{output}\n"
+            # 记录详细的执行输出
+            if output:
+                deployment.log = (deployment.log or '') + f"\n=== Ansible执行输出 ===\n{output}\n"
+            else:
+                deployment.log = (deployment.log or '') + "\n=== Ansible执行输出 ===\n[警告] 未获取到执行输出\n"
             deployment.save()
 
             if success:
@@ -106,10 +110,11 @@ class DeploymentService:
                 logger.info(f"Agent安装成功: server={server.name}")
                 return True, "Agent安装成功"
             else:
-                deployment.log = (deployment.log or '') + "[失败] Agent安装失败\n"
+                error_msg = output if output else "Ansible执行失败，但未获取到错误信息"
+                deployment.log = (deployment.log or '') + f"[失败] Agent安装失败\n错误信息: {error_msg}\n"
                 deployment.save()
-                logger.error(f"Agent安装失败: server={server.name}")
-                return False, "Agent安装失败"
+                logger.error(f"Agent安装失败: server={server.name}, 错误: {error_msg}")
+                return False, f"Agent安装失败: {error_msg}"
 
         except Exception as e:
             logger.error(f"安装Agent失败: {e}", exc_info=True)

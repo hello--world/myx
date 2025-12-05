@@ -99,8 +99,7 @@ def _poll_commands(agent: Agent) -> dict:
     """Agent轮询获取命令"""
     commands = CommandQueue.get_pending_commands(agent)
     return {
-        'commands': commands,
-        'heartbeat_mode': agent.heartbeat_mode
+        'commands': commands
     }
 
 
@@ -141,7 +140,6 @@ def _heartbeat(agent: Agent, params: dict) -> dict:
     agent.save()
     
     return {
-        'status': 'ok',
-        'heartbeat_mode': agent.heartbeat_mode
+        'status': 'ok'
     }
 

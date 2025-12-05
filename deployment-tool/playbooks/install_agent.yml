@@ -1,6 +1,6 @@
 ---
 # Agent安装playbook
-# 替代原有的Bash heredoc脚本，统一使用Ansible管理
+# 统一处理Agent的安装和升级（都使用全新安装方式）
 #
 # 执行方式：
 # - SSH方式：服务器本地执行ansible-playbook，通过SSH连接到目标服务器
@@ -27,6 +27,30 @@
     service_name: myx-agent
 
   tasks:
+    # ============ 停止现有服务并清理旧文件 ============
+    - name: 停止Agent服务（如果存在）
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      failed_when: false
+      ignore_errors: yes
+
+    - name: 等待服务完全停止
+      wait_for:
+        timeout: 3
+
+    - name: 删除旧的Agent目录（强制覆盖）
+      file:
+        path: "{{ agent_dir }}"
+        state: absent
+      failed_when: false
+      ignore_errors: yes
+
+    - name: 重新创建Agent目录
+      file:
+        path: "{{ agent_dir }}"
+        state: directory
+        mode: '0755'
     - name: 检查Python3是否安装
       command: python3 --version
       register: python_version
@@ -40,6 +64,7 @@
 
     - name: 提取Python版本号
       set_fact:
+
         python_major: "{{ python_version.stdout | regex_search('\\d+') }}"
         python_minor: "{{ python_version.stdout | regex_search('\\d+\\.\\d+') | regex_replace('^\\d+\\.', '') }}"
 
@@ -64,67 +89,20 @@
 
     # ============ 安装uv工具 ============
     - name: 检查uv是否已安装
-      command: uv --version
+      command: /usr/local/bin/uv --version
       register: uv_check
       failed_when: false
       changed_when: false
 
-    - name: 安装uv（使用官方安装脚本）
+    - name: 安装uv到/usr/local/bin
       shell: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
       when: uv_check.rc != 0
-      register: uv_install_result
-      failed_when: false
-
-    - name: 尝试使用pip安装uv（如果官方脚本失败）
-      shell: |
-        if command -v pip3 &> /dev/null; then
-          pip3 install --user uv || pip3 install --user --break-system-packages uv
-        fi
-      when: uv_check.rc != 0 and uv_install_result.rc != 0
-      failed_when: false
-
-    - name: 查找uv路径
-      shell: |
-        if command -v uv &> /dev/null; then
-          command -v uv | head -n 1
-        elif [ -f "$HOME/.cargo/bin/uv" ]; then
-          echo "$HOME/.cargo/bin/uv"
-        elif [ -f "$HOME/.local/bin/uv" ]; then
-          echo "$HOME/.local/bin/uv"
-        else
-          echo "not_found"
-        fi
-      register: uv_path_result
-      changed_when: false
-
-    - name: 设置uv路径变量（清理换行符）
-      set_fact:
-        uv_path: "{{ uv_path_result.stdout | trim }}"
 
     - name: 验证uv是否可用
-      fail:
-        msg: "uv安装失败或不在PATH中"
-      when: uv_path == "not_found"
-
-    - name: 创建uv符号链接到/usr/local/bin
-      file:
-        src: "{{ uv_path }}"
-        dest: /usr/local/bin/uv
-        state: link
-        force: yes
-      when: uv_path != "/usr/local/bin/uv" and uv_path != "not_found"
-      failed_when: false
-      register: uv_symlink_result
-
-    - name: 更新uv路径为符号链接路径（如果符号链接创建成功）
-      set_fact:
-        uv_path: "/usr/local/bin/uv"
-      when: uv_path != "/usr/local/bin/uv" and uv_path != "not_found" and uv_symlink_result is succeeded
-
-    - name: 输出uv路径信息
-      debug:
-        msg: "使用uv路径: {{ uv_path }}"
+      command: /usr/local/bin/uv --version
+      register: uv_verify
+      failed_when: uv_verify.rc != 0
 
     # ============ 安装Python依赖 ============
     - name: 检查pyproject.toml是否存在
@@ -132,30 +110,25 @@
         path: "{{ agent_dir }}/pyproject.toml"
       register: pyproject_file
 
-    - name: 使用uv sync创建虚拟环境（如果有pyproject.toml）
+    - name: 使用uv sync安装依赖（如果有pyproject.toml）
       shell: |
         cd {{ agent_dir }}
-        "{{ uv_path }}" sync
+        /usr/local/bin/uv sync
       when: pyproject_file.stat.exists
-      failed_when: false
       register: uv_sync_result
+      failed_when: uv_sync_result.rc != 0
 
-    - name: 使用uv pip install安装依赖
+    - name: 使用uv pip install安装依赖（如果没有pyproject.toml）
       shell: |
         cd {{ agent_dir }}
-        "{{ uv_path }}" pip install -r requirements.txt
+        /usr/local/bin/uv pip install -r requirements.txt
+      when: not pyproject_file.stat.exists
       register: uv_install_deps
       failed_when: uv_install_deps.rc != 0
 
     - name: 输出依赖安装结果
       debug:
-        msg: "Python依赖安装完成（使用uv）"
-
-    - name: 验证关键依赖是否已安装
-      shell: |
-        cd {{ agent_dir }}
-        {{ uv_path }} pip list | grep -E "Flask|ansible-runner" || (echo "错误: 关键依赖未安装" && exit 1)
-      register: verify_deps_result
+        msg: "Python依赖安装完成（使用{{ 'pyproject.toml' if pyproject_file.stat.exists else 'requirements.txt' }}）"
 
     # ============ 创建配置文件 ============
     - name: 创建配置目录
@@ -200,11 +173,10 @@
           Type=simple
           User=root
           WorkingDirectory={{ agent_dir }}
-          # 优先使用虚拟环境中的Python，否则使用uv run
-          ExecStart=/bin/bash -c 'UV_PATH=$(command -v uv 2>/dev/null || echo "$HOME/.cargo/bin/uv"); if [ ! -f "$UV_PATH" ] && [ -f "$HOME/.local/bin/uv" ]; then UV_PATH="$HOME/.local/bin/uv"; fi; if [ -d .venv ] && [ -f .venv/bin/python3 ]; then .venv/bin/python3 {{ agent_dir }}/main.py; else "$UV_PATH" run {{ agent_dir }}/main.py; fi'
+          ExecStart=/usr/local/bin/uv run {{ agent_dir }}/main.py
           Restart=always
           RestartSec=10
-          Environment="PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.cargo/bin:/root/.local/bin"
+          Environment="PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
           [Install]
           WantedBy=multi-user.target

@@ -84,6 +84,12 @@ def _check_deployment(deployment: Deployment):
         # 超时检查已在 check_running_deployments 中完成
         return
     
+    # 只处理通过Agent方式执行的部署任务（connection_method='agent'）
+    # SSH方式执行的部署任务由其他机制处理，不需要查找AgentCommand
+    if deployment.connection_method != 'agent':
+        logger.debug(f'部署任务 {deployment.id} 使用 {deployment.connection_method} 方式，跳过Agent命令监控')
+        return
+    
     # 获取服务器和Agent
     server = deployment.server
     try:

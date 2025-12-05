@@ -4,7 +4,7 @@ Agent升级服务
 负责Agent的升级操作（自升级机制）
 遵循架构设计原则：
 - 使用systemd-run在独立进程中执行升级
-- 使用upgrade_agent.yml playbook统一升级逻辑
+- 使用install_agent.yml playbook统一安装/升级逻辑（自动检测升级模式）
 - 失败自动回滚
 """
 import logging
@@ -118,7 +118,7 @@ echo "文件上传完成"
     @staticmethod
     def upgrade_via_agent(agent: Agent, deployment=None, user=None) -> Tuple[bool, str]:
         """
-        通过Agent自升级（使用upgrade_agent.yml playbook）
+        通过Agent自升级（使用install_agent.yml playbook，统一使用全新安装方式）
 
         Args:
             agent: Agent对象
@@ -151,7 +151,7 @@ echo "文件上传完成"
                 deployment.log = (deployment.log or '') + "[成功] Agent文件上传完成\n"
                 deployment.save()
 
-            # 2. 同步部署工具（确保有最新的upgrade_agent.yml）
+            # 2. 同步部署工具（确保有最新的install_agent.yml）
             logger.info(f"同步部署工具: agent_id={agent.id}")
 
             if deployment:
@@ -174,7 +174,7 @@ echo "文件上传完成"
                 service_name = f'myx-agent-upgrade-{int(time.time())}'
                 log_file = f'/tmp/agent_upgrade_{int(time.time())}.log'
 
-            # 使用ansible-playbook执行升级
+            # 使用ansible-playbook执行升级（统一使用全新安装方式）
             upgrade_command = f"""
 systemd-run \\
   --unit={service_name} \\
@@ -182,13 +182,13 @@ systemd-run \\
   --no-block \\
   --property=StandardOutput=file:{log_file} \\
   --property=StandardError=file:{log_file} \\
-  bash -c 'cd /opt/myx-deployment-tool && ansible-playbook -i inventory/localhost.ini playbooks/upgrade_agent.yml'
+  bash -c 'cd /opt/myx-deployment-tool && ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml'
 """
 
             logger.info(f"执行升级命令: {upgrade_command}")
 
             if deployment:
-                deployment.log = (deployment.log or '') + f"[信息] 开始执行升级...\n"
+                deployment.log = (deployment.log or '') + f"[信息] 开始执行升级（全新安装方式）...\n"
                 deployment.log += f"[信息] 日志文件: {log_file}\n"
                 deployment.save()
 
@@ -228,7 +228,7 @@ systemd-run \\
     @staticmethod
     def upgrade_via_ssh(server, deployment=None, user=None) -> Tuple[bool, str]:
         """
-        通过SSH升级Agent（Agent离线时使用）
+        通过SSH升级Agent（Agent离线时使用，统一使用全新安装方式）
 
         Args:
             server: Server对象
@@ -239,11 +239,11 @@ systemd-run \\
             Tuple[bool, str]: (是否成功, 消息)
         """
         try:
-            # 通过SSH重新安装Agent（实际上就是安装流程）
+            # 通过SSH重新安装Agent（统一使用全新安装方式）
             from apps.deployments.tasks import install_agent_via_ssh
 
             if deployment:
-                deployment.log = (deployment.log or '') + "[信息] 通过SSH重新安装Agent...\n"
+                deployment.log = (deployment.log or '') + "[信息] 通过SSH重新安装Agent（全新安装方式）...\n"
                 deployment.save()
 
             success = install_agent_via_ssh(server, deployment)

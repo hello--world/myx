@@ -332,13 +332,12 @@ def check_service_installed(agent: Agent, service_name: str, force_check: bool =
         return False
 
 
-def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push', log_callback=None):
+def deploy_agent_and_services(server: Server, user, log_callback=None):
     """安装Agent、Xray、Caddy（支持重复安装）
     
     Args:
         server: 服务器对象
         user: 用户对象
-        heartbeat_mode: Agent心跳模式（push/pull），默认push
         log_callback: 日志回调函数，用于实时更新日志
         
     Returns:
@@ -435,10 +434,6 @@ def deploy_agent_and_services(server: Server, user, heartbeat_mode: str = 'push'
                 server.status = 'active'
                 server.save()
                 
-                # 更新Agent心跳模式
-                if agent:
-                    agent.heartbeat_mode = heartbeat_mode
-                    agent.save()
                 
                 deployment.status = 'success'
                 deployment.completed_at = timezone.now()
@@ -627,12 +622,11 @@ def deploy_xray_config_via_agent(proxy: Proxy) -> bool:
         return False
 
 
-def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
+def auto_deploy_proxy(proxy_id: int):
     """自动部署代理（在线程中运行）
     
     Args:
         proxy_id: 代理ID
-        heartbeat_mode: Agent心跳模式（push/pull）
     """
     def _deploy():
         try:
@@ -651,12 +645,6 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                 # 获取心跳模式（从Agent或默认值）
                 # 在函数内部重新导入Agent，避免作用域问题
                 from apps.agents.models import Agent as AgentModel
-                try:
-                    agent = AgentModel.objects.get(server=server)
-                    heartbeat_mode = agent.heartbeat_mode
-                except AgentModel.DoesNotExist:
-                    heartbeat_mode = 'push'  # 默认推送模式
-                
                 # 实时更新日志的回调函数
                 def update_log_callback(message: str):
                     """实时更新部署日志"""
@@ -667,7 +655,6 @@ def auto_deploy_proxy(proxy_id: int, heartbeat_mode: str = 'push'):
                 result, log_message = deploy_agent_and_services(
                     server, 
                     proxy.created_by, 
-                    heartbeat_mode=heartbeat_mode,
                     log_callback=update_log_callback
                 )
                 proxy.refresh_from_db()

@@ -827,21 +827,33 @@ const handleInstallAgent = async (row) => {
   try {
     if (isUpgrade) {
       await ElMessageBox.confirm(
-        `确定要升级服务器 "${row.name}" 上的Agent到最新版本吗？\n\n` +
-        `升级将：\n` +
-        `• 备份现有Agent文件\n` +
-        `• 从服务器下载最新版本的Agent文件\n` +
-        `• 重新安装依赖\n` +
-        `• 重启Agent服务\n\n` +
-        `注意：\n` +
-        `• 如果Agent在线，将通过Agent进行升级（无需SSH）\n` +
-        `• 如果Agent不在线，需要使用SSH进行升级\n` +
-        `• 如果升级失败，系统会自动回滚到原始版本`,
+        '',
         '确认升级Agent',
         {
           confirmButtonText: '确定升级',
           cancelButtonText: '取消',
-          type: 'info'
+          type: 'info',
+          message: `
+            <div>
+              <p style="margin-bottom: 10px;">确定要升级服务器 "<strong>${row.name}</strong>" 上的Agent到最新版本吗？</p>
+
+              <p style="margin: 10px 0; font-weight: bold;">升级将：</p>
+              <ul style="margin: 5px 0 10px 20px;">
+                <li>停止现有Agent服务</li>
+                <li>删除旧文件并全新安装最新版本的Agent</li>
+                <li>重新安装依赖</li>
+                <li>重启Agent服务</li>
+              </ul>
+
+              <p style="margin: 10px 0; font-weight: bold;">注意：</p>
+              <ul style="margin: 5px 0 10px 20px;">
+                <li>如果Agent在线，将通过Agent进行升级（无需SSH）</li>
+                <li>如果Agent不在线，需要使用SSH进行升级</li>
+                <li>升级将使用全新安装方式，不会保留旧文件</li>
+              </ul>
+            </div>
+          `,
+          dangerouslyUseHTMLString: true
         }
       )
     } else {
@@ -860,7 +872,7 @@ const handleInstallAgent = async (row) => {
   } catch {
     return // 用户取消
   }
-  
+
   installingAgentId.value = row.id
   try {
     const response = await api.post(`/servers/${row.id}/install_agent/`, {
@@ -869,7 +881,9 @@ const handleInstallAgent = async (row) => {
     
     if (response.data.success) {
       ElMessage.success({
-        message: isUpgrade ? 'Agent升级任务已启动，请稍后查看部署日志' : 'Agent安装任务已启动，请稍后查看部署日志',
+        message: isUpgrade
+          ? 'Agent升级任务已启动，请稍后查看部署日志'
+          : 'Agent安装任务已启动，请稍后查看部署日志',
         duration: 5000
       })
       // 刷新服务器列表

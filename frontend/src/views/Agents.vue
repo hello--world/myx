@@ -513,11 +513,18 @@ const stopAgent = async (agent) => {
 
 const redeployAgent = async (agent) => {
   try {
-    await ElMessageBox.confirm('重新部署将重新安装Agent，确定要继续吗？', '提示', {
-      type: 'warning'
-    })
+    await ElMessageBox.confirm(
+      '重新部署将停止现有Agent服务，删除旧文件并全新安装最新版本的Agent。确定要继续吗？',
+      '重新部署Agent',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
 
     const response = await api.post(`/agents/${agent.id}/redeploy/`)
+
     ElMessage.success({
       message: 'Agent重新部署已启动，请查看部署任务',
       duration: 5000,

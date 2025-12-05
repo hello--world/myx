@@ -28,12 +28,12 @@ class AgentSerializer(serializers.ModelSerializer):
             'id', 'server', 'server_name', 'server_host', 'server_port',
             'agent_connect_host', 'agent_connect_port',
             'connection_method', 'deployment_target', 'server_status',
-            'token', 'status', 'version', 'heartbeat_mode', 'last_heartbeat', 'last_check',
+            'token', 'status', 'version', 'last_heartbeat',
             'certificate_path', 'private_key_path', 'has_certificate', 'verify_ssl',
             'rpc_port', 'rpc_path', 'rpc_supported',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'token', 'status', 'version', 'last_heartbeat', 'last_check', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'token', 'status', 'version', 'last_heartbeat', 'created_at', 'updated_at']
     
     def get_has_certificate(self, obj):
         """检查是否有证书"""

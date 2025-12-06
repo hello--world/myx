@@ -84,10 +84,10 @@
         label-width="120px"
       >
         <el-form-item label="任务名称" prop="name">
-          <el-input v-model="form.name" placeholder="请输入任务名称" />
+          <el-input v-model="form.name" placeholder="留空将根据部署类型和服务器自动生成" />
         </el-form-item>
         <el-form-item label="服务器" prop="server">
-          <el-select v-model="form.server" placeholder="请选择服务器" style="width: 100%">
+          <el-select v-model="form.server" placeholder="请选择服务器" style="width: 100%" @change="handleServerChange">
             <el-option
               v-for="server in servers"
               :key="server.id"
@@ -97,7 +97,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="部署类型" prop="deployment_type">
-          <el-select v-model="form.deployment_type" placeholder="请选择部署类型" style="width: 100%">
+          <el-select v-model="form.deployment_type" placeholder="请选择部署类型" style="width: 100%" @change="handleDeploymentTypeChange">
             <el-option label="Xray" value="xray" />
             <el-option label="Caddy" value="caddy" />
             <el-option label="Xray + Caddy" value="both" />
@@ -253,7 +253,7 @@ const form = reactive({
 })
 
 const rules = {
-  name: [{ required: true, message: '请输入任务名称', trigger: 'blur' }],
+  name: [{ required: false }], // 任务名称改为可选，会自动生成
   server: [{ required: true, message: '请选择服务器', trigger: 'change' }],
   deployment_type: [{ required: true, message: '请选择部署类型', trigger: 'change' }]
 }
@@ -505,13 +505,41 @@ const stopLogRefresh = () => {
   }
 }
 
+// 自动生成任务名称
+const generateTaskName = () => {
+  if (!form.deployment_type || !form.server) {
+    return ''
+  }
+  
+  const server = servers.value.find(s => s.id === form.server)
+  if (!server) {
+    return ''
+  }
+  
+  const typeTextMap = {
+    xray: '部署Xray',
+    caddy: '部署Caddy',
+    both: '部署Xray + Caddy',
+    full: '一键部署'
+  }
+  
+  const typeText = typeTextMap[form.deployment_type] || '部署'
+  return `${typeText} - ${server.name}`
+}
+
 const handleSubmit = async () => {
   if (!formRef.value) return
   
   await formRef.value.validate(async (valid) => {
     if (valid) {
       try {
-        await api.post('/deployments/', form)
+        // 如果任务名称为空，自动生成
+        const submitData = { ...form }
+        if (!submitData.name || submitData.name.trim() === '') {
+          submitData.name = generateTaskName()
+        }
+        
+        await api.post('/deployments/', submitData)
         ElMessage.success('部署任务已创建')
         dialogVisible.value = false
         fetchDeployments()
@@ -541,6 +569,28 @@ const handleServerSelect = (serverId) => {
   const server = servers.value.find(s => s.id === serverId)
   if (server) {
     quickDeployForm.deployment_target = server.deployment_target || 'host'
+  }
+}
+
+// 处理部署类型变化，自动生成任务名称
+const handleDeploymentTypeChange = () => {
+  // 如果任务名称为空或者是自动生成的格式，则自动生成
+  if (!form.name || form.name.match(/^(部署|一键部署)/)) {
+    const autoName = generateTaskName()
+    if (autoName) {
+      form.name = autoName
+    }
+  }
+}
+
+// 处理服务器选择变化，自动生成任务名称
+const handleServerChange = () => {
+  // 如果任务名称为空或者是自动生成的格式，则自动生成
+  if (!form.name || form.name.match(/^(部署|一键部署)/)) {
+    const autoName = generateTaskName()
+    if (autoName) {
+      form.name = autoName
+    }
   }
 }
 

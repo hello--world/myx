@@ -70,6 +70,13 @@
                 >
                   查看日志
                 </el-button>
+                <el-button 
+                  size="small" 
+                  type="success" 
+                  @click="handleViewDeployments(row)"
+                >
+                  部署任务
+                </el-button>
                 <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
                 <el-button 
                   size="small" 
@@ -1256,6 +1263,16 @@ const handleClearPassword = async (row) => {
     const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message
     ElMessage.error('清除密码失败: ' + errorMessage)
   }
+}
+
+const handleViewDeployments = (row) => {
+  // 跳转到部署任务页面，并传递服务器ID作为查询参数
+  router.push({
+    name: 'Deployments',
+    query: {
+      server_id: row.id
+    }
+  })
 }
 
 const handleDelete = async (row) => {

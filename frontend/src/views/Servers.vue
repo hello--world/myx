@@ -181,14 +181,21 @@
 
         <!-- SSH认证 -->
         <el-divider content-position="left">SSH认证</el-divider>
-        <div class="form-row-two-cols">
-          <el-form-item label="密码" prop="password">
+        <el-form-item label="密码" prop="password">
           <el-input
             v-model="form.password"
             type="password"
-              placeholder="SSH密码（或使用私钥）"
+            placeholder="没有密钥"
             show-password
           />
+        </el-form-item>
+        <el-form-item label="SSH Key">
+          <div style="display: flex; align-items: center; gap: 8px;">
+          <el-switch
+            v-model="form.enable_ssh_key"
+          />
+            <span style="font-size: 13px; color: #909399;">自动生成并添加到服务器</span>
+          </div>
         </el-form-item>
         <el-form-item label="保存密码">
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -206,7 +213,6 @@
               <span style="font-size: 13px; color: #909399;">安装agent后自动清除密码</span>
             </div>
           </el-form-item>
-          </div>
         <el-form-item label="私钥" prop="private_key">
           <el-input
             v-model="form.private_key"
@@ -214,14 +220,6 @@
             :rows="2"
             placeholder="SSH私钥内容（可选）"
           />
-        </el-form-item>
-        <el-form-item label="SSH Key">
-          <div style="display: flex; align-items: center; gap: 8px;">
-          <el-switch
-            v-model="form.enable_ssh_key"
-          />
-            <span style="font-size: 13px; color: #909399;">自动生成并添加到服务器</span>
-          </div>
         </el-form-item>
 
         <!-- 连接配置 -->

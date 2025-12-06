@@ -17,7 +17,7 @@ class ServerSerializer(serializers.ModelSerializer):
             'id', 'name', 'host', 'port', 'username',
             'password', 'private_key', 'connection_method', 'deployment_target',
             'agent_connect_host', 'agent_connect_port',
-            'status', 'last_check', 'save_password', 'enable_ssh_key',
+            'status', 'last_check', 'save_password', 'auto_clear_password_after_agent_install', 'enable_ssh_key',
             'has_password', 'has_private_key', 'has_agent',
             'agent_status', 'agent_rpc_supported',
             'created_at', 'updated_at', 'created_by', 'created_by_username'

@@ -41,6 +41,7 @@ class Server(models.Model):
     last_check = models.DateTimeField(null=True, blank=True, verbose_name='最后检查时间')
     # 密码和SSH key管理选项
     save_password = models.BooleanField(default=False, verbose_name='保存密码')
+    auto_clear_password_after_agent_install = models.BooleanField(default=True, verbose_name='安装Agent后自动清除密码')
     enable_ssh_key = models.BooleanField(default=False, verbose_name='启用SSH Key登录')
     generated_public_key = models.TextField(blank=True, null=True, verbose_name='生成的公钥')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')

@@ -198,6 +198,14 @@
               <span style="font-size: 13px; color: #909399;">开启后加密保存</span>
             </div>
           </el-form-item>
+          <el-form-item label="自动清除密码">
+            <div style="display: flex; align-items: center; gap: 8px;">
+          <el-switch
+            v-model="form.auto_clear_password_after_agent_install"
+          />
+              <span style="font-size: 13px; color: #909399;">安装agent后自动清除密码</span>
+            </div>
+          </el-form-item>
           </div>
         <el-form-item label="私钥" prop="private_key">
           <el-input
@@ -434,6 +442,7 @@ const form = reactive({
   port: 22,
   username: '',
   save_password: true,  // 默认勾选保存密码
+  auto_clear_password_after_agent_install: true,  // 默认开启：安装agent后自动清除密码
   enable_ssh_key: false,
   password: '',
   private_key: '',
@@ -786,6 +795,7 @@ const handleEdit = (row) => {
     password: '',
     private_key: '',
     save_password: row.save_password || false,
+    auto_clear_password_after_agent_install: row.auto_clear_password_after_agent_install !== undefined ? row.auto_clear_password_after_agent_install : true,  // 默认开启
     enable_ssh_key: row.enable_ssh_key || false,
     connection_method: row.connection_method || 'agent',  // 默认使用Agent连接方式
     deployment_target: row.deployment_target || 'host',
@@ -1379,6 +1389,7 @@ const resetForm = () => {
     password: '',
     private_key: '',
     save_password: true,  // 默认勾选保存密码
+    auto_clear_password_after_agent_install: true,  // 默认开启：安装agent后自动清除密码
     enable_ssh_key: false,
     connection_method: 'agent',  // 默认使用Agent连接方式
     deployment_target: 'host',

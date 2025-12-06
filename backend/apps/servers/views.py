@@ -527,14 +527,18 @@ class ServerViewSet(viewsets.ModelViewSet):
                         'error': '服务器缺少SSH密码或私钥，无法安装Agent。请先编辑服务器并输入SSH凭证。'
                     }, status=status.HTTP_400_BAD_REQUEST)
         
-        # 获取或设置save_password标志
-        # 优先使用服务器已有的save_password设置（如果用户之前选择了保存密码）
-        save_password = request.data.get('save_password', None)
-        if save_password is None:
-            # 如果服务器已有save_password设置，使用它；否则默认False（安装成功后删除密码）
-            save_password = server.save_password if server.save_password else False
+        # 获取auto_clear_password_after_agent_install选项（默认True）
+        auto_clear_password = request.data.get('auto_clear_password_after_agent_install', None)
+        if auto_clear_password is None:
+            # 如果请求中没有提供，使用服务器已有的设置；如果服务器也没有，默认True（安装后清除密码）
+            auto_clear_password = server.auto_clear_password_after_agent_install if hasattr(server, 'auto_clear_password_after_agent_install') else True
         else:
-            save_password = bool(save_password)
+            auto_clear_password = bool(auto_clear_password)
+        
+        # 根据auto_clear_password决定save_password
+        # 如果auto_clear_password=True，则save_password=False（安装后删除密码）
+        # 如果auto_clear_password=False，则save_password=True（安装后保留密码）
+        save_password = not auto_clear_password
         
         # 设置save_password标志（如果save_password=True，确保密码被保存）
         # 如果save_password=False，临时设置为True以便安装，但会在安装成功后根据save_password决定是否删除
@@ -689,14 +693,17 @@ class ServerViewSet(viewsets.ModelViewSet):
                 server.connection_method = 'agent'
                 server.status = 'active'
                 
-                # 如果save_password=False，删除密码
-                if not save_password:
+                # 根据auto_clear_password决定是否删除密码
+                if auto_clear_password:
+                    # 如果auto_clear_password=True，删除密码
                     server.password = ''
                     server.private_key = ''
                     server.save_password = False
-                    logger.info(f'Agent{action_text}成功，已删除密码: server_id={server.id}')
+                    logger.info(f'Agent{action_text}成功，已删除密码（auto_clear_password=True）: server_id={server.id}')
                 else:
+                    # 如果auto_clear_password=False，保留密码
                     server.save_password = True
+                    logger.info(f'Agent{action_text}成功，保留密码（auto_clear_password=False）: server_id={server.id}')
                 
                 server.save()
                 
@@ -726,18 +733,11 @@ class ServerViewSet(viewsets.ModelViewSet):
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 
-                # 异常情况，根据save_password决定是否保留密码
+                # 异常情况，保留密码以便重试
                 server.refresh_from_db()
-                if save_password:
-                    # save_password=True，保持密码和标志
-                    server.save_password = True
-                    server.save()
-                    logger.info(f'Agent安装异常，保留密码（用户选择了保存密码）: server_id={server.id}')
-                else:
-                    # save_password=False，保留密码以便重试，但保持save_password=False
-                    server.save_password = False
-                    server.save()
-                    logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
+                server.save_password = False  # 标记为未保存，但保留密码以便重试
+                server.save()
+                logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
         
         # 启动后台线程
         thread = threading.Thread(target=install_agent_async)
@@ -1044,18 +1044,27 @@ class ServerViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         
         save_password = data.get('save_password', False)
+        auto_clear_password = data.get('auto_clear_password_after_agent_install', True)  # 默认True
         enable_ssh_key = data.get('enable_ssh_key', False)
         password = data.get('password', '')
         connection_method = data.get('connection_method', 'agent')
         
-        # 创建服务器（先保存密码，即使save_password=False，也需要临时保存用于安装Agent）
-        # 安装完成后，如果save_password=False，再清空密码
+        # 创建服务器（先保存密码，即使auto_clear_password=True，也需要临时保存用于安装Agent）
+        # 安装完成后，如果auto_clear_password=True，再清空密码
         server = serializer.save()
         
-        # 设置save_password标志（如果用户选择了保存密码，立即设置）
-        # 即使save_password=False，也临时设置为True以便安装，但会在安装完成后根据save_password决定是否删除
+        # 设置auto_clear_password_after_agent_install标志
+        server.auto_clear_password_after_agent_install = bool(auto_clear_password)
+        
+        # 根据auto_clear_password决定save_password
+        # 如果auto_clear_password=True，则save_password=False（安装后删除密码）
+        # 如果auto_clear_password=False，则save_password=True（安装后保留密码）
+        # 但安装时需要临时保存密码，所以先设置为True
         server.save_password = True  # 临时设置为True，确保密码被保存用于安装
         server.save()
+        
+        # 保存should_clear_password标志，用于安装完成后决定是否清空密码
+        should_clear_password = bool(auto_clear_password)
         
         # 记录服务器创建日志
         create_log_entry(
@@ -1141,8 +1150,8 @@ class ServerViewSet(viewsets.ModelViewSet):
             original_connection_method = server.connection_method
             
             # 在后台线程中安装Agent，不阻塞响应
-            # 保存save_password标志，用于安装完成后决定是否清空密码
-            should_save_password = save_password
+            # 保存should_clear_password标志，用于安装完成后决定是否清空密码
+            should_clear_password = should_clear_password
             
             def install_agent_async():
                 try:
@@ -1187,17 +1196,11 @@ class ServerViewSet(viewsets.ModelViewSet):
                             related_type='deployment'
                         )
                         
-                        # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
+                        # 安装失败时，保留密码以便重试
                         server.refresh_from_db()
-                        if should_save_password:
-                            server.save_password = True
-                            server.save()
-                            logger.info(f'Agent安装失败，保留密码（用户选择了保存密码）: server_id={server.id}')
-                        else:
-                            # 即使未选择保存密码，安装失败时也保留密码以便重试
-                            server.save_password = False
-                            server.save()
-                            logger.info(f'Agent安装失败，保留密码以便重试: server_id={server.id}')
+                        server.save_password = False  # 标记为未保存，但保留密码以便重试
+                        server.save()
+                        logger.info(f'Agent安装失败，保留密码以便重试: server_id={server.id}')
                         return
                     
                     # 等待Agent启动
@@ -1230,17 +1233,11 @@ class ServerViewSet(viewsets.ModelViewSet):
                             related_type='deployment'
                         )
                         
-                        # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
+                        # 启动失败时，保留密码以便重试
                         server.refresh_from_db()
-                        if should_save_password:
-                            server.save_password = True
-                            server.save()
-                            logger.info(f'Agent启动失败，保留密码（用户选择了保存密码）: server_id={server.id}')
-                        else:
-                            # 即使未选择保存密码，启动失败时也保留密码以便重试
-                            server.save_password = False
-                            server.save()
-                            logger.info(f'Agent启动失败，保留密码以便重试: server_id={server.id}')
+                        server.save_password = False  # 标记为未保存，但保留密码以便重试
+                        server.save()
+                        logger.info(f'Agent启动失败，保留密码以便重试: server_id={server.id}')
                         return
                     
                     deployment.log = (deployment.log or '') + f"Agent已注册，Token: {agent.token}\n"
@@ -1295,26 +1292,29 @@ class ServerViewSet(viewsets.ModelViewSet):
                         related_type='deployment'
                     )
                     
-                    # 如果用户选择了保存密码，保留密码；否则删除密码
+                    # 根据should_clear_password决定是否删除密码
                     server.refresh_from_db()
-                    if should_save_password:
-                        server.save_password = True
-                        server.save()
-                        logger.info(f'Agent安装成功，保留密码（用户选择了保存密码）: server_id={server.id}')
-                    else:
+                    if should_clear_password:
+                        # 如果auto_clear_password=True，删除密码
                         server.password = None
                         server.private_key = None
                         server.save_password = False
                         server.save()
+                        logger.info(f'Agent安装成功，已删除密码（auto_clear_password=True）: server_id={server.id}')
                         # 记录密码清理日志
                         create_log_entry(
                             log_type='server',
                             level='info',
                             title=f'已清理密码: {server.name}',
-                            content=f'Agent安装成功，已清理服务器密码（未选择保存密码）',
+                            content=f'Agent安装成功，已清理服务器密码（已开启自动清除密码）',
                             user=request.user,
                             server=server
                         )
+                    else:
+                        # 如果auto_clear_password=False，保留密码
+                        server.save_password = True
+                        server.save()
+                        logger.info(f'Agent安装成功，保留密码（auto_clear_password=False）: server_id={server.id}')
                 except Exception as e:
                     # 安装异常，记录错误但保持服务器创建
                     import traceback
@@ -1329,16 +1329,10 @@ class ServerViewSet(viewsets.ModelViewSet):
                     if original_connection_method == 'agent':
                         server.connection_method = 'ssh'
                     
-                    # 如果用户选择了保存密码，保留密码；否则也保留密码以便重试
-                    if should_save_password:
-                        server.save_password = True
-                        server.save()
-                        logger.info(f'Agent安装异常，保留密码（用户选择了保存密码）: server_id={server.id}')
-                    else:
-                        # 即使未选择保存密码，安装异常时也保留密码以便重试
-                        server.save_password = False
-                        server.save()
-                        logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
+                    # 安装异常时，保留密码以便重试
+                    server.save_password = False  # 标记为未保存，但保留密码以便重试
+                    server.save()
+                    logger.info(f'Agent安装异常，保留密码以便重试: server_id={server.id}')
                     
                     # 记录Agent安装异常日志
                     create_log_entry(
@@ -1351,17 +1345,6 @@ class ServerViewSet(viewsets.ModelViewSet):
                         related_id=deployment.id,
                         related_type='deployment'
                     )
-                    
-                    # 如果已清理密码，记录日志
-                    if not should_save_password:
-                        create_log_entry(
-                            log_type='server',
-                            level='info',
-                            title=f'已清理密码: {server.name}',
-                            content=f'Agent安装异常，已清理服务器密码（未选择保存密码）',
-                            user=request.user,
-                            server=server
-                        )
             
             # 启动后台线程安装Agent
             thread = threading.Thread(target=install_agent_async, daemon=True)

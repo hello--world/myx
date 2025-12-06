@@ -803,16 +803,30 @@ const handleInstallAgent = async (row) => {
   // 确认安装/升级
   const isUpgrade = row.has_agent
   
-  // 检查是否需要SSH凭证
-  // 如果是升级且Agent在线且支持RPC，则不需要SSH凭证（可以通过Agent升级）
-  const canUpgradeViaAgent = isUpgrade && row.agent_status === 'online' && row.agent_rpc_supported
-  
-  // 只有在不是通过Agent升级的情况下，才需要检查SSH凭证
-  if (!canUpgradeViaAgent && !row.has_password && !row.has_private_key) {
+  // 升级时强制要求SSH凭证
+  if (isUpgrade && !row.has_password && !row.has_private_key) {
+    // 升级时需要SSH凭证，提示用户去编辑服务器
+    try {
+      await ElMessageBox.confirm(
+        '升级Agent需要使用SSH方式，该服务器缺少SSH密码或私钥。\n\n请先编辑服务器并输入SSH凭证，然后再进行升级。',
+        '需要SSH凭证',
+        {
+          confirmButtonText: '去编辑',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }
+      )
+      // 用户确认，打开编辑对话框
+      handleEdit(row)
+      return
+    } catch {
+      // 用户取消
+      return
+    }
+  } else if (!isUpgrade && !row.has_password && !row.has_private_key) {
+    // 安装时也需要SSH凭证
     ElMessageBox.confirm(
-      isUpgrade 
-        ? '该服务器缺少SSH密码或私钥，且Agent不在线，无法升级Agent。是否现在编辑服务器并输入SSH凭证？'
-        : '该服务器缺少SSH密码或私钥，无法安装Agent。是否现在编辑服务器并输入SSH凭证？',
+      '该服务器缺少SSH密码或私钥，无法安装Agent。是否现在编辑服务器并输入SSH凭证？',
       '缺少SSH凭证',
       {
         confirmButtonText: '去编辑',
@@ -847,9 +861,9 @@ const handleInstallAgent = async (row) => {
 
               <p style="margin: 10px 0; font-weight: bold;">注意：</p>
               <ul style="margin: 5px 0 10px 20px;">
-                <li>如果Agent在线，将通过Agent进行升级（无需SSH）</li>
-                <li>如果Agent不在线，需要使用SSH进行升级</li>
+                <li>升级将使用SSH方式进行（需要提供SSH密码或私钥）</li>
                 <li>升级将使用全新安装方式，不会保留旧文件</li>
+                <li>升级完成后Agent服务会自动重启</li>
               </ul>
             </div>
           `,

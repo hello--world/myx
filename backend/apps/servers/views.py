@@ -491,18 +491,41 @@ class ServerViewSet(viewsets.ModelViewSet):
                 dep.save()
                 logger.info(f'已取消正在运行的部署任务: deployment_id={dep.id}, server={server.name}')
         
-        # 检查是否有SSH凭证（如果Agent不在线或未安装，需要SSH）
-        if not server.password and not server.private_key:
-            if is_upgrade:
-                return Response({
-                    'success': False,
-                    'error': 'Agent不在线且服务器缺少SSH密码或私钥，无法升级Agent。请先编辑服务器并输入SSH凭证，或等待Agent上线后使用Agent升级。'
-                }, status=status.HTTP_400_BAD_REQUEST)
+        # 升级时强制要求SSH凭证
+        if is_upgrade:
+            # 检查是否有SSH凭证（升级必须使用SSH）
+            if not server.password and not server.private_key:
+                # 如果请求中提供了密码或私钥，使用它们
+                if request.data.get('password'):
+                    server.password = request.data.get('password')
+                elif request.data.get('private_key'):
+                    server.private_key = request.data.get('private_key')
+                else:
+                    # 没有SSH凭证，要求提供
+                    return Response({
+                        'success': False,
+                        'error': '升级Agent需要SSH密码或私钥。请在请求中提供SSH凭证（password或private_key字段）。',
+                        'requires_ssh_credentials': True
+                    }, status=status.HTTP_400_BAD_REQUEST)
             else:
-                return Response({
-                    'success': False,
-                    'error': '服务器缺少SSH密码或私钥，无法安装Agent。请先编辑服务器并输入SSH凭证。'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                # 如果请求中提供了新的密码或私钥，使用它们（允许临时更新）
+                if request.data.get('password'):
+                    server.password = request.data.get('password')
+                if request.data.get('private_key'):
+                    server.private_key = request.data.get('private_key')
+        else:
+            # 安装时检查SSH凭证
+            if not server.password and not server.private_key:
+                # 如果请求中提供了密码或私钥，使用它们
+                if request.data.get('password'):
+                    server.password = request.data.get('password')
+                elif request.data.get('private_key'):
+                    server.private_key = request.data.get('private_key')
+                else:
+                    return Response({
+                        'success': False,
+                        'error': '服务器缺少SSH密码或私钥，无法安装Agent。请先编辑服务器并输入SSH凭证。'
+                    }, status=status.HTTP_400_BAD_REQUEST)
         
         # 获取或设置save_password标志
         # 优先使用服务器已有的save_password设置（如果用户之前选择了保存密码）
@@ -512,12 +535,6 @@ class ServerViewSet(viewsets.ModelViewSet):
             save_password = server.save_password if server.save_password else False
         else:
             save_password = bool(save_password)
-        
-        # 如果用户通过请求提供了密码，使用请求中的密码；否则使用服务器已有的密码
-        if request.data.get('password'):
-            server.password = request.data.get('password')
-        if request.data.get('private_key'):
-            server.private_key = request.data.get('private_key')
         
         # 设置save_password标志（如果save_password=True，确保密码被保存）
         # 如果save_password=False，临时设置为True以便安装，但会在安装成功后根据save_password决定是否删除
@@ -566,29 +583,18 @@ class ServerViewSet(viewsets.ModelViewSet):
                 server.refresh_from_db()
                 deployment.refresh_from_db()
 
-                # 自动选择执行方式
-                method = 'auto'
-                try:
-                    agent = Agent.objects.get(server=server)
-                    if agent.status == 'online' and agent.rpc_port and server.connection_method == 'agent':
-                        method = 'agent'
-                    else:
-                        method = 'ssh'
-                except Agent.DoesNotExist:
-                    method = 'ssh'
-
+                # 升级时强制使用SSH方式，简化逻辑
                 action_text = "升级" if is_upgrade else "安装"
-                method_text = 'Agent' if method == 'agent' else 'SSH'
-                deployment.log = (deployment.log or '') + f"[开始] 开始通过{method_text}{action_text}Agent到服务器 {server.host}\n"
+                deployment.log = (deployment.log or '') + f"[开始] 开始通过SSH{action_text}Agent到服务器 {server.host}\n"
                 if is_upgrade:
-                    deployment.log = (deployment.log or '') + f"[信息] 升级模式：将停止旧服务并全新安装最新版本的Agent\n"
+                    deployment.log = (deployment.log or '') + f"[信息] 升级模式：将停止旧服务并全新安装最新版本的Agent（使用SSH方式）\n"
                 deployment.save()
 
-                # 安装/升级Agent（统一使用全新安装方式）
+                # 安装/升级Agent（强制使用SSH方式）
                 success, message = DeploymentService.install_or_upgrade_agent(
                     server=server,
                     deployment=deployment,
-                    method=method,
+                    method='ssh',  # 强制使用SSH方式
                     user=request.user
                 )
 

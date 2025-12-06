@@ -407,9 +407,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, h } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElCheckbox } from 'element-plus'
 import { Connection, Check, CopyDocument, Loading } from '@element-plus/icons-vue'
 import api from '@/api'
+
+const router = useRouter()
 
 const loading = ref(false)
 const servers = ref([])

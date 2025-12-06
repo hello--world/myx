@@ -237,14 +237,14 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             deployment.save()
             
             agent = wait_for_agent_startup(server, timeout=30, deployment=deployment)
-            if not agent or not agent.rpc_supported:
+            if not agent or not agent.rpc_port:
                 deployment.status = 'failed'
-                deployment.error_message = 'Agent启动超时或RPC不支持'
+                deployment.error_message = 'Agent启动超时或HTTP服务不可用'
                 deployment.completed_at = timezone.now()
                 deployment.save()
                 return
             
-            deployment.log = (deployment.log or '') + f"Agent已启动，RPC端口: {agent.rpc_port}\n"
+                deployment.log = (deployment.log or '') + f"Agent已启动，HTTP端口: {agent.rpc_port}\n"
             deployment.save()
             
             # 更新服务器连接方式为Agent
@@ -368,13 +368,13 @@ def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool
     """
     backup_path = None  # 记录备份路径，用于失败时恢复
     try:
-        # 使用 AgentService 创建或获取Agent记录（服务器端生成Token和RPC端口）
+        # 使用 AgentService 创建或获取Agent记录（服务器端生成Token和HTTP端口）
         from apps.agents.services.agent_service import AgentService
         agent = AgentService.create_or_get_agent(server)
         
         deployment.log = (deployment.log or '') + f"Agent Token已生成: {agent.token}\n"
-        deployment.log = (deployment.log or '') + f"Agent RPC端口已分配: {agent.rpc_port}\n"
-        deployment.log = (deployment.log or '') + f"Agent RPC路径已分配: {agent.rpc_path}\n"
+        deployment.log = (deployment.log or '') + f"Agent HTTP端口已分配: {agent.rpc_port}\n"
+        deployment.log = (deployment.log or '') + f"Agent HTTP路径已分配: {agent.rpc_path}\n"
         deployment.save()
         
         # 生成SSL证书（服务器端生成）
@@ -710,7 +710,7 @@ cat > /etc/myx-agent/config.json << 'EOFCONFIG'
 }}
 EOFCONFIG
 chmod 600 /etc/myx-agent/config.json
-echo "[成功] Agent配置文件已创建（Token、RPC端口和路径已由服务器分配）"
+echo "[成功] Agent配置文件已创建（Token、HTTP端口和路径已由服务器分配）"
 
 # 创建systemd服务（使用uv启动）
 # 使用确定的uv路径创建服务文件
@@ -910,7 +910,7 @@ echo "[完成] Agent安装完成"
 
 def wait_for_agent_startup(server: Server, timeout: int = 60, deployment: Deployment = None) -> Agent:
     """
-    等待Agent启动并检查RPC支持（已重构为调用DeploymentService）
+    等待Agent启动并检查HTTP服务（已重构为调用DeploymentService）
 
     注意：保留此函数是为了向后兼容，内部已使用Service层重构
 
@@ -931,7 +931,7 @@ def wait_for_agent_startup(server: Server, timeout: int = 60, deployment: Deploy
 
 def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment: Deployment = None) -> Agent:
     """
-    等待Agent启动并检查RPC支持（旧版本，已弃用）
+    等待Agent启动并检查HTTP服务（旧版本，已弃用）
 
     保留用于参考，新代码请使用wait_for_agent_startup（内部调用DeploymentService）
 
@@ -941,6 +941,13 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
         deployment: 部署实例（可选，用于更新日志）
     """
     import time
+    import requests
+    import urllib3
+    from urllib3.exceptions import InsecureRequestWarning
+    
+    # 禁用SSL警告（因为使用自签名证书）
+    urllib3.disable_warnings(InsecureRequestWarning)
+    
     start_time = time.time()
     check_interval = 5  # 每5秒检查一次（减少检查频率）
     last_log_time = 0
@@ -957,17 +964,16 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
             deployment.save()
         return None
     
-    # 检查RPC端口是否存在
+    # 检查Agent端口是否存在
     if not agent.rpc_port:
-        logger.warning(f"Agent {agent.id} 没有RPC端口，无法检查RPC支持")
+        logger.warning(f"Agent {agent.id} 没有HTTP端口，无法检查HTTP服务")
         if deployment:
-            deployment.log = (deployment.log or '') + f"警告: Agent没有RPC端口\n"
+            deployment.log = (deployment.log or '') + f"警告: Agent没有HTTP端口\n"
             deployment.save()
         return agent
     
-    # 等待Agent启动并检查RPC支持
-    from apps.agents.rpc_support import check_agent_rpc_support
-    logger.info(f"开始等待Agent启动: server={server.name}, rpc_port={agent.rpc_port}, rpc_path={agent.rpc_path}, timeout={timeout}秒")
+    # 等待Agent启动并检查HTTP服务
+    logger.info(f"开始等待Agent启动: server={server.name}, http_port={agent.rpc_port}, http_path={agent.rpc_path}, timeout={timeout}秒")
     
     # 先等待几秒，让Agent服务有时间启动（systemd服务启动需要时间）
     initial_wait = 10  # 增加到10秒，给Agent更多启动时间
@@ -987,9 +993,9 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
         try:
             # 每10秒输出一次进度，并读取Agent日志
             if elapsed - last_log_time >= 10:
-                logger.info(f"检查Agent RPC支持... (已等待{elapsed}秒, 剩余{remaining}秒)")
+                logger.info(f"检查Agent HTTP服务... (已等待{elapsed}秒, 剩余{remaining}秒)")
                 if deployment:
-                    deployment.log = (deployment.log or '') + f"检查Agent RPC支持... (已等待{elapsed}秒, 剩余{remaining}秒)\n"
+                    deployment.log = (deployment.log or '') + f"检查Agent HTTP服务... (已等待{elapsed}秒, 剩余{remaining}秒)\n"
                     
                     # 读取Agent日志以了解启动状态
                     try:
@@ -1024,54 +1030,49 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
                     deployment.save()
                 last_log_time = elapsed
             
-            # 检查Agent是否支持JSON-RPC
+            # 检查Agent HTTP服务是否可用
             try:
-                is_supported = check_agent_rpc_support(agent)
-                agent.refresh_from_db()
+                # 获取Agent连接地址
+                connect_host = server.agent_connect_host or server.host
+                connect_port = agent.rpc_port
                 
-                if is_supported and agent.rpc_supported:
-                    elapsed_total = int(time.time() - start_time)
-                    logger.info(f"Agent {agent.id} 已启动并支持JSON-RPC，端口: {agent.rpc_port}, 路径: {agent.rpc_path} (耗时{elapsed_total}秒)")
-                    if deployment:
-                        deployment.log = (deployment.log or '') + f"Agent已启动并支持JSON-RPC，端口: {agent.rpc_port}, 路径: {agent.rpc_path} (耗时{elapsed_total}秒)\n"
-                        deployment.save()
-                    return agent
+                # 判断是否使用HTTPS（如果Agent有证书配置，使用HTTPS）
+                use_https = bool(agent.certificate_path and agent.private_key_path)
+                protocol = 'https' if use_https else 'http'
                 
-                # 检查失败，但如果是SSL错误（服务可能还在启动），不计入连续失败
-                # 只有非SSL错误才计入连续失败
-                from apps.agents.rpc_client import get_agent_rpc_client
-                rpc_client = get_agent_rpc_client(agent)
-                if rpc_client:
-                    # 尝试检查是否是SSL错误（服务可能还在启动）
-                    try:
-                        # 快速检查是否是SSL相关错误
-                        health_check = rpc_client.health_check()
-                        if not health_check:
-                            # 健康检查失败，可能是服务还没启动，不算连续失败
-                            logger.debug(f"Agent健康检查失败（服务可能还在启动），继续等待...")
-                            consecutive_failures = 0  # 重置连续失败计数
-                    except Exception as check_e:
-                        error_str = str(check_e)
-                        if 'SSL' in error_str or 'EOF' in error_str:
-                            # SSL错误，服务可能还在启动，不算连续失败
-                            logger.debug(f"Agent SSL错误（服务可能还在启动），继续等待...")
-                            consecutive_failures = 0  # 重置连续失败计数
-                        else:
-                            # 其他错误，计入连续失败
-                            consecutive_failures += 1
+                # 构建Agent健康检查URL（/health端点不需要路径前缀）
+                health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+                
+                # 如果配置了agent域名，则验证SSL证书；如果只使用IP地址，则不验证
+                verify_ssl = bool(server.agent_connect_host)
+                
+                # 发送HTTP/HTTPS请求检查Agent是否在线
+                response = requests.get(health_url, timeout=5, verify=verify_ssl)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('status') == 'ok':
+                        agent.status = 'online'
+                        agent.last_heartbeat = timezone.now()
+                        agent.save()
+                        elapsed_total = int(time.time() - start_time)
+                        logger.info(f"Agent {agent.id} 已启动，HTTP服务可用，端口: {agent.rpc_port}, 路径: {agent.rpc_path} (耗时{elapsed_total}秒)")
+                        if deployment:
+                            deployment.log = (deployment.log or '') + f"Agent已启动，HTTP服务可用，端口: {agent.rpc_port}, 路径: {agent.rpc_path} (耗时{elapsed_total}秒)\n"
+                            deployment.save()
+                        return agent
+                    else:
+                        consecutive_failures += 1
                 else:
-                    # 无法创建RPC客户端，计入连续失败
                     consecutive_failures += 1
-                
-                # 如果连续失败多次（非SSL错误），提前返回
-                if consecutive_failures >= max_consecutive_failures:
-                    elapsed_total = int(time.time() - start_time)
-                    logger.warning(f"Agent RPC检查连续失败{consecutive_failures}次（非SSL错误），提前返回: server={server.name}, rpc_port={agent.rpc_port}, rpc_path={agent.rpc_path}")
-                    if deployment:
-                        deployment.log = (deployment.log or '') + f"Agent RPC检查连续失败{consecutive_failures}次（非SSL错误），提前返回 (已等待{elapsed_total}秒)\n"
-                        deployment.log = (deployment.log or '') + f"RPC端口: {agent.rpc_port}, RPC路径: {agent.rpc_path}, RPC支持状态: {agent.rpc_supported}\n"
-                        deployment.save()
-                    return agent
+            except requests.exceptions.SSLError:
+                # SSL错误，服务可能还在启动，不算连续失败
+                logger.debug(f"Agent SSL错误（服务可能还在启动），继续等待...")
+                consecutive_failures = 0  # 重置连续失败计数
+            except requests.exceptions.ConnectionError:
+                # 连接错误，服务可能还没启动，不算连续失败
+                logger.debug(f"Agent连接错误（服务可能还在启动），继续等待...")
+                consecutive_failures = 0  # 重置连续失败计数
             except Exception as check_ex:
                 # 检查过程中的异常
                 error_str = str(check_ex)
@@ -1085,24 +1086,34 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
                     logger.debug(f"Agent检查异常: {check_ex}")
                     if consecutive_failures >= max_consecutive_failures:
                         elapsed_total = int(time.time() - start_time)
-                        logger.warning(f"Agent RPC检查连续异常{consecutive_failures}次，提前返回: server={server.name}, error={check_ex}")
+                        logger.warning(f"Agent HTTP检查连续异常{consecutive_failures}次，提前返回: server={server.name}, error={check_ex}")
                         if deployment:
-                            deployment.log = (deployment.log or '') + f"Agent RPC检查连续异常{consecutive_failures}次，提前返回 (已等待{elapsed_total}秒): {str(check_ex)}\n"
+                            deployment.log = (deployment.log or '') + f"Agent HTTP检查连续异常{consecutive_failures}次，提前返回 (已等待{elapsed_total}秒): {str(check_ex)}\n"
                             deployment.save()
                         return agent
+                
+                # 如果连续失败多次（非SSL错误），提前返回
+                if consecutive_failures >= max_consecutive_failures:
+                    elapsed_total = int(time.time() - start_time)
+                    logger.warning(f"Agent HTTP检查连续失败{consecutive_failures}次（非SSL错误），提前返回: server={server.name}, http_port={agent.rpc_port}, http_path={agent.rpc_path}")
+                    if deployment:
+                        deployment.log = (deployment.log or '') + f"Agent HTTP检查连续失败{consecutive_failures}次（非SSL错误），提前返回 (已等待{elapsed_total}秒)\n"
+                        deployment.log = (deployment.log or '') + f"HTTP端口: {agent.rpc_port}, HTTP路径: {agent.rpc_path}\n"
+                        deployment.save()
+                    return agent
             
             # 等待后再次检查
             time.sleep(check_interval)
             
         except Exception as e:
             consecutive_failures += 1
-            logger.debug(f"检查Agent RPC支持异常: {e}")
+            logger.debug(f"检查Agent HTTP服务异常: {e}")
             if consecutive_failures >= max_consecutive_failures:
                 # 连续异常多次，提前返回
                 elapsed_total = int(time.time() - start_time)
-                logger.warning(f"Agent RPC检查连续异常{consecutive_failures}次，提前返回: server={server.name}, error={e}")
+                logger.warning(f"Agent HTTP检查连续异常{consecutive_failures}次，提前返回: server={server.name}, error={e}")
                 if deployment:
-                    deployment.log = (deployment.log or '') + f"Agent RPC检查连续异常{consecutive_failures}次，提前返回 (已等待{elapsed_total}秒): {str(e)}\n"
+                    deployment.log = (deployment.log or '') + f"Agent HTTP检查连续异常{consecutive_failures}次，提前返回 (已等待{elapsed_total}秒): {str(e)}\n"
                     deployment.save()
                 return agent
             time.sleep(check_interval)
@@ -1110,10 +1121,10 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
     # 超时
     elapsed_total = int(time.time() - start_time)
     agent.refresh_from_db()
-    logger.warning(f"Agent启动超时: server={server.name}, timeout={timeout}秒, 实际等待{elapsed_total}秒, rpc_port={agent.rpc_port}, rpc_path={agent.rpc_path}, rpc_supported={agent.rpc_supported}")
+    logger.warning(f"Agent启动超时: server={server.name}, timeout={timeout}秒, 实际等待{elapsed_total}秒, http_port={agent.rpc_port}, http_path={agent.rpc_path}")
     if deployment:
         deployment.log = (deployment.log or '') + f"Agent启动超时 (等待{elapsed_total}秒)\n"
-        deployment.log = (deployment.log or '') + f"RPC端口: {agent.rpc_port}, RPC路径: {agent.rpc_path}, RPC支持状态: {agent.rpc_supported}\n"
+        deployment.log = (deployment.log or '') + f"HTTP端口: {agent.rpc_port}, HTTP路径: {agent.rpc_path}\n"
         
         # 超时时读取完整的Agent日志
         try:
@@ -1157,25 +1168,25 @@ def wait_for_agent_startup_legacy(server: Server, timeout: int = 60, deployment:
             logger.warning(f"读取Agent超时日志失败: {log_error}")
             deployment.log = (deployment.log or '') + f"警告: 读取Agent日志失败: {str(log_error)}\n"
         
-        # 尝试最后一次检查，并记录详细错误信息
+        # 尝试最后一次HTTP健康检查
         try:
-            from apps.agents.rpc_client import get_agent_rpc_client
-            rpc_client = get_agent_rpc_client(agent)
-            if rpc_client:
-                # 尝试健康检查
-                health_ok = rpc_client.health_check()
+            connect_host = server.agent_connect_host or server.host
+            connect_port = agent.rpc_port
+            use_https = bool(agent.certificate_path and agent.private_key_path)
+            protocol = 'https' if use_https else 'http'
+            health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+            verify_ssl = bool(server.agent_connect_host)
+            
+            response = requests.get(health_url, timeout=5, verify=verify_ssl)
+            if response.status_code == 200:
+                result = response.json()
+                health_ok = result.get('status') == 'ok'
                 deployment.log = (deployment.log or '') + f"最后健康检查: {'成功' if health_ok else '失败'}\n"
-                if not health_ok:
-                    # 尝试获取详细错误
-                    try:
-                        result = rpc_client._call('health_check', {}, max_retries=1)
-                        if 'error' in result:
-                            deployment.log = (deployment.log or '') + f"RPC错误详情: {result.get('error')}\n"
-                    except Exception as e:
-                        deployment.log = (deployment.log or '') + f"RPC调用异常: {str(e)}\n"
+            else:
+                deployment.log = (deployment.log or '') + f"最后健康检查失败: HTTP {response.status_code}\n"
         except Exception as e:
-            deployment.log = (deployment.log or '') + f"获取RPC客户端失败: {str(e)}\n"
+            deployment.log = (deployment.log or '') + f"最后健康检查异常: {str(e)}\n"
         deployment.save()
     
-    # 返回agent（即使不支持RPC），让调用者决定如何处理
+    # 返回agent（即使HTTP服务不可用），让调用者决定如何处理
     return agent

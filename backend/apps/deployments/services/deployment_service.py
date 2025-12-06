@@ -51,7 +51,7 @@ class DeploymentService:
             if method == 'auto':
                 try:
                     agent = Agent.objects.get(server=server)
-                    if agent.status == 'online' and agent.rpc_supported and server.connection_method == 'agent':
+                    if agent.status == 'online' and agent.rpc_port and server.connection_method == 'agent':
                         method = 'agent'
                     else:
                         method = 'ssh'
@@ -687,7 +687,7 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
     @staticmethod
     def wait_for_agent_startup(server: Server, timeout: int = 60, deployment: Optional[Deployment] = None) -> Optional[Agent]:
         """
-        等待Agent启动并检查RPC服务是否可用
+        等待Agent启动并检查HTTP服务是否可用
 
         Args:
             server: Server对象
@@ -697,7 +697,12 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
         Returns:
             Agent: Agent对象，如果启动失败则返回None
         """
-        from apps.agents.rpc_support import check_agent_rpc_support
+        import requests
+        import urllib3
+        from urllib3.exceptions import InsecureRequestWarning
+        
+        # 禁用SSL警告（因为使用自签名证书）
+        urllib3.disable_warnings(InsecureRequestWarning)
 
         try:
             agent = Agent.objects.get(server=server)
@@ -721,16 +726,49 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
                 deployment.save()
                 last_log_time = elapsed
 
-            # 检查RPC服务
-            if check_agent_rpc_support(agent):
-                agent.refresh_from_db()
-                if agent.rpc_supported:
-                    logger.info(f"Agent启动成功: server={server.name}")
-                    if deployment:
-                        deployment.log = (deployment.log or '') + "[成功] Agent RPC服务已启动\n"
-                        deployment.save()
-                    return agent
-
+            # 检查Agent HTTP服务（使用健康检查端点）
+            try:
+                if not agent.rpc_port:
+                    time.sleep(3)
+                    continue
+                
+                # 获取Agent连接地址
+                connect_host = server.agent_connect_host or server.host
+                connect_port = agent.rpc_port
+                
+                # 判断是否使用HTTPS（如果Agent有证书配置，使用HTTPS）
+                use_https = bool(agent.certificate_path and agent.private_key_path)
+                protocol = 'https' if use_https else 'http'
+                
+                # 构建Agent健康检查URL（/health端点不需要路径前缀）
+                health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+                
+                # 如果配置了agent域名，则验证SSL证书；如果只使用IP地址，则不验证
+                verify_ssl = bool(server.agent_connect_host)
+                
+                # 发送HTTP/HTTPS请求检查Agent是否在线
+                response = requests.get(health_url, timeout=5, verify=verify_ssl)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('status') == 'ok':
+                        agent.status = 'online'
+                        agent.last_heartbeat = timezone.now()
+                        agent.save()
+                        logger.info(f"Agent启动成功: server={server.name}")
+                        if deployment:
+                            deployment.log = (deployment.log or '') + "[成功] Agent HTTP服务已启动\n"
+                            deployment.save()
+                        return agent
+            except requests.exceptions.SSLError:
+                # SSL错误可能是服务还在启动，继续等待
+                pass
+            except requests.exceptions.ConnectionError:
+                # 连接错误，服务可能还没启动，继续等待
+                pass
+            except Exception as e:
+                logger.debug(f"检查Agent健康状态失败: {e}")
+            
             time.sleep(3)
 
         # 超时

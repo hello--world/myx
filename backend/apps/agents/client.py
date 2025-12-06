@@ -145,7 +145,7 @@ def get_agent_client(agent) -> Optional[AgentWebClient]:
         AgentWebClient实例，如果Agent未启用Web服务则返回None
     """
     # 优先使用RPC端口（新架构，端口是随机的）
-    # 如果Agent有RPC端口，优先使用RPC端口（不管rpc_supported状态，因为可能还没检查过）
+    # 如果Agent有HTTP端口，优先使用HTTP端口（字段名仍为rpc_port，但实际是HTTP端口）
     if agent.rpc_port:
         agent_port = agent.rpc_port
     elif agent.web_service_enabled and agent.web_service_port:

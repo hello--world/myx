@@ -56,11 +56,12 @@ class ServerSerializer(serializers.ModelSerializer):
             return None
     
     def get_agent_rpc_supported(self, obj):
-        """检查Agent是否支持RPC"""
+        """检查Agent是否有HTTP端口配置（向后兼容，字段名保留）"""
         try:
             from apps.agents.models import Agent
             agent = Agent.objects.get(server=obj)
-            return agent.rpc_supported
+            # 检查Agent是否有端口配置（实际是HTTP端口，但字段名仍为rpc_port）
+            return bool(agent.rpc_port)
         except:
             return False
 

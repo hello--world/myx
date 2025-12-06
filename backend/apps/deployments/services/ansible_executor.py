@@ -3,10 +3,11 @@ Ansible执行器
 
 统一SSH和Agent两种方式执行Ansible playbook，遵循架构设计原则：
 - SSH方式：本地执行Ansible（通过SSH连接到目标服务器）
-- Agent方式：上传playbook到Agent，通过RPC调用ansible执行（Agent端使用ansible-runner）
+- Agent方式：通过HTTP API调用Agent执行ansible playbook（Agent端使用ansible-runner）
 """
 import logging
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 import paramiko
@@ -72,7 +73,7 @@ class AnsibleExecutor:
         try:
             from apps.agents.models import Agent
             agent = Agent.objects.get(server=self.server)
-            if agent.status == 'online' and agent.rpc_supported:
+            if agent.status == 'online' and agent.rpc_port:
                 return 'agent'
         except Agent.DoesNotExist:
             pass
@@ -187,7 +188,7 @@ class AnsibleExecutor:
         timeout: int
     ) -> tuple[bool, str]:
         """
-        通过Agent执行Ansible playbook（RPC调用）
+        通过Agent执行Ansible playbook（HTTP API调用）
 
         Args:
             playbook_name: playbook文件名
@@ -199,8 +200,9 @@ class AnsibleExecutor:
         """
         try:
             from apps.agents.models import Agent
-            from apps.agents.rpc_client import get_agent_rpc_client
+            from apps.agents.command_queue import CommandQueue
             from apps.deployments.deployment_tool import sync_deployment_tool_to_agent
+            from django.utils import timezone
 
             # 获取Agent
             agent = Agent.objects.get(server=self.server)
@@ -215,22 +217,52 @@ class AnsibleExecutor:
                 if not sync_deployment_tool_to_agent(agent):
                     logger.warning(f"部署工具同步失败，继续尝试执行playbook")
 
-            # 通过RPC执行Ansible
+            # 构建ansible-playbook命令
+            import json
+            extra_vars_json = json.dumps(extra_vars, ensure_ascii=False)
             playbook_path = f"/opt/myx-deployment-tool/playbooks/{playbook_name}"
+            
+            playbook_command = f"""
+cd /opt/myx-deployment-tool && 
+ansible-playbook -i inventory/localhost.ini {playbook_path} -e '{extra_vars_json}'
+"""
 
-            logger.info(f"通过Agent RPC执行playbook: {playbook_path}")
+            logger.info(f"通过Agent HTTP API执行playbook: {playbook_path}")
 
-            # 调用Agent的execute_ansible方法
-            client = get_agent_rpc_client(agent)
-            result = client.execute_ansible(
-                playbook=playbook_path,
-                extra_vars=extra_vars,
+            # 通过HTTP API执行命令
+            cmd = CommandQueue.add_command(
+                agent=agent,
+                command='bash',
+                args=['-c', playbook_command],
                 timeout=timeout
             )
 
-            # 解析结果
-            success = result.get('success', False)
-            output = result.get('stdout', '') + result.get('stderr', '')
+            # 等待命令完成
+            max_wait = timeout
+            wait_time = 0
+            while wait_time < max_wait:
+                cmd.refresh_from_db()
+                if cmd.status in ['success', 'failed']:
+                    break
+                time.sleep(2)
+                wait_time += 2
+
+            # 获取命令结果
+            from apps.logs.utils import format_log_content
+            output = ''
+            if cmd.result:
+                result_output = format_log_content(cmd.result, decode_base64=True)
+                if result_output:
+                    output += result_output
+            if cmd.error:
+                error_output = format_log_content(cmd.error, decode_base64=True)
+                if error_output:
+                    if output:
+                        output += '\n' + error_output
+                    else:
+                        output = error_output
+
+            success = cmd.status == 'success'
 
             if success:
                 logger.info(f"Agent执行playbook成功: {playbook_name}")

@@ -423,7 +423,7 @@ def deploy_agent_and_services(server: Server, user, log_callback=None):
                 _log("等待Agent启动...")
                 from apps.deployments.tasks import wait_for_agent_startup
                 agent = wait_for_agent_startup(server, timeout=60, deployment=deployment)
-                if not agent or not agent.rpc_supported:
+                if not agent or not agent.rpc_port:
                     deployment.status = 'failed'
                     deployment.error_message = 'Agent启动超时或RPC不支持'
                     deployment.completed_at = timezone.now()

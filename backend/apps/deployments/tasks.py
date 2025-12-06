@@ -569,8 +569,7 @@ def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool
             # 上传所有Python文件（.py文件）
             python_files = [
                 'main.py',
-                'rpc_server.py',
-                'rpc_client.py',
+                'http_server.py',
                 'ansible_executor.py',
             ]
             
@@ -590,16 +589,7 @@ def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool
                     deployment.log = (deployment.log or '') + f"警告: 文件不存在，跳过: {py_file}\n"
                     deployment.save()
             
-            # 上传pyproject.toml（uv的依赖文件）
-            agent_pyproject = agent_dir / 'pyproject.toml'
-            if agent_pyproject.exists():
-                remote_pyproject = '/opt/myx-agent/pyproject.toml'
-                sftp.put(str(agent_pyproject), remote_pyproject)
-                sftp.chmod(remote_pyproject, 0o644)
-                deployment.log = (deployment.log or '') + f"已上传: pyproject.toml\n"
-                deployment.save()
-            
-            # 上传requirements.txt（作为备用）
+            # 上传requirements.txt
             agent_requirements = agent_dir / 'requirements.txt'
             if agent_requirements.exists():
                 remote_requirements = '/opt/myx-agent/requirements.txt'

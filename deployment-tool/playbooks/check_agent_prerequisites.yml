@@ -1,0 +1,115 @@
+---
+# Agent安装前置检查playbook
+# 在安装Agent之前检查系统环境是否满足要求
+#
+# 检查项：
+# - Python3 是否安装
+# - Python版本是否>=3.6
+# - pip3 是否安装（如果未安装，会在安装Agent时自动安装）
+#
+# 注意：Python依赖包（flask、ansible-runner）和Ansible会在安装Agent时自动安装，不在此检查
+#
+# 如果检查失败，会输出详细的错误信息并退出
+
+- name: 检查Agent安装前置条件
+  hosts: all
+  become: yes
+  vars:
+    python_installed: false
+    python_version_ok: false
+    pip3_installed: false
+
+  tasks:
+    # ============ 检查Python3 ============
+    - name: 检查Python3是否安装
+      command: python3 --version
+      register: python3_check
+      failed_when: false
+      changed_when: false
+
+    - name: 设置Python3安装状态
+      set_fact:
+        python_installed: true
+      when: python3_check.rc == 0
+
+    - name: 输出Python3检查结果
+      debug:
+        msg: "Python3已安装: {{ python3_check.stdout }}"
+      when: python_installed
+
+    - name: 输出Python3未安装错误
+      debug:
+        msg: "错误: Python3未安装，请先安装Python3"
+      when: not python_installed
+
+    # ============ 检查Python版本 ============
+    - name: 提取Python版本号
+      set_fact:
+        python_version: "{{ python3_check.stdout | regex_replace('Python ', '') | regex_replace('\\..*', '') }}"
+      when: python_installed
+
+    - name: 提取Python次版本号
+      set_fact:
+        python_minor_version: "{{ python3_check.stdout | regex_replace('Python ', '') | regex_replace('^[0-9]+\\.', '') | regex_replace('\\..*', '') }}"
+      when: python_installed
+
+    - name: 验证Python版本>=3.6
+      set_fact:
+        python_version_ok: true
+      when:
+        - python_installed
+        - python_version | int >= 3
+        - python_minor_version | int >= 6
+
+    - name: 输出Python版本检查结果
+      debug:
+        msg: "Python版本检查通过: {{ python3_check.stdout }}"
+      when: python_version_ok
+
+    - name: 输出Python版本过低错误
+      debug:
+        msg: "错误: Python版本过低 ({{ python3_check.stdout }})，需要Python 3.6或更高版本"
+      when: python_installed and not python_version_ok
+
+    # ============ 检查pip3 ============
+    - name: 检查pip3是否安装
+      command: pip3 --version
+      register: pip3_check
+      failed_when: false
+      changed_when: false
+      when: python_installed
+
+    - name: 设置pip3安装状态
+      set_fact:
+        pip3_installed: true
+      when: python_installed and pip3_check.rc == 0
+
+    - name: 输出pip3检查结果
+      debug:
+        msg: "pip3已安装: {{ pip3_check.stdout }}"
+      when: pip3_installed
+
+    - name: 输出pip3未安装警告
+      debug:
+        msg: "警告: pip3未安装，将在安装Agent时自动安装"
+      when: python_installed and not pip3_installed
+
+    # ============ 汇总检查结果 ============
+    - name: 检查所有必需的前置条件
+      assert:
+        that:
+          - python_installed
+          - python_version_ok
+        fail_msg: "前置检查失败：Python3未安装或版本过低（需要Python 3.6或更高版本）"
+        success_msg: "前置检查通过：Python环境满足要求"
+
+    - name: 输出检查摘要
+      debug:
+        msg: |
+          前置检查摘要：
+          - Python3: {{ '已安装' if python_installed else '未安装' }} {{ python3_check.stdout if python_installed else '' }}
+          - Python版本: {{ '符合要求（>=3.6）' if python_version_ok else '不符合要求（需要>=3.6）' }}
+          - pip3: {{ '已安装' if pip3_installed else '未安装（将在安装Agent时自动安装）' }}
+          
+          注意：Python依赖包（flask、ansible-runner）和Ansible将在安装Agent时自动安装
+

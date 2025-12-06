@@ -81,19 +81,32 @@ def check_service_installed(agent: Agent, service_name: str, force_check: bool =
         print(f"Agent {agent.id} 不在线，状态: {agent.status}")
         return False
     
-    # 使用内置的check_service.py脚本
-    script_path = f"{AGENT_DEPLOYMENT_TOOL_DIR}/scripts/check_service.py"
+    # 使用check_service.yml playbook
+    playbook_path = f"{AGENT_DEPLOYMENT_TOOL_DIR}/playbooks/check_service.yml"
+    inventory_path = f"{AGENT_DEPLOYMENT_TOOL_DIR}/inventory/localhost.ini"
+    
+    # 构建extra_vars JSON
+    import json
+    extra_vars = {
+        'service_name': service_name,
+        'deployment_target': deployment_target
+    }
+    extra_vars_json = json.dumps(extra_vars, ensure_ascii=False)
 
     # 提前导入 format_log_content，避免在不同分支中重复导入
     from apps.logs.utils import format_log_content
 
     try:
-        # 直接执行内置脚本，传递deployment_target参数
+        # 执行ansible-playbook命令
         cmd = CommandQueue.add_command(
             agent=agent,
-            command='python3',
-            args=[script_path, service_name, deployment_target],
-            timeout=15  # 减少到15秒，检测脚本应该很快
+            command='ansible-playbook',
+            args=[
+                '-i', inventory_path,
+                playbook_path,
+                '-e', extra_vars_json
+            ],
+            timeout=30  # playbook执行可能需要稍长时间
         )
 
         # 调试：立即验证命令是否成功创建

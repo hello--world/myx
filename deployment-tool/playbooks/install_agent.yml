@@ -13,10 +13,12 @@
 # Extra vars:
 # - agent_token: Agent Token（服务器分配）
 # - secret_key: 加密密钥（服务器分配）
-# - rpc_port: RPC端口（服务器分配）
-# - rpc_path: RPC路径（服务器分配，用于路径混淆）
+# - http_port: HTTP端口（服务器随机分配）
+# - http_path: HTTP路径（服务器随机分配，用于路径混淆）
 # - certificate_path: SSL证书路径（可选，默认/etc/myx-agent/ssl/agent.crt）
 # - private_key_path: SSL私钥路径（可选，默认/etc/myx-agent/ssl/agent.key）
+# - certificate_content: SSL证书内容（可选，如果提供则写入证书文件）
+# - private_key_content: SSL私钥内容（可选，如果提供则写入私钥文件）
 
 - name: 安装MyX Agent
   hosts: all
@@ -51,6 +53,32 @@
         path: "{{ agent_dir }}"
         state: directory
         mode: '0755'
+
+    # ============ 从临时目录复制Agent文件 ============
+    - name: 从临时目录复制整个Agent目录
+      copy:
+        src: /tmp/myx-agent-files/
+        dest: "{{ agent_dir }}/"
+        remote_src: yes
+        mode: preserve
+      ignore_errors: yes
+
+    - name: 设置main.py可执行权限
+      file:
+        path: "{{ agent_dir }}/main.py"
+        mode: '0755'
+      failed_when: false
+
+    - name: 验证main.py是否存在
+      stat:
+        path: "{{ agent_dir }}/main.py"
+      register: main_py_check
+
+    - name: 如果main.py不存在则报错
+      fail:
+        msg: "Agent文件复制失败：main.py不存在，请检查临时目录 /tmp/myx-agent-files 是否存在文件"
+      when: not main_py_check.stat.exists
+
     - name: 检查Python3是否安装
       command: python3 --version
       register: python_version
@@ -87,50 +115,58 @@
         msg: "Agent文件不存在: {{ agent_dir }}/main.py"
       when: not agent_main_file.stat.exists
 
-    # ============ 安装uv工具 ============
-    - name: 检查uv是否已安装
-      command: /usr/local/bin/uv --version
-      register: uv_check
+    # ============ 安装pip3（如果不存在） ============
+    - name: 检查pip3是否已安装
+      command: pip3 --version
+      register: pip3_check
       failed_when: false
       changed_when: false
 
-    - name: 安装uv到/usr/local/bin
-      shell: |
-        curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
-      when: uv_check.rc != 0
+    - name: 安装python3-pip（Debian/Ubuntu）
+      package:
+        name: python3-pip
+        state: present
+      when: 
+        - pip3_check.rc != 0
+        - ansible_os_family == "Debian"
+      ignore_errors: yes
 
-    - name: 验证uv是否可用
-      command: /usr/local/bin/uv --version
-      register: uv_verify
-      failed_when: uv_verify.rc != 0
+    - name: 安装python3-pip（RedHat/CentOS）
+      package:
+        name: python3-pip
+        state: present
+      when: 
+        - pip3_check.rc != 0
+        - ansible_os_family == "RedHat"
+      ignore_errors: yes
 
-    # ============ 安装Python依赖 ============
-    - name: 检查pyproject.toml是否存在
-      stat:
-        path: "{{ agent_dir }}/pyproject.toml"
-      register: pyproject_file
+    # ============ 安装Ansible和依赖 ============
+    - name: 检查Ansible是否已安装
+      command: ansible-playbook --version
+      register: ansible_check
+      failed_when: false
+      changed_when: false
 
-    - name: 使用uv sync安装依赖（如果有pyproject.toml）
-      shell: |
-        cd {{ agent_dir }}
-        /usr/local/bin/uv sync
-      when: pyproject_file.stat.exists
-      register: uv_sync_result
-      failed_when: uv_sync_result.rc != 0
+    - name: 安装Ansible（如果未安装）
+      package:
+        name: ansible
+        state: present
+      when: ansible_check.rc != 0
+      ignore_errors: yes
 
-    - name: 使用uv pip install安装依赖（如果没有pyproject.toml）
-      shell: |
-        cd {{ agent_dir }}
-        /usr/local/bin/uv pip install -r requirements.txt
-      when: not pyproject_file.stat.exists
-      register: uv_install_deps
-      failed_when: uv_install_deps.rc != 0
+    - name: 安装Python依赖（使用requirements.txt，添加--break-system-packages和--ignore-installed参数）
+      pip:
+        requirements: "{{ agent_dir }}/requirements.txt"
+        state: present
+        executable: pip3
+        extra_args: --break-system-packages --ignore-installed
+      ignore_errors: yes
 
     - name: 输出依赖安装结果
       debug:
-        msg: "Python依赖安装完成（使用{{ 'pyproject.toml' if pyproject_file.stat.exists else 'requirements.txt' }}）"
+        msg: "依赖安装完成"
 
-    # ============ 创建配置文件 ============
+    # ============ 创建SSL证书目录 ============
     - name: 创建配置目录
       file:
         path: "{{ config_dir }}"
@@ -143,23 +179,20 @@
         state: directory
         mode: '0755'
 
-    - name: 创建Agent配置文件
+    # ============ 上传SSL证书 ============
+    - name: 上传SSL证书
       copy:
-        content: |
-          {
-              "agent_token": "{{ agent_token }}",
-              "secret_key": "{{ secret_key }}",
-              "rpc_port": {{ rpc_port }},
-              "rpc_path": "{{ rpc_path }}",
-              "certificate_path": "{{ certificate_path | default('/etc/myx-agent/ssl/agent.crt') }}",
-              "private_key_path": "{{ private_key_path | default('/etc/myx-agent/ssl/agent.key') }}"
-          }
-        dest: "{{ config_dir }}/config.json"
-        mode: '0600'
+        content: "{{ certificate_content }}"
+        dest: "{{ certificate_path | default('/etc/myx-agent/ssl/agent.crt') }}"
+        mode: '0644'
+      when: certificate_content is defined and certificate_content != ""
 
-    - name: 输出配置创建结果
-      debug:
-        msg: "Agent配置文件已创建（Token、RPC端口和路径已由服务器分配）"
+    - name: 上传SSL私钥
+      copy:
+        content: "{{ private_key_content }}"
+        dest: "{{ private_key_path | default('/etc/myx-agent/ssl/agent.key') }}"
+        mode: '0600'
+      when: private_key_content is defined and private_key_content != ""
 
     # ============ 创建systemd服务 ============
     - name: 创建systemd服务文件
@@ -173,10 +206,16 @@
           Type=simple
           User=root
           WorkingDirectory={{ agent_dir }}
-          ExecStart=/usr/local/bin/uv run {{ agent_dir }}/main.py
+          ExecStart=/usr/bin/python3 {{ agent_dir }}/main.py
           Restart=always
           RestartSec=10
           Environment="PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+          Environment="AGENT_TOKEN={{ agent_token }}"
+          Environment="SECRET_KEY={{ secret_key }}"
+          Environment="HTTP_PORT={{ http_port }}"
+          Environment="HTTP_PATH={{ http_path }}"
+          Environment="CERTIFICATE_PATH={{ certificate_path | default('/etc/myx-agent/ssl/agent.crt') }}"
+          Environment="PRIVATE_KEY_PATH={{ private_key_path | default('/etc/myx-agent/ssl/agent.key') }}"
 
           [Install]
           WantedBy=multi-user.target
@@ -198,9 +237,112 @@
         name: "{{ service_name }}"
         state: started
 
-    - name: 等待服务启动
-      wait_for:
-        timeout: 3
+    # ============ 验证服务状态（带重试和日志检查） ============
+    - name: 等待并检查服务状态（最多重试3次）
+      block:
+        - name: 等待服务启动
+          wait_for:
+            timeout: 15
+
+        - name: 检查服务状态
+          systemd:
+            name: "{{ service_name }}"
+          register: service_status
+          failed_when: false
+
+        - name: 读取服务日志（检查启动错误）
+          command: journalctl -u {{ service_name }} -n 30 --no-pager
+          register: service_log
+          failed_when: false
+          changed_when: false
+
+        - name: 输出服务日志
+          debug:
+            msg: "{{ service_log.stdout_lines }}"
+          when: service_log.stdout_lines is defined
+
+        - name: 验证服务是否运行
+          assert:
+            that:
+              - service_status.status.ActiveState == "active"
+            fail_msg: |
+              Agent服务启动失败，状态: {{ service_status.status.ActiveState }}
+              请检查服务日志以获取详细错误信息
+            success_msg: "Agent服务运行正常"
+      rescue:
+        - name: 重试检查服务状态（第2次）
+          block:
+            - name: 等待服务启动（重试）
+              wait_for:
+                timeout: 15
+
+            - name: 检查服务状态（重试）
+              systemd:
+                name: "{{ service_name }}"
+              register: service_status
+              failed_when: false
+
+            - name: 读取服务日志（重试时检查）
+              command: journalctl -u {{ service_name }} -n 30 --no-pager
+              register: service_log
+              failed_when: false
+              changed_when: false
+
+            - name: 输出服务日志（重试）
+              debug:
+                msg: "{{ service_log.stdout_lines }}"
+              when: service_log.stdout_lines is defined
+
+            - name: 验证服务是否运行（重试）
+              assert:
+                that:
+                  - service_status.status.ActiveState == "active"
+                fail_msg: |
+                  Agent服务启动失败，状态: {{ service_status.status.ActiveState }}
+                  请检查服务日志以获取详细错误信息
+                success_msg: "Agent服务运行正常"
+          rescue:
+            - name: 重试检查服务状态（第3次）
+              block:
+                - name: 等待服务启动（第3次重试）
+                  wait_for:
+                    timeout: 15
+
+                - name: 检查服务状态（第3次重试）
+                  systemd:
+                    name: "{{ service_name }}"
+                  register: service_status
+                  failed_when: false
+
+                - name: 读取服务日志（第3次重试时检查）
+                  command: journalctl -u {{ service_name }} -n 30 --no-pager
+                  register: service_log
+                  failed_when: false
+                  changed_when: false
+
+                - name: 输出服务日志（第3次重试）
+                  debug:
+                    msg: "{{ service_log.stdout_lines }}"
+                  when: service_log.stdout_lines is defined
+
+                - name: 验证服务是否运行（第3次重试）
+                  assert:
+                    that:
+                      - service_status.status.ActiveState == "active"
+                    fail_msg: |
+                      Agent服务启动失败，状态: {{ service_status.status.ActiveState }}
+                      请检查服务日志以获取详细错误信息
+                      如果依赖未安装成功，请检查pip3安装日志
+                    success_msg: "Agent服务运行正常"
+
+
+    # ============ 清理临时文件 ============
+    - name: 清理临时目录
+      file:
+        path: /tmp/myx-agent-files
+        state: absent
+      failed_when: false
+      ignore_errors: yes
 
     - name: 输出完成信息
       debug:

@@ -518,71 +518,27 @@ class ServerViewSet(viewsets.ModelViewSet):
         except Agent.DoesNotExist:
             pass
         
-        # 如果Agent已安装且在线，且服务器连接方式为agent，使用Agent进行升级
-        # 如果服务器连接方式为ssh，即使Agent在线也使用SSH升级（用于修复Agent问题）
-        if is_upgrade and agent and agent.status == 'online' and agent.rpc_supported and server.connection_method == 'agent':
-            # 通过Agent进行升级（使用install_agent.yml playbook）
-            from apps.deployments.models import Deployment
-            from apps.agents.services.upgrade_service import AgentUpgradeService
-            
-            # 检查并停止正在运行的相同类型的部署任务（Agent方式）
-            running_deployments = Deployment.objects.filter(
-                server=server,
-                deployment_type='agent',
-                connection_method='agent',
-                status='running'
-            )
-            
-            if running_deployments.exists():
-                for dep in running_deployments:
-                    dep.status = 'cancelled'
-                    dep.error_message = f'被新的部署任务取消（{timezone.now().strftime("%Y-%m-%d %H:%M:%S")}）'
-                    dep.completed_at = timezone.now()
-                    dep.log = (dep.log or '') + f"\n[取消] 部署任务被新的部署请求取消\n"
-                    dep.save()
-                    logger.info(f'已取消正在运行的部署任务: deployment_id={dep.id}, server={server.name}')
-            
-            # 创建部署任务
-            task_name = f"升级Agent - {server.name}"
-            deployment = Deployment.objects.create(
-                name=task_name,
-                server=server,
-                deployment_type='agent',
-                connection_method='agent',
-                deployment_target=server.deployment_target or 'host',
-                status='running',
-                started_at=timezone.now(),
-                created_by=request.user
-            )
-            
-            # 使用AgentUpgradeService进行升级（统一使用install_agent.yml playbook）
-            success, message = AgentUpgradeService.upgrade_via_agent(
-                agent=agent,
-                deployment=deployment,
-                user=request.user
-            )
-            
-            if success:
-                return Response({
-                    'success': True,
-                    'message': 'Agent升级任务已启动（通过Agent），请查看部署任务',
-                    'deployment_id': deployment.id,
-                    'is_upgrade': True,
-                    'upgrade_method': 'agent'
-                }, status=status.HTTP_202_ACCEPTED)
-            else:
-                deployment.status = 'failed'
-                deployment.error_message = message
-                deployment.completed_at = timezone.now()
-                deployment.save()
-                
-                return Response({
-                    'success': False,
-                    'error': message
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # 统一使用DeploymentService进行安装/升级（自动选择SSH或Agent方式）
+        from apps.deployments.services import DeploymentService
         
-        # 如果Agent不在线、未安装，或服务器连接方式为ssh，使用SSH安装/升级
-        # 检查是否有SSH凭证
+        # 检查并停止正在运行的相同类型的部署任务
+        from apps.deployments.models import Deployment
+        running_deployments = Deployment.objects.filter(
+            server=server,
+            deployment_type='agent',
+            status='running'
+        )
+        
+        if running_deployments.exists():
+            for dep in running_deployments:
+                dep.status = 'cancelled'
+                dep.error_message = f'被新的部署任务取消（{timezone.now().strftime("%Y-%m-%d %H:%M:%S")}）'
+                dep.completed_at = timezone.now()
+                dep.log = (dep.log or '') + f"\n[取消] 部署任务被新的部署请求取消\n"
+                dep.save()
+                logger.info(f'已取消正在运行的部署任务: deployment_id={dep.id}, server={server.name}')
+        
+        # 检查是否有SSH凭证（如果Agent不在线或未安装，需要SSH）
         if not server.password and not server.private_key:
             if is_upgrade:
                 return Response({
@@ -650,27 +606,40 @@ class ServerViewSet(viewsets.ModelViewSet):
         # 在后台线程中安装Agent
         def install_agent_async():
             try:
+                # 保存原始连接方式
+                original_connection_method = server.connection_method
+                
                 # 重新获取服务器和部署对象
                 server.refresh_from_db()
                 deployment.refresh_from_db()
 
-                # 临时设置连接方式为SSH（如果原来是Agent）
-                original_connection_method = server.connection_method
-                if server.connection_method == 'agent':
-                    server.connection_method = 'ssh'
-                    server.save()
-
-                # 通过SSH安装Agent
-                from apps.deployments.tasks import install_agent_via_ssh, wait_for_agent_startup
+                # 自动选择执行方式
+                method = 'auto'
+                try:
+                    agent = Agent.objects.get(server=server)
+                    if agent.status == 'online' and agent.rpc_supported and server.connection_method == 'agent':
+                        method = 'agent'
+                    else:
+                        method = 'ssh'
+                except Agent.DoesNotExist:
+                    method = 'ssh'
 
                 action_text = "升级" if is_upgrade else "安装"
-                deployment.log = (deployment.log or '') + f"[开始] 开始通过SSH{action_text}Agent到服务器 {server.host}\n"
+                method_text = 'Agent' if method == 'agent' else 'SSH'
+                deployment.log = (deployment.log or '') + f"[开始] 开始通过{method_text}{action_text}Agent到服务器 {server.host}\n"
                 if is_upgrade:
                     deployment.log = (deployment.log or '') + f"[信息] 升级模式：将停止旧服务并全新安装最新版本的Agent\n"
                 deployment.save()
 
                 # 安装/升级Agent（统一使用全新安装方式）
-                if not install_agent_via_ssh(server, deployment):
+                success, message = DeploymentService.install_or_upgrade_agent(
+                    server=server,
+                    deployment=deployment,
+                    method=method,
+                    user=request.user
+                )
+
+                if not success:
                     deployment.status = 'failed'
                     deployment.error_message = f'Agent{action_text}失败'
                     deployment.completed_at = timezone.now()
@@ -712,7 +681,7 @@ class ServerViewSet(viewsets.ModelViewSet):
                 deployment.log = (deployment.log or '') + "等待Agent启动...\n"
                 deployment.save()
                 
-                agent = wait_for_agent_startup(server, timeout=120, deployment=deployment)
+                agent = DeploymentService.wait_for_agent_startup(server, timeout=120, deployment=deployment)
                 if not agent or not agent.rpc_supported:
                     deployment.status = 'failed'
                     deployment.error_message = 'Agent启动超时或RPC不支持'

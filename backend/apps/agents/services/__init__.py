@@ -9,10 +9,8 @@ Agent服务层
 
 from .agent_service import AgentService
 from .certificate_service import CertificateService
-from .upgrade_service import AgentUpgradeService
 
 __all__ = [
     'AgentService',
     'CertificateService',
-    'AgentUpgradeService',
 ]

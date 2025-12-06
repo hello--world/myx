@@ -165,78 +165,60 @@ class AgentViewSet(viewsets.ReadOnlyModelViewSet):
             created_by=request.user
         )
 
-        # 根据Agent状态选择升级方式
-        from .services.upgrade_service import AgentUpgradeService
+        # 使用统一的安装/升级方法
+        from apps.deployments.services import DeploymentService
 
+        # 自动选择执行方式
+        method = 'auto'
         if server.connection_method == 'agent' and agent.status == 'online':
-            # Agent在线：通过Agent自升级
-            success, message = AgentUpgradeService.upgrade_via_agent(
-                agent=agent,
-                deployment=deployment,
-                user=request.user
-            )
-
-            if success:
-                return Response({
-                    'message': 'Agent升级已启动，请查看部署任务',
-                    'deployment_id': deployment.id
-                }, status=status.HTTP_202_ACCEPTED)
-            else:
-                deployment.status = 'failed'
-                deployment.error_message = message
-                deployment.completed_at = timezone.now()
-                deployment.save()
-
-                return Response({
-                    'error': message
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        else:
-            # Agent离线：通过SSH升级
-            if not server.password and not server.private_key:
-                deployment.status = 'failed'
-                deployment.error_message = '服务器缺少SSH凭据'
-                deployment.completed_at = timezone.now()
-                deployment.save()
-
-                return Response({
-                    'error': '服务器缺少SSH凭据，无法升级Agent'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # 异步执行SSH升级
-            import threading
-
-            def _upgrade():
-                try:
-                    success, message = AgentUpgradeService.upgrade_via_ssh(
-                        server=server,
-                        deployment=deployment,
-                        user=request.user
-                    )
-
-                    if success:
-                        deployment.status = 'success'
-                    else:
-                        deployment.status = 'failed'
-                        deployment.error_message = message
-
-                    deployment.completed_at = timezone.now()
-                    deployment.save()
-
-                except Exception as e:
-                    deployment.status = 'failed'
-                    deployment.error_message = str(e)
-                    deployment.completed_at = timezone.now()
-                    deployment.save()
-
-            thread = threading.Thread(target=_upgrade)
-            thread.daemon = True
-            thread.start()
-
+            method = 'agent'
+        elif not server.password and not server.private_key:
+            deployment.status = 'failed'
+            deployment.error_message = '服务器缺少SSH凭据'
+            deployment.completed_at = timezone.now()
+            deployment.save()
             return Response({
-                'message': 'Agent升级已启动（通过SSH）',
-                'deployment_id': deployment.id
-            }, status=status.HTTP_202_ACCEPTED)
+                'error': '服务器缺少SSH凭据，无法升级Agent'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            method = 'ssh'
+
+        # 异步执行安装/升级
+        import threading
+
+        def _upgrade():
+            try:
+                success, message = DeploymentService.install_or_upgrade_agent(
+                    server=server,
+                    deployment=deployment,
+                    method=method,
+                    user=request.user
+                )
+
+                if success:
+                    deployment.status = 'success'
+                else:
+                    deployment.status = 'failed'
+                    deployment.error_message = message
+
+                deployment.completed_at = timezone.now()
+                deployment.save()
+
+            except Exception as e:
+                deployment.status = 'failed'
+                deployment.error_message = str(e)
+                deployment.completed_at = timezone.now()
+                deployment.save()
+
+        thread = threading.Thread(target=_upgrade)
+        thread.daemon = True
+        thread.start()
+
+        method_text = 'Agent' if method == 'agent' else 'SSH'
+        return Response({
+            'message': f'Agent升级已启动（通过{method_text}）',
+            'deployment_id': deployment.id
+        }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])
     def stop(self, request, pk=None):

@@ -185,7 +185,7 @@
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="没有密钥"
+            placeholder="SSH密码（或使用私钥）"
             show-password
           />
         </el-form-item>

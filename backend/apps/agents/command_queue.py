@@ -92,6 +92,9 @@ class CommandQueue:
             'Content-Type': 'application/json'
         }
         
+        consecutive_errors = 0
+        max_consecutive_errors = 10  # 连续10次错误后，增加等待时间
+        
         while time.time() - start_time < max_poll_time:
             try:
                 # 检查命令状态
@@ -117,9 +120,44 @@ class CommandQueue:
                     )
                     response.raise_for_status()
                     log_result = response.json()
+                    # 成功获取日志，重置错误计数
+                    consecutive_errors = 0
+                except requests.exceptions.SSLError as e:
+                    consecutive_errors += 1
+                    error_msg = str(e)
+                    # SSL错误可能是证书问题或服务重启
+                    if consecutive_errors <= 3:
+                        logger.warning(f'[CommandQueue] SSL错误（尝试 {consecutive_errors}/3）: command_id={command_id}, error={error_msg}')
+                    elif consecutive_errors == 4:
+                        logger.error(f'[CommandQueue] SSL错误持续发生，可能是Agent服务问题: command_id={command_id}, error={error_msg}')
+                        # 记录到命令错误中，以便用户看到
+                        try:
+                            cmd = AgentCommand.objects.get(id=command_id)
+                            if not cmd.error or 'SSL错误' not in cmd.error:
+                                cmd.error = (cmd.error or '') + f'\n[警告] SSL连接错误（可能Agent服务正在重启）: {error_msg}'
+                                cmd.save()
+                        except:
+                            pass
+                    # 如果连续错误太多，增加等待时间
+                    wait_time = poll_interval * (2 if consecutive_errors > max_consecutive_errors else 1)
+                    time.sleep(wait_time)
+                    continue
+                except requests.exceptions.ConnectionError as e:
+                    consecutive_errors += 1
+                    error_msg = str(e)
+                    if consecutive_errors <= 3:
+                        logger.warning(f'[CommandQueue] 连接错误（尝试 {consecutive_errors}/3）: command_id={command_id}, error={error_msg}')
+                    elif consecutive_errors == 4:
+                        logger.error(f'[CommandQueue] 连接错误持续发生: command_id={command_id}, error={error_msg}')
+                    wait_time = poll_interval * (2 if consecutive_errors > max_consecutive_errors else 1)
+                    time.sleep(wait_time)
+                    continue
                 except requests.exceptions.RequestException as e:
-                    logger.warning(f'[CommandQueue] 获取命令日志失败: command_id={command_id}, error={str(e)}')
-                    time.sleep(poll_interval)
+                    consecutive_errors += 1
+                    error_msg = str(e)
+                    logger.warning(f'[CommandQueue] 获取命令日志失败: command_id={command_id}, error={error_msg}')
+                    wait_time = poll_interval * (2 if consecutive_errors > max_consecutive_errors else 1)
+                    time.sleep(wait_time)
                     continue
                 
                 if 'error' in log_result:

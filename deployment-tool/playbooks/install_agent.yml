@@ -38,8 +38,8 @@
       ignore_errors: yes
 
     - name: 等待服务完全停止
-      wait_for:
-        timeout: 3
+      pause:
+        seconds: 3
 
     - name: 删除旧的Agent目录（强制覆盖）
       file:
@@ -241,8 +241,8 @@
     - name: 等待并检查服务状态（最多重试3次）
       block:
         - name: 等待服务启动
-          wait_for:
-            timeout: 15
+          pause:
+            seconds: 15
 
         - name: 检查服务状态
           systemd:
@@ -273,8 +273,8 @@
         - name: 重试检查服务状态（第2次）
           block:
             - name: 等待服务启动（重试）
-              wait_for:
-                timeout: 15
+              pause:
+                seconds: 15
 
             - name: 检查服务状态（重试）
               systemd:
@@ -305,8 +305,8 @@
             - name: 重试检查服务状态（第3次）
               block:
                 - name: 等待服务启动（第3次重试）
-                  wait_for:
-                    timeout: 15
+                  pause:
+                    seconds: 15
 
                 - name: 检查服务状态（第3次重试）
                   systemd:

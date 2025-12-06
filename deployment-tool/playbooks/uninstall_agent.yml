@@ -33,8 +33,8 @@
       ignore_errors: yes
 
     - name: 等待服务完全停止
-      wait_for:
-        timeout: 3
+      pause:
+        seconds: 3
 
     # ============ 禁用Agent服务 ============
     - name: 禁用Agent服务（如果已启用）

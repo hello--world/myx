@@ -116,7 +116,7 @@
             <el-divider content-position="left" class="first-divider">基本信息</el-divider>
             <div class="form-row-three-cols">
               <el-form-item label="节点名" prop="name">
-                <el-input v-model="form.name" placeholder="节点名" />
+                <el-input v-model="form.name" placeholder="留空则使用服务器名称" />
             </el-form-item>
             <el-form-item label="服务器" prop="server">
                 <el-select v-model="form.server" placeholder="选择服务器" style="width: 100%;" @change="handleServerChange">
@@ -737,7 +737,7 @@ const checkPortAvailability = async () => {
 }
 
 const rules = {
-  name: [{ required: true, message: '请输入节点名称', trigger: 'blur' }],
+  name: [{ required: false }], // 节点名称改为可选，留空则使用服务器名称
   server: [{ required: true, message: '请选择服务器', trigger: 'change' }],
   protocol: [{ required: true, message: '请选择协议', trigger: 'change' }],
   port: [

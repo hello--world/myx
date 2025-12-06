@@ -69,6 +69,19 @@ class ProxySerializer(serializers.ModelSerializer):
         validated_data['stream_settings'] = json.dumps(stream_settings_dict, ensure_ascii=False)
         validated_data['sniffing'] = json.dumps(sniffing_dict, ensure_ascii=False)
         
+        # 如果节点名称为空，使用服务器名称，并处理冲突
+        if not validated_data.get('name') or not validated_data.get('name').strip():
+            server = validated_data.get('server')
+            if server:
+                base_name = server.name
+                # 检查是否有冲突，如果有则添加后缀
+                name = base_name
+                counter = 1
+                while Proxy.objects.filter(name=name).exists():
+                    name = f"{base_name}-{counter}"
+                    counter += 1
+                validated_data['name'] = name
+        
         # 生成 tag
         if not validated_data.get('tag'):
             validated_data['tag'] = f"inbound-{validated_data.get('port', 0)}"
@@ -84,6 +97,19 @@ class ProxySerializer(serializers.ModelSerializer):
             validated_data['stream_settings'] = json.dumps(validated_data['stream_settings'], ensure_ascii=False)
         if 'sniffing' in validated_data:
             validated_data['sniffing'] = json.dumps(validated_data['sniffing'], ensure_ascii=False)
+        
+        # 如果节点名称为空，使用服务器名称，并处理冲突
+        if 'name' in validated_data and (not validated_data.get('name') or not validated_data.get('name').strip()):
+            server = validated_data.get('server', instance.server)
+            if server:
+                base_name = server.name
+                # 检查是否有冲突（排除自己），如果有则添加后缀
+                name = base_name
+                counter = 1
+                while Proxy.objects.filter(name=name).exclude(pk=instance.pk).exists():
+                    name = f"{base_name}-{counter}"
+                    counter += 1
+                validated_data['name'] = name
         
         return super().update(instance, validated_data)
 

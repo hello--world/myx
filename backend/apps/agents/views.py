@@ -319,60 +319,25 @@ def agent_register(request):
     except Exception as e:
         return Response({'error': f'查找服务器失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 检查是否已有Agent
-    # 生成随机RPC端口（如果不存在）
-    import random
-    def generate_rpc_port():
-        excluded_ports = {22, 80, 443, 8000, 8443, 3306, 5432, 6379, 8080, 9000}
-        for _ in range(100):
-            port = random.randint(8000, 65535)
-            if port in excluded_ports:
-                continue
-            # 检查端口是否已被使用
-            try:
-                existing = Agent.objects.filter(rpc_port=port).exists()
-                if existing:
-                    continue
-            except:
-                pass
-            return port
-        return None
+    # 检查 Agent 是否已存在（用于判断是否是新建）
+    try:
+        existing_agent = Agent.objects.get(server=server)
+        created = False
+    except Agent.DoesNotExist:
+        created = True
     
-    agent, created = Agent.objects.get_or_create(
-        server=server,
-        defaults={
-            'token': secrets.token_urlsafe(32),  # 生成token
-            'secret_key': secrets.token_urlsafe(32),  # 生成加密密钥
-            'status': 'online',
-            'version': serializer.validated_data.get('version', ''),
-            'last_heartbeat': timezone.now(),
-            'web_service_enabled': True,  # 默认启用Web服务
-            'web_service_port': 8443,  # 默认端口
-            'rpc_port': generate_rpc_port()  # 生成随机RPC端口
-        }
-    )
+    # 使用 AgentService 创建或获取 Agent
+    from .services import AgentService
+    agent = AgentService.create_or_get_agent(server)
     
-    # 如果Agent已存在但没有token或secret_key，生成它们
-    if not agent.token:
-        import uuid
-        agent.token = uuid.uuid4().hex
-    if not agent.secret_key:
-        agent.secret_key = secrets.token_urlsafe(32)
-    if not agent.token or not agent.secret_key:
-        agent.save()
-
+    # 更新 Agent 状态和版本信息
+    agent.status = 'online'
+    agent.last_heartbeat = timezone.now()
+    if serializer.validated_data.get('version'):
+        agent.version = serializer.validated_data['version']
+    agent.save()
+    
     if not created:
-        # 更新现有Agent
-        agent.status = 'online'
-        agent.last_heartbeat = timezone.now()
-        if serializer.validated_data.get('version'):
-            agent.version = serializer.validated_data['version']
-        # 如果RPC端口未设置，生成一个（但不会更改已存在的端口）
-        if not agent.rpc_port:
-            agent.rpc_port = generate_rpc_port()
-        # 保持现有心跳模式，不覆盖
-        agent.save()
-        
         # 记录Agent重新注册日志
         create_log_entry(
             log_type='agent',

@@ -215,7 +215,7 @@ class AgentService:
     @staticmethod
     def check_agent_status(agent: Agent) -> Tuple[bool, str]:
         """
-        检查Agent状态（拉取模式）
+        检查Agent状态（服务器主动检查）
 
         Args:
             agent: Agent对象
@@ -223,16 +223,36 @@ class AgentService:
         Returns:
             Tuple[bool, str]: (是否在线, 状态消息)
         """
-        # 服务器主动检查 Agent 状态（通过 JSON-RPC）
+        # 服务器主动检查 Agent 状态（通过 HTTP/HTTPS 健康检查端点）
 
         try:
+            # 检查Agent是否有端口配置
+            if not agent.rpc_port:
+                agent.status = 'offline'
+                agent.save()
+                return False, 'Agent端口未配置'
+
             import requests
+            import urllib3
+            # 禁用SSL警告（因为使用自签名证书）
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
             server = agent.server
             connect_host = server.agent_connect_host or server.host
-            connect_port = server.agent_connect_port or 8000
+            # 使用Agent的rpc_port（实际存储的是HTTP/HTTPS端口）
+            connect_port = agent.rpc_port
 
-            health_url = f"http://{connect_host}:{connect_port}/health"
-            response = requests.get(health_url, timeout=5)
+            # 判断是否使用HTTPS（如果Agent有证书配置，使用HTTPS）
+            use_https = bool(agent.certificate_path and agent.private_key_path)
+            protocol = 'https' if use_https else 'http'
+
+            # 构建Agent健康检查URL（/health端点不需要路径前缀）
+            health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+            
+            # 如果配置了agent域名，则验证SSL证书；如果只使用IP地址，则不验证
+            verify_ssl = bool(server.agent_connect_host)
+            
+            response = requests.get(health_url, timeout=5, verify=verify_ssl)
 
             if response.status_code == 200:
                 agent.status = 'online'

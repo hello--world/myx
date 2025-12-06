@@ -368,56 +368,9 @@ def install_agent_via_ssh_legacy(server: Server, deployment: Deployment) -> bool
     """
     backup_path = None  # 记录备份路径，用于失败时恢复
     try:
-        # 先创建或获取Agent记录（服务器端生成Token和RPC端口）
-        import secrets
-        import random
-        from apps.agents.models import Agent
-        
-        def generate_rpc_port():
-            """生成随机RPC端口"""
-            excluded_ports = {22, 80, 443, 8000, 8443, 3306, 5432, 6379, 8080, 9000}
-            for _ in range(100):
-                port = random.randint(8000, 65535)
-                if port in excluded_ports:
-                    continue
-                # 检查端口是否已被使用
-                try:
-                    existing = Agent.objects.filter(rpc_port=port).exists()
-                    if existing:
-                        continue
-                except:
-                    pass
-                return port
-            return None
-        
-        def generate_rpc_path():
-            """生成随机RPC路径（用于路径混淆，保障安全）"""
-            return secrets.token_urlsafe(16)  # 生成32字符的随机路径
-        
-        # 创建或获取Agent记录
-        agent, created = Agent.objects.get_or_create(
-            server=server,
-            defaults={
-                'token': secrets.token_urlsafe(32),
-                'secret_key': secrets.token_urlsafe(32),
-                'status': 'offline',  # 初始状态为离线，启动后更新
-                'web_service_enabled': True,
-                'web_service_port': 8443,
-                'rpc_port': generate_rpc_port(),
-                'rpc_path': generate_rpc_path(),  # 生成随机RPC路径
-            }
-        )
-        
-        # 如果Agent已存在但没有Token或RPC端口，生成它们（但不会更改已存在的）
-        if not agent.token:
-            agent.token = secrets.token_urlsafe(32)
-        if not agent.secret_key:
-            agent.secret_key = secrets.token_urlsafe(32)
-        if not agent.rpc_port:
-            agent.rpc_port = generate_rpc_port()
-        if not agent.rpc_path:
-            agent.rpc_path = generate_rpc_path()
-        agent.save()
+        # 使用 AgentService 创建或获取Agent记录（服务器端生成Token和RPC端口）
+        from apps.agents.services.agent_service import AgentService
+        agent = AgentService.create_or_get_agent(server)
         
         deployment.log = (deployment.log or '') + f"Agent Token已生成: {agent.token}\n"
         deployment.log = (deployment.log or '') + f"Agent RPC端口已分配: {agent.rpc_port}\n"

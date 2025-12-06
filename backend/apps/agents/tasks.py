@@ -6,6 +6,10 @@ from datetime import timedelta
 from .models import Agent
 import requests
 import logging
+import urllib3
+
+# 禁用SSL警告（因为使用自签名证书）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -17,17 +21,30 @@ def check_agent_status():
     
     for agent in agents:
         try:
+            # 检查Agent是否有端口配置
+            if not agent.rpc_port:
+                agent.status = 'offline'
+                agent.save()
+                continue
+            
             # 获取Agent连接地址
             server = agent.server
             connect_host = server.agent_connect_host or server.host
-            connect_port = server.agent_connect_port or 8000
+            # 使用Agent的rpc_port（实际存储的是HTTP/HTTPS端口）
+            connect_port = agent.rpc_port
             
-            # 构建Agent健康检查URL
-            # 假设Agent提供一个健康检查端点
-            health_url = f"http://{connect_host}:{connect_port}/health"
+            # 判断是否使用HTTPS（如果Agent有证书配置，使用HTTPS）
+            use_https = bool(agent.certificate_path and agent.private_key_path)
+            protocol = 'https' if use_https else 'http'
             
-            # 发送HTTP请求检查Agent是否在线
-            response = requests.get(health_url, timeout=5)
+            # 构建Agent健康检查URL（/health端点不需要路径前缀）
+            health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+            
+            # 如果配置了agent域名，则验证SSL证书；如果只使用IP地址，则不验证
+            verify_ssl = bool(server.agent_connect_host)
+            
+            # 发送HTTP/HTTPS请求检查Agent是否在线
+            response = requests.get(health_url, timeout=5, verify=verify_ssl)
             
             if response.status_code == 200:
                 agent.status = 'online'

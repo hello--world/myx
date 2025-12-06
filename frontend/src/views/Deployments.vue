@@ -101,7 +101,6 @@
             <el-option label="Xray" value="xray" />
             <el-option label="Caddy" value="caddy" />
             <el-option label="Xray + Caddy" value="both" />
-            <el-option label="一键部署 (Xray + Caddy)" value="full" />
           </el-select>
         </el-form-item>
         <el-form-item label="连接方式" prop="connection_method">
@@ -518,8 +517,7 @@ const generateTaskName = () => {
   const typeTextMap = {
     xray: '部署Xray',
     caddy: '部署Caddy',
-    both: '部署Xray + Caddy',
-    full: '一键部署'
+    both: '部署Xray + Caddy'
   }
   
   const typeText = typeTextMap[form.deployment_type] || '部署'

@@ -18,6 +18,9 @@ class ProxySerializer(serializers.ModelSerializer):
     settings = serializers.JSONField(write_only=True, required=False)
     stream_settings = serializers.JSONField(write_only=True, required=False)
     sniffing = serializers.JSONField(write_only=True, required=False)
+    
+    # 节点名称改为可选，允许空字符串
+    name = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
     class Meta:
         model = Proxy
@@ -99,17 +102,21 @@ class ProxySerializer(serializers.ModelSerializer):
             validated_data['sniffing'] = json.dumps(validated_data['sniffing'], ensure_ascii=False)
         
         # 如果节点名称为空，使用服务器名称，并处理冲突
-        if 'name' in validated_data and (not validated_data.get('name') or not validated_data.get('name').strip()):
-            server = validated_data.get('server', instance.server)
-            if server:
-                base_name = server.name
-                # 检查是否有冲突（排除自己），如果有则添加后缀
-                name = base_name
-                counter = 1
-                while Proxy.objects.filter(name=name).exclude(pk=instance.pk).exists():
-                    name = f"{base_name}-{counter}"
-                    counter += 1
-                validated_data['name'] = name
+        if 'name' in validated_data:
+            name_value = validated_data.get('name')
+            # 处理 None、空字符串或只包含空白字符的情况
+            if not name_value or (isinstance(name_value, str) and not name_value.strip()):
+                server = validated_data.get('server', instance.server)
+                if server:
+                    base_name = server.name
+                    # 检查是否有冲突（排除自己），如果有则添加后缀
+                    name = base_name
+                    counter = 1
+                    while Proxy.objects.filter(name=name).exclude(pk=instance.pk).exists():
+                        name = f"{base_name}-{counter}"
+                        counter += 1
+                    validated_data['name'] = name
+            # 如果提供了非空名称，直接使用（不需要额外处理）
         
         return super().update(instance, validated_data)
 

@@ -181,38 +181,42 @@
 
         <!-- SSH认证 -->
         <el-divider content-position="left">SSH认证</el-divider>
-        <el-form-item label="密码" prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            placeholder="SSH密码（或使用私钥）"
-            show-password
-          />
-        </el-form-item>
-        <el-form-item label="SSH Key">
-          <div style="display: flex; align-items: center; gap: 8px;">
-          <el-switch
-            v-model="form.enable_ssh_key"
-          />
-            <span style="font-size: 13px; color: #909399;">自动生成并添加到服务器</span>
-          </div>
-        </el-form-item>
-        <el-form-item label="保存密码">
+        <div class="form-row-three-cols">
+          <el-form-item label="密码" prop="password">
+            <el-input
+              v-model="form.password"
+              type="password"
+              placeholder="SSH密码（使用私钥时留空）"
+              show-password
+            />
+          </el-form-item>
+          <el-form-item label="保存密码">
             <div style="display: flex; align-items: center; gap: 8px;">
-          <el-switch
-            v-model="form.save_password"
-          />
+              <el-switch
+                v-model="form.save_password"
+              />
               <span style="font-size: 13px; color: #909399;">开启后加密保存</span>
             </div>
           </el-form-item>
           <el-form-item label="自动清除密码">
             <div style="display: flex; align-items: center; gap: 8px;">
-          <el-switch
-            v-model="form.auto_clear_password_after_agent_install"
-          />
+              <el-switch
+                v-model="form.auto_clear_password_after_agent_install"
+              />
               <span style="font-size: 13px; color: #909399;">安装agent后自动清除密码</span>
             </div>
           </el-form-item>
+        </div>
+        <el-form-item label="SSH Key">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <el-switch
+              v-model="form.enable_ssh_key"
+            />
+          </div>
+          <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+            自动生成并添加到服务器
+          </div>
+        </el-form-item>
         <el-form-item label="私钥" prop="private_key">
           <el-input
             v-model="form.private_key"
@@ -1462,6 +1466,17 @@ onUnmounted(() => {
 }
 
 .form-row-two-cols .el-form-item {
+  margin-bottom: 12px;
+}
+
+.form-row-three-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 0;
+}
+
+.form-row-three-cols .el-form-item {
   margin-bottom: 12px;
 }
 

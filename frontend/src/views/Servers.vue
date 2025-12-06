@@ -191,20 +191,14 @@
             />
           </el-form-item>
           <el-form-item label="保存密码">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <el-switch
-                v-model="form.save_password"
-              />
-              <span style="font-size: 13px; color: #909399;">开启后加密保存</span>
-            </div>
+            <el-switch
+              v-model="form.save_password"
+            />
           </el-form-item>
           <el-form-item label="自动清除密码">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <el-switch
-                v-model="form.auto_clear_password_after_agent_install"
-              />
-              <span style="font-size: 13px; color: #909399;">安装agent后自动清除密码</span>
-            </div>
+            <el-switch
+              v-model="form.auto_clear_password_after_agent_install"
+            />
           </el-form-item>
         </div>
         <el-form-item label="SSH Key">

@@ -27,6 +27,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _check_deployment_cancelled(deployment_id: int) -> bool:
+    """
+    检查部署任务是否已被取消
+    
+    Args:
+        deployment_id: 部署任务ID
+        
+    Returns:
+        bool: 如果已取消返回True，否则返回False
+    """
+    try:
+        deployment = Deployment.objects.get(id=deployment_id)
+        return deployment.status == 'cancelled'
+    except Deployment.DoesNotExist:
+        return True  # 如果部署不存在，视为已取消
+
+
 def generate_ssl_certificate(server_host: str, agent_token: str) -> tuple[bytes, bytes]:
     """
     生成SSL证书和私钥（服务器端生成）
@@ -112,6 +129,11 @@ def deploy_xray(deployment_id):
         deployment.save()
 
         try:
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务已被取消: deployment_id={deployment_id}')
+                return
+            
             # 根据连接方式选择不同的部署方法
             connection_method = deployment.connection_method or deployment.server.connection_method
             deployment_target = deployment.deployment_target or deployment.server.deployment_target
@@ -129,6 +151,13 @@ def deploy_xray(deployment_id):
                     deployment.server,
                     playbook
                 )
+                
+                # 再次检查是否已被取消
+                if _check_deployment_cancelled(deployment_id):
+                    logger.info(f'部署任务在执行过程中被取消: deployment_id={deployment_id}')
+                    return
+                
+                deployment.refresh_from_db()
                 deployment.log = result.get('log', '')
                 if result.get('success'):
                     deployment.status = 'success'
@@ -138,10 +167,17 @@ def deploy_xray(deployment_id):
                 deployment.completed_at = timezone.now()
                 deployment.save()
         except Exception as e:
-            deployment.status = 'failed'
-            deployment.error_message = str(e)
-            deployment.completed_at = timezone.now()
-            deployment.save()
+            # 检查是否已被取消（异常可能是由于取消导致的）
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在异常处理时发现已被取消: deployment_id={deployment_id}')
+                return
+            
+            deployment.refresh_from_db()
+            if deployment.status != 'cancelled':
+                deployment.status = 'failed'
+                deployment.error_message = str(e)
+                deployment.completed_at = timezone.now()
+                deployment.save()
 
     thread = threading.Thread(target=_deploy)
     thread.daemon = True
@@ -157,6 +193,11 @@ def deploy_caddy(deployment_id):
         deployment.save()
 
         try:
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务已被取消: deployment_id={deployment_id}')
+                return
+            
             # 根据连接方式选择不同的部署方法
             connection_method = deployment.connection_method or deployment.server.connection_method
             
@@ -171,6 +212,13 @@ def deploy_caddy(deployment_id):
                     deployment.server,
                     playbook
                 )
+                
+                # 再次检查是否已被取消
+                if _check_deployment_cancelled(deployment_id):
+                    logger.info(f'部署任务在执行过程中被取消: deployment_id={deployment_id}')
+                    return
+                
+                deployment.refresh_from_db()
                 deployment.log = result.get('log', '')
                 if result.get('success'):
                     deployment.status = 'success'
@@ -180,10 +228,17 @@ def deploy_caddy(deployment_id):
                 deployment.completed_at = timezone.now()
                 deployment.save()
         except Exception as e:
-            deployment.status = 'failed'
-            deployment.error_message = str(e)
-            deployment.completed_at = timezone.now()
-            deployment.save()
+            # 检查是否已被取消（异常可能是由于取消导致的）
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在异常处理时发现已被取消: deployment_id={deployment_id}')
+                return
+            
+            deployment.refresh_from_db()
+            if deployment.status != 'cancelled':
+                deployment.status = 'failed'
+                deployment.error_message = str(e)
+                deployment.completed_at = timezone.now()
+                deployment.save()
 
     thread = threading.Thread(target=_deploy)
     thread.daemon = True
@@ -220,16 +275,28 @@ def quick_deploy_full(deployment_id, is_temporary=False):
         )
 
         try:
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务已被取消: deployment_id={deployment_id}')
+                return
+            
             # 步骤1: 通过SSH安装Agent
             deployment.log = (deployment.log or '') + "步骤1: 通过SSH安装Agent...\n"
             deployment.save()
             
             agent_installed = install_agent_via_ssh(server, deployment)
             if not agent_installed:
-                deployment.status = 'failed'
-                deployment.error_message = 'Agent安装失败'
-                deployment.completed_at = timezone.now()
-                deployment.save()
+                deployment.refresh_from_db()
+                if deployment.status != 'cancelled':
+                    deployment.status = 'failed'
+                    deployment.error_message = 'Agent安装失败'
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+                return
+            
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在Agent安装后被取消: deployment_id={deployment_id}')
                 return
             
             # 等待Agent启动（最多等待30秒）
@@ -238,13 +305,21 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             
             agent = wait_for_agent_startup(server, timeout=30, deployment=deployment)
             if not agent or not agent.rpc_port:
-                deployment.status = 'failed'
-                deployment.error_message = 'Agent启动超时或HTTP服务不可用'
-                deployment.completed_at = timezone.now()
-                deployment.save()
+                deployment.refresh_from_db()
+                if deployment.status != 'cancelled':
+                    deployment.status = 'failed'
+                    deployment.error_message = 'Agent启动超时或HTTP服务不可用'
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
                 return
             
-                deployment.log = (deployment.log or '') + f"Agent已启动，HTTP端口: {agent.rpc_port}\n"
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在Agent启动后被取消: deployment_id={deployment_id}')
+                return
+            
+            deployment.refresh_from_db()
+            deployment.log = (deployment.log or '') + f"Agent已启动，HTTP端口: {agent.rpc_port}\n"
             deployment.save()
             
             # 更新服务器连接方式为Agent
@@ -260,7 +335,13 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             
             server.save()
             
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在服务器更新后被取消: deployment_id={deployment_id}')
+                return
+            
             # 步骤2: 通过Agent部署Xray
+            deployment.refresh_from_db()
             deployment.log = (deployment.log or '') + "步骤2: 通过Agent部署Xray...\n"
             deployment.save()
             
@@ -277,18 +358,32 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             deploy_via_agent(xray_deployment, deployment.deployment_target or 'host')
             xray_deployment.refresh_from_db()
             
-            if xray_deployment.status != 'success':
-                deployment.status = 'failed'
-                deployment.error_message = f'Xray部署失败: {xray_deployment.error_message}'
-                deployment.log = (deployment.log or '') + f"Xray部署失败: {xray_deployment.error_message}\n"
-                deployment.completed_at = timezone.now()
-                deployment.save()
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在Xray部署后被取消: deployment_id={deployment_id}')
                 return
             
+            if xray_deployment.status != 'success':
+                deployment.refresh_from_db()
+                if deployment.status != 'cancelled':
+                    deployment.status = 'failed'
+                    deployment.error_message = f'Xray部署失败: {xray_deployment.error_message}'
+                    deployment.log = (deployment.log or '') + f"Xray部署失败: {xray_deployment.error_message}\n"
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+                return
+            
+            deployment.refresh_from_db()
             deployment.log = (deployment.log or '') + "Xray部署成功\n"
             deployment.save()
             
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在Xray部署成功后取消: deployment_id={deployment_id}')
+                return
+            
             # 步骤3: 通过Agent部署Caddy
+            deployment.refresh_from_db()
             deployment.log = (deployment.log or '') + "步骤3: 通过Agent部署Caddy...\n"
             deployment.save()
             
@@ -305,26 +400,42 @@ def quick_deploy_full(deployment_id, is_temporary=False):
             deploy_via_agent(caddy_deployment, 'host')  # 强制使用宿主机部署
             caddy_deployment.refresh_from_db()
             
-            if caddy_deployment.status != 'success':
-                deployment.status = 'failed'
-                deployment.error_message = f'Caddy部署失败: {caddy_deployment.error_message}'
-                deployment.log = (deployment.log or '') + f"Caddy部署失败: {caddy_deployment.error_message}\n"
-                deployment.completed_at = timezone.now()
-                deployment.save()
+            # 检查是否已被取消
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在Caddy部署后被取消: deployment_id={deployment_id}')
                 return
             
-            deployment.log = (deployment.log or '') + "Caddy部署成功\n"
-            deployment.status = 'success'
-            deployment.log = (deployment.log or '') + "一键部署完成！Agent信息已自动记录。\n"
-            deployment.completed_at = timezone.now()
-            deployment.save()
+            if caddy_deployment.status != 'success':
+                deployment.refresh_from_db()
+                if deployment.status != 'cancelled':
+                    deployment.status = 'failed'
+                    deployment.error_message = f'Caddy部署失败: {caddy_deployment.error_message}'
+                    deployment.log = (deployment.log or '') + f"Caddy部署失败: {caddy_deployment.error_message}\n"
+                    deployment.completed_at = timezone.now()
+                    deployment.save()
+                return
             
+            deployment.refresh_from_db()
+            if deployment.status != 'cancelled':
+                deployment.log = (deployment.log or '') + "Caddy部署成功\n"
+                deployment.status = 'success'
+                deployment.log = (deployment.log or '') + "一键部署完成！Agent信息已自动记录。\n"
+                deployment.completed_at = timezone.now()
+                deployment.save()
+
         except Exception as e:
-            deployment.status = 'failed'
-            deployment.error_message = str(e)
-            deployment.log = (deployment.log or '') + f"部署失败: {str(e)}\n"
-            deployment.completed_at = timezone.now()
-            deployment.save()
+            # 检查是否已被取消（异常可能是由于取消导致的）
+            if _check_deployment_cancelled(deployment_id):
+                logger.info(f'部署任务在异常处理时发现已被取消: deployment_id={deployment_id}')
+                return
+            
+            deployment.refresh_from_db()
+            if deployment.status != 'cancelled':
+                deployment.status = 'failed'
+                deployment.error_message = str(e)
+                deployment.log = (deployment.log or '') + f"部署失败: {str(e)}\n"
+                deployment.completed_at = timezone.now()
+                deployment.save()
 
     thread = threading.Thread(target=_deploy)
     thread.daemon = True

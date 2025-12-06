@@ -494,6 +494,18 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
             max_wait = 600
             wait_time = 0
             while wait_time < max_wait:
+                # 检查部署是否已被取消
+                if deployment and deployment.id:
+                    try:
+                        deployment.refresh_from_db()
+                        if deployment.status == 'cancelled':
+                            logger.info(f'部署任务已被取消，停止等待命令完成: deployment_id={deployment.id}, command_id={cmd.id}')
+                            deployment.log = (deployment.log or '') + f"[停止] 部署任务已取消，停止等待命令完成（命令ID: {cmd.id}）\n"
+                            deployment.save()
+                            return False, '部署任务已取消'
+                    except Exception:
+                        pass  # 忽略刷新错误
+                
                 cmd.refresh_from_db()
                 if cmd.status in ['success', 'failed']:
                     break
@@ -718,6 +730,19 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
         last_log_time = 0
 
         while time.time() - start_time < timeout:
+            # 检查部署是否已被取消
+            if deployment and deployment.id:
+                try:
+                    deployment.refresh_from_db()
+                    if deployment.status == 'cancelled':
+                        logger.info(f'部署任务已被取消，停止等待Agent启动: deployment_id={deployment.id}')
+                        if deployment:
+                            deployment.log = (deployment.log or '') + "[停止] 部署任务已取消，停止等待Agent启动\n"
+                            deployment.save()
+                        return None
+                except Exception:
+                    pass  # 忽略刷新错误
+            
             elapsed = int(time.time() - start_time)
 
             # 每10秒输出一次进度

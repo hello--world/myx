@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: "4"
     content: 将系统设置移到最后一个 tab
-    status: completed
+    status: pending
 ---
 
 # 重构 Agent 使用 HTTP 和标准库

@@ -71,6 +71,14 @@
                   查看日志
                 </el-button>
                 <el-button size="small" type="primary" @click="handleEdit(row)">编辑</el-button>
+                <el-button 
+                  size="small" 
+                  type="warning" 
+                  @click="handleClearPassword(row)"
+                  :disabled="!row.has_password && !row.has_private_key"
+                >
+                  清除密码
+                </el-button>
                 <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
               </div>
             </div>
@@ -146,7 +154,7 @@
         ref="formRef"
         :model="form"
         :rules="rules"
-        label-width="90px"
+        label-width="120px"
         class="server-form"
       >
         <!-- 基础信息 -->
@@ -186,7 +194,7 @@
             <el-input
               v-model="form.password"
               type="password"
-              placeholder="SSH密码（使用私钥时留空）"
+              placeholder="SSH密码"
               show-password
             />
           </el-form-item>
@@ -1190,6 +1198,36 @@ const copyLogs = async () => {
     } finally {
       document.body.removeChild(textArea)
     }
+  }
+}
+
+const handleClearPassword = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要清除服务器 "${row.name}" 的SSH密码和私钥吗？\n\n清除后，如果需要重新连接，需要重新输入SSH凭证。`,
+      '确认清除密码',
+      {
+        confirmButtonText: '确定清除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    const response = await api.post(`/servers/${row.id}/clear_password/`)
+    
+    if (response.data?.success) {
+      ElMessage.success('密码已清除')
+      await fetchServers()
+    } else {
+      ElMessage.error(response.data?.error || '清除密码失败')
+    }
+  } catch (error) {
+    if (error === 'cancel') {
+      return // 用户取消
+    }
+    console.error('清除密码失败:', error)
+    const errorMessage = error.response?.data?.error || error.response?.data?.message || error.message
+    ElMessage.error('清除密码失败: ' + errorMessage)
   }
 }
 

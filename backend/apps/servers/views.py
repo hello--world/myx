@@ -1359,6 +1359,34 @@ class ServerViewSet(viewsets.ModelViewSet):
         
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['post'])
+    def clear_password(self, request, pk=None):
+        """手动清除服务器密码"""
+        server = self.get_object()
+        
+        # 清除密码和私钥
+        server.password = ''
+        server.private_key = ''
+        server.save_password = False
+        server.save()
+        
+        # 记录清除密码日志
+        create_log_entry(
+            log_type='server',
+            level='info',
+            title=f'已清除密码: {server.name}',
+            content=f'已手动清除服务器 {server.name} 的SSH密码和私钥',
+            user=request.user,
+            server=server
+        )
+        
+        logger.info(f'已清除服务器密码: server_id={server.id}, server_name={server.name}')
+        
+        return Response({
+            'success': True,
+            'message': '密码已清除'
+        }, status=status.HTTP_200_OK)
+
     def update(self, request, *args, **kwargs):
         """更新服务器，处理密码保存和SSH key生成"""
         partial = kwargs.pop('partial', False)

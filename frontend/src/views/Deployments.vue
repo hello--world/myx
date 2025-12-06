@@ -101,14 +101,13 @@
             <el-option label="Xray" value="xray" />
             <el-option label="Caddy" value="caddy" />
             <el-option label="Xray + Caddy" value="both" />
-            <el-option label="一键部署 (Agent + Xray + Caddy)" value="full" />
+            <el-option label="一键部署 (Xray + Caddy)" value="full" />
           </el-select>
         </el-form-item>
         <el-form-item label="连接方式" prop="connection_method">
           <el-select v-model="form.connection_method" placeholder="请选择连接方式（留空使用服务器默认）" style="width: 100%">
             <el-option label="使用服务器默认" value="" />
             <el-option label="SSH" value="ssh" />
-            <el-option label="Agent" value="agent" />
           </el-select>
         </el-form-item>
         <el-form-item label="部署目标" prop="deployment_target">

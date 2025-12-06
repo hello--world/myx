@@ -204,127 +204,80 @@ class ServerViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def _test_agent_connection(self, server):
-        """测试Agent连接（优先使用Web服务，回退到心跳检查）"""
+        """测试Agent连接（使用HTTP健康检查）"""
         try:
             agent = Agent.objects.get(server=server)
             
-            # 优先尝试使用RPC连接（新架构，支持随机路径）
-            # 如果Agent有RPC端口，优先使用RPC客户端；否则使用Web服务客户端
-            web_service_error = None
-            if agent.rpc_port:
-                try:
-                    from apps.agents.rpc_client import get_agent_rpc_client
-                    rpc_client = get_agent_rpc_client(agent)
-                    if rpc_client:
-                        # 尝试健康检查（RPC客户端支持随机路径）
-                        if rpc_client.check_support():
-                            # 获取Agent状态
-                            status_result = rpc_client.get_status()
-                            if status_result:
-                                # status_result 已经是结果字典，不是包装在 {'result': ...} 中
-                                return {
-                                    'success': True,
-                                    'message': 'Agent RPC服务连接成功',
-                                    'agent_status': 'online',
-                                    'connection_method': 'rpc',
-                                    'rpc_info': status_result
-                                }
-                            else:
-                                web_service_error = 'RPC服务连接成功但获取状态失败'
-                        else:
-                            web_service_error = 'RPC服务不支持或健康检查失败'
-                    else:
-                        logger.warning(f"无法创建Agent RPC客户端，尝试Web服务客户端")
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.warning(f"连接Agent RPC服务失败: {error_msg}，尝试Web服务客户端", exc_info=True)
-                    web_service_error = f'RPC服务连接异常: {error_msg}'
-            
-            # 如果RPC不可用，尝试Web服务（旧架构）
-            if not web_service_error and agent.web_service_enabled:
-                try:
-                    from apps.agents.client import get_agent_client
-                    client = get_agent_client(agent)
-                    if client:
-                        # 尝试健康检查
-                        health_result = client.health_check()
-                        if health_result is True:
-                            # 获取Agent状态
-                            status = client.get_status()
-                            return {
-                                'success': True,
-                                'message': 'Agent Web服务连接成功',
-                                'agent_status': 'online',
-                                'connection_method': 'web_service',
-                                'web_service_info': status
-                            }
-                        else:
-                            # Web服务不可用，记录详细错误信息
-                            error_detail = health_result if isinstance(health_result, str) else 'Web服务健康检查失败'
-                            logger.warning(f"Agent Web服务健康检查失败: {error_detail}，回退到心跳检查")
-                            web_service_error = error_detail
-                    else:
-                        logger.warning(f"无法创建Agent Web服务客户端，回退到心跳检查")
-                        if not web_service_error:
-                            web_service_error = 'Web服务未启用或配置不正确'
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.warning(f"连接Agent Web服务失败: {error_msg}，回退到心跳检查", exc_info=True)
-                    if not web_service_error:
-                        web_service_error = f'Web服务连接异常: {error_msg}'
-            
-            # 回退到传统心跳检查
-            # 构建消息，包含Web服务失败的原因（如果有）
-            web_service_warning = None
-            if 'web_service_error' in locals() and web_service_error:
-                web_service_warning = web_service_error
-            
-            if agent.status == 'online':
-                # 检查最后心跳时间
-                if agent.last_heartbeat:
-                    time_since_heartbeat = timezone.now() - agent.last_heartbeat
-                    if time_since_heartbeat.total_seconds() <= 60:
-                        message = 'Agent连接成功（心跳模式）'
-                        if web_service_warning:
-                            message += f'\n注意：Web服务健康检查失败（{web_service_warning}），已回退到心跳检查'
-                        return {
-                            'success': True,
-                            'message': message,
-                            'agent_status': 'online',
-                            'connection_method': 'heartbeat',
-                            'last_heartbeat': agent.last_heartbeat,
-                            'web_service_warning': web_service_warning
-                        }
-                    else:
-                        error_msg = f'Agent长时间未心跳（{int(time_since_heartbeat.total_seconds())}秒）'
-                        if web_service_warning:
-                            error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
-                        return {
-                            'success': False,
-                            'error': error_msg,
-                            'agent_status': 'offline',
-                            'web_service_warning': web_service_warning
-                        }
-                else:
-                    error_msg = 'Agent从未发送心跳'
-                    if web_service_warning:
-                        error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
-                    return {
-                        'success': False,
-                        'error': error_msg,
-                        'agent_status': 'offline',
-                        'web_service_warning': web_service_warning
-                    }
-            else:
-                error_msg = f'Agent状态为: {agent.status}'
-                if web_service_warning:
-                    error_msg += f'\nWeb服务健康检查失败：{web_service_warning}'
+            # 检查Agent是否有端口配置
+            if not agent.rpc_port:
                 return {
                     'success': False,
-                    'error': error_msg,
-                    'agent_status': agent.status,
-                    'web_service_warning': web_service_warning
+                    'error': 'Agent端口未配置',
+                    'agent_status': 'offline'
                 }
+            
+            # 使用HTTP健康检查（与心跳检查逻辑一致）
+            import requests
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            connect_host = server.agent_connect_host or server.host
+            connect_port = agent.rpc_port
+            
+            # 判断是否使用HTTPS（如果Agent有证书配置，使用HTTPS）
+            use_https = bool(agent.certificate_path and agent.private_key_path)
+            protocol = 'https' if use_https else 'http'
+            
+            # 构建Agent健康检查URL（/health端点不需要路径前缀）
+            health_url = f"{protocol}://{connect_host}:{connect_port}/health"
+            
+            # 如果配置了agent域名，则验证SSL证书；如果只使用IP地址，则不验证
+            verify_ssl = bool(server.agent_connect_host)
+            
+            try:
+                response = requests.get(health_url, timeout=5, verify=verify_ssl)
+                
+                if response.status_code == 200:
+                    # 健康检查成功
+                    return {
+                        'success': True,
+                        'message': 'Agent连接成功',
+                        'agent_status': 'online',
+                        'connection_method': 'http',
+                        'last_heartbeat': agent.last_heartbeat
+                    }
+                else:
+                    # 健康检查失败
+                    return {
+                        'success': False,
+                        'error': f'Agent健康检查失败: HTTP {response.status_code}',
+                        'agent_status': 'offline'
+                    }
+            except requests.exceptions.SSLError as e:
+                return {
+                    'success': False,
+                    'error': f'SSL证书验证失败: {str(e)}',
+                    'agent_status': 'offline'
+                }
+            except requests.exceptions.ConnectionError as e:
+                return {
+                    'success': False,
+                    'error': f'无法连接到Agent服务: {str(e)}',
+                    'agent_status': 'offline'
+                }
+            except requests.exceptions.Timeout as e:
+                return {
+                    'success': False,
+                    'error': f'连接超时: {str(e)}',
+                    'agent_status': 'offline'
+                }
+            except Exception as e:
+                return {
+                    'success': False,
+                    'error': f'健康检查异常: {str(e)}',
+                    'agent_status': 'offline'
+                }
+                
         except Agent.DoesNotExist:
             return {
                 'success': False,
@@ -617,7 +570,7 @@ class ServerViewSet(viewsets.ModelViewSet):
                 method = 'auto'
                 try:
                     agent = Agent.objects.get(server=server)
-                    if agent.status == 'online' and agent.rpc_supported and server.connection_method == 'agent':
+                    if agent.status == 'online' and agent.rpc_port and server.connection_method == 'agent':
                         method = 'agent'
                     else:
                         method = 'ssh'
@@ -682,9 +635,9 @@ class ServerViewSet(viewsets.ModelViewSet):
                 deployment.save()
                 
                 agent = DeploymentService.wait_for_agent_startup(server, timeout=120, deployment=deployment)
-                if not agent or not agent.rpc_supported:
+                if not agent or not agent.rpc_port:
                     deployment.status = 'failed'
-                    deployment.error_message = 'Agent启动超时或RPC不支持'
+                    deployment.error_message = 'Agent启动超时或端口未配置'
                     deployment.completed_at = timezone.now()
                     deployment.save()
                     
@@ -823,105 +776,102 @@ class ServerViewSet(viewsets.ModelViewSet):
             'error': None
         }
         
-        # 优先尝试通过RPC获取日志（如果Agent在线）
-        if agent.status == 'online' and agent.rpc_supported:
+        # 优先尝试通过Agent命令队列获取日志（如果Agent在线）
+        if agent.status == 'online':
             try:
-                from apps.agents.rpc_client import get_agent_rpc_client
-                rpc_client = get_agent_rpc_client(agent)
-                if rpc_client:
-                    # 通过RPC执行命令读取日志
-                    from apps.agents.command_queue import CommandQueue
-                    
-                    # 读取Agent日志文件（支持增量获取）
-                    if incremental and agent_log_offset > 0:
-                        # 增量获取：从指定行数开始读取新内容
-                        read_log_cmd = CommandQueue.add_command(
-                            agent=agent,
-                            command='bash',
-                            args=['-c', f'tail -n +{agent_log_offset + 1} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
-                            timeout=10
-                        )
-                    else:
-                        # 首次获取：读取指定行数
-                        read_log_cmd = CommandQueue.add_command(
-                            agent=agent,
-                            command='bash',
-                            args=['-c', f'tail -n {lines} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
-                            timeout=10
-                        )
-                    
-                    # 等待命令执行
-                    import time
-                    for _ in range(10):
-                        time.sleep(1)
-                        read_log_cmd.refresh_from_db()
-                        if read_log_cmd.status in ['success', 'failed']:
-                            if read_log_cmd.status == 'success' and read_log_cmd.result:
-                                from apps.logs.utils import format_log_content
-                                log_content = format_log_content(read_log_cmd.result, decode_base64=True)
-                                logs['agent_log'] = log_content
-                                # 计算新的offset（行数）
-                                if log_content and log_content != '日志文件不存在':
-                                    logs['agent_log_offset'] = agent_log_offset + len(log_content.split('\n'))
-                                else:
-                                    logs['agent_log_offset'] = agent_log_offset
-                            break
-                    
-                    # 读取systemd状态（只在首次加载时获取，不增量）
-                    if not incremental or systemd_offset == 0:
-                        status_cmd = CommandQueue.add_command(
-                            agent=agent,
-                            command='bash',
-                            args=['-c', 'systemctl status myx-agent --no-pager -l 2>/dev/null || echo "无法获取服务状态"'],
-                            timeout=10
-                        )
-                        
-                        for _ in range(10):
-                            time.sleep(1)
-                            status_cmd.refresh_from_db()
-                            if status_cmd.status in ['success', 'failed']:
-                                if status_cmd.status == 'success' and status_cmd.result:
-                                    from apps.logs.utils import format_log_content
-                                    logs['systemd_status'] = format_log_content(status_cmd.result, decode_base64=True)
-                                    logs['systemd_offset'] = len(logs['systemd_status'].split('\n'))
-                                break
-                    else:
-                        logs['systemd_offset'] = systemd_offset
-                    
-                    # 读取journalctl日志（支持增量获取）
-                    if incremental and journalctl_offset > 0:
-                        journal_cmd = CommandQueue.add_command(
-                            agent=agent,
-                            command='bash',
-                            args=['-c', f'journalctl -u myx-agent -n +{journalctl_offset + 1} --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
-                            timeout=10
-                        )
-                    else:
-                        journal_cmd = CommandQueue.add_command(
-                            agent=agent,
-                            command='bash',
-                            args=['-c', 'journalctl -u myx-agent -n 50 --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
-                            timeout=10
-                        )
+                # 通过命令队列执行命令读取日志
+                from apps.agents.command_queue import CommandQueue
+                
+                # 读取Agent日志文件（支持增量获取）
+                if incremental and agent_log_offset > 0:
+                    # 增量获取：从指定行数开始读取新内容
+                    read_log_cmd = CommandQueue.add_command(
+                        agent=agent,
+                        command='bash',
+                        args=['-c', f'tail -n +{agent_log_offset + 1} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
+                        timeout=10
+                    )
+                else:
+                    # 首次获取：读取指定行数
+                    read_log_cmd = CommandQueue.add_command(
+                        agent=agent,
+                        command='bash',
+                        args=['-c', f'tail -n {lines} /var/log/myx-agent.log 2>/dev/null || echo "日志文件不存在"'],
+                        timeout=10
+                    )
+                
+                # 等待命令执行
+                import time
+                for _ in range(10):
+                    time.sleep(1)
+                    read_log_cmd.refresh_from_db()
+                    if read_log_cmd.status in ['success', 'failed']:
+                        if read_log_cmd.status == 'success' and read_log_cmd.result:
+                            from apps.logs.utils import format_log_content
+                            log_content = format_log_content(read_log_cmd.result, decode_base64=True)
+                            logs['agent_log'] = log_content
+                            # 计算新的offset（行数）
+                            if log_content and log_content != '日志文件不存在':
+                                logs['agent_log_offset'] = agent_log_offset + len(log_content.split('\n'))
+                            else:
+                                logs['agent_log_offset'] = agent_log_offset
+                        break
+                
+                # 读取systemd状态（只在首次加载时获取，不增量）
+                if not incremental or systemd_offset == 0:
+                    status_cmd = CommandQueue.add_command(
+                        agent=agent,
+                        command='bash',
+                        args=['-c', 'systemctl status myx-agent --no-pager -l 2>/dev/null || echo "无法获取服务状态"'],
+                        timeout=10
+                    )
                     
                     for _ in range(10):
                         time.sleep(1)
-                        journal_cmd.refresh_from_db()
-                        if journal_cmd.status in ['success', 'failed']:
-                            if journal_cmd.status == 'success' and journal_cmd.result:
+                        status_cmd.refresh_from_db()
+                        if status_cmd.status in ['success', 'failed']:
+                            if status_cmd.status == 'success' and status_cmd.result:
                                 from apps.logs.utils import format_log_content
-                                journal_content = format_log_content(journal_cmd.result, decode_base64=True)
-                                logs['journalctl_log'] = journal_content
-                                if journal_content and '无法读取journalctl日志' not in journal_content:
-                                    logs['journalctl_offset'] = journalctl_offset + len(journal_content.split('\n'))
-                                else:
-                                    logs['journalctl_offset'] = journalctl_offset
+                                logs['systemd_status'] = format_log_content(status_cmd.result, decode_base64=True)
+                                logs['systemd_offset'] = len(logs['systemd_status'].split('\n'))
                             break
-                    
-                    return Response(logs)
+                else:
+                    logs['systemd_offset'] = systemd_offset
+                
+                # 读取journalctl日志（支持增量获取）
+                if incremental and journalctl_offset > 0:
+                    journal_cmd = CommandQueue.add_command(
+                        agent=agent,
+                        command='bash',
+                        args=['-c', f'journalctl -u myx-agent -n +{journalctl_offset + 1} --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
+                        timeout=10
+                    )
+                else:
+                    journal_cmd = CommandQueue.add_command(
+                        agent=agent,
+                        command='bash',
+                        args=['-c', 'journalctl -u myx-agent -n 50 --no-pager 2>/dev/null || echo "无法读取journalctl日志"'],
+                        timeout=10
+                    )
+                
+                for _ in range(10):
+                    time.sleep(1)
+                    journal_cmd.refresh_from_db()
+                    if journal_cmd.status in ['success', 'failed']:
+                        if journal_cmd.status == 'success' and journal_cmd.result:
+                            from apps.logs.utils import format_log_content
+                            journal_content = format_log_content(journal_cmd.result, decode_base64=True)
+                            logs['journalctl_log'] = journal_content
+                            if journal_content and '无法读取journalctl日志' not in journal_content:
+                                logs['journalctl_offset'] = journalctl_offset + len(journal_content.split('\n'))
+                            else:
+                                logs['journalctl_offset'] = journalctl_offset
+                        break
+                
+                return Response(logs)
             except Exception as e:
-                logger.warning(f'通过RPC获取Agent日志失败: {e}，尝试使用SSH')
-                logs['error'] = f'RPC获取失败: {str(e)}，尝试使用SSH'
+                logger.warning(f'通过Agent命令队列获取日志失败: {e}，尝试使用SSH')
+                logs['error'] = f'Agent命令执行失败: {str(e)}，尝试使用SSH'
         
         # 回退到SSH方式
         if not server.password and not server.private_key:
@@ -1249,9 +1199,9 @@ class ServerViewSet(viewsets.ModelViewSet):
                     deployment.save()
                     
                     agent = wait_for_agent_startup(server, timeout=120, deployment=deployment)
-                    if not agent or not agent.rpc_supported:
+                    if not agent or not agent.rpc_port:
                         deployment.status = 'failed'
-                        deployment.error_message = 'Agent启动超时或RPC不支持'
+                        deployment.error_message = 'Agent启动超时或端口未配置'
                         deployment.completed_at = timezone.now()
                         deployment.save()
                         

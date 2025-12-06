@@ -44,11 +44,6 @@ const routes = [
         component: () => import('@/views/Deployments.vue')
       },
       {
-        path: 'agents',
-        name: 'Agents',
-        component: () => import('@/views/Agents.vue')
-      },
-      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/views/Settings.vue')

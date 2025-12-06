@@ -499,18 +499,72 @@ ansible-playbook -i inventory/localhost.ini playbooks/install_agent.yml -e '{ext
                     break
                 time.sleep(2)
                 wait_time += 2
+                
+                # 每30秒输出一次进度
+                if wait_time % 30 == 0:
+                    deployment.log = (deployment.log or '') + f"[信息] 命令执行中... ({wait_time}秒)\n"
+                    deployment.save()
+
+            # 检查是否超时
+            if cmd.status not in ['success', 'failed']:
+                cmd.status = 'failed'
+                cmd.error = f'命令执行超时（等待{max_wait}秒）'
+                cmd.completed_at = timezone.now()
+                cmd.save()
+                logger.warning(f'命令执行超时: command_id={cmd.id}, agent_id={agent.id}')
 
             # 获取命令结果
             from apps.logs.utils import format_log_content
             output = ''
             if cmd.result:
-                output = format_log_content(cmd.result, decode_base64=True)
+                result_output = format_log_content(cmd.result, decode_base64=True)
+                if result_output:
+                    output += result_output
             if cmd.error:
                 error_output = format_log_content(cmd.error, decode_base64=True)
                 if error_output:
-                    output += '\n' + error_output
+                    if output:
+                        output += '\n' + error_output
+                    else:
+                        output = error_output
+            
+            # 如果输出为空，至少显示命令状态和详细信息
+            if not output:
+                if cmd.status == 'failed':
+                    output = f'命令执行失败（状态: {cmd.status}）'
+                    if cmd.completed_at:
+                        output += f'，完成时间: {cmd.completed_at}'
+                    if cmd.started_at:
+                        output += f'，开始时间: {cmd.started_at}'
+                    # 添加命令信息
+                    output += f'\n命令: {cmd.command}'
+                    if cmd.args:
+                        output += f' {cmd.args}'
+                elif cmd.status == 'success':
+                    output = '命令执行成功（但未获取到输出）'
+                elif cmd.status == 'running':
+                    output = f'命令仍在执行中（状态: {cmd.status}，已等待{wait_time}秒）'
+                    if cmd.started_at:
+                        output += f'，开始时间: {cmd.started_at}'
+                    output += f'\n命令: {cmd.command}'
+                    if cmd.args:
+                        output += f' {cmd.args}'
+                    output += '\n提示: 命令可能仍在执行，或Agent未正确上报结果'
+                else:
+                    output = f'命令状态: {cmd.status}（未完成，已等待{wait_time}秒）'
+                    if cmd.started_at:
+                        output += f'，开始时间: {cmd.started_at}'
+                    output += f'\n命令: {cmd.command}'
+                    if cmd.args:
+                        output += f' {cmd.args}'
 
             success = cmd.status == 'success'
+            
+            # 记录详细日志
+            if output:
+                deployment.log = (deployment.log or '') + f"\n=== Ansible执行输出 ===\n{output}\n"
+                deployment.save()
+            
             return success, output
 
         except Exception as e:

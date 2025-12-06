@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Agent, AgentCommand, CommandTemplate
+from .models import Agent, AgentCommand
 
 @admin.register(Agent)
 class AgentAdmin(admin.ModelAdmin):
@@ -14,10 +14,3 @@ class AgentCommandAdmin(admin.ModelAdmin):
     list_filter = ['status', 'created_at']
     readonly_fields = ['created_at', 'started_at', 'completed_at']
     search_fields = ['command', 'agent__server__name']
-
-@admin.register(CommandTemplate)
-class CommandTemplateAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'command', 'created_by', 'created_at']
-    list_filter = ['created_at']
-    readonly_fields = ['created_at', 'updated_at']
-    search_fields = ['name', 'command', 'description']

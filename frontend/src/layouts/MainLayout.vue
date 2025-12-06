@@ -38,10 +38,6 @@
             <el-icon><Monitor /></el-icon>
             <span>服务器管理</span>
           </el-menu-item>
-          <el-menu-item index="/agents">
-            <el-icon><Monitor /></el-icon>
-            <span>Agent管理</span>
-          </el-menu-item>
           <el-menu-item index="/caddyfiles">
             <el-icon><Document /></el-icon>
             <span>Caddy 配置</span>

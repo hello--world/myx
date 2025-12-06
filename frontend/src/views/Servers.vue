@@ -818,21 +818,36 @@ const handleInstallAgent = async (row) => {
   const isUpgrade = row.has_agent
   
   // 升级时强制要求SSH凭证
+  let tempPassword = null
+  let tempPrivateKey = null
+  
   if (isUpgrade && !row.has_password && !row.has_private_key) {
-    // 升级时需要SSH凭证，提示用户去编辑服务器
+    // 升级时需要SSH凭证，让用户直接输入
     try {
-      await ElMessageBox.confirm(
-        '升级Agent需要使用SSH方式，该服务器缺少SSH密码或私钥。\n\n请先编辑服务器并输入SSH凭证，然后再进行升级。',
+      const { value: sshCredential } = await ElMessageBox.prompt(
+        '升级Agent需要使用SSH方式，该服务器缺少SSH密码或私钥。\n\n请输入SSH密码或私钥：',
         '需要SSH凭证',
         {
-          confirmButtonText: '去编辑',
+          confirmButtonText: '确定',
           cancelButtonText: '取消',
-          type: 'warning'
+          inputType: 'textarea',
+          inputPlaceholder: '请输入SSH密码（或私钥内容）',
+          inputValidator: (value) => {
+            if (!value || !value.trim()) {
+              return '请输入SSH密码或私钥'
+            }
+            return true
+          }
         }
       )
-      // 用户确认，打开编辑对话框
-      handleEdit(row)
-      return
+      
+      // 判断输入的是密码还是私钥（私钥通常包含BEGIN标记）
+      const credential = sshCredential.trim()
+      if (credential.includes('BEGIN') && credential.includes('PRIVATE KEY')) {
+        tempPrivateKey = credential
+      } else {
+        tempPassword = credential
+      }
     } catch {
       // 用户取消
       return
@@ -903,9 +918,21 @@ const handleInstallAgent = async (row) => {
 
   installingAgentId.value = row.id
   try {
-    const response = await api.post(`/servers/${row.id}/install_agent/`, {
+    const requestData = {
       save_password: row.save_password || false
-    })
+    }
+    
+    // 如果升级时提供了临时凭证，添加到请求中
+    if (isUpgrade && (tempPassword || tempPrivateKey)) {
+      if (tempPassword) {
+        requestData.password = tempPassword
+      }
+      if (tempPrivateKey) {
+        requestData.private_key = tempPrivateKey
+      }
+    }
+    
+    const response = await api.post(`/servers/${row.id}/install_agent/`, requestData)
     
     if (response.data.success) {
       ElMessage.success({
